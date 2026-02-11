@@ -292,6 +292,10 @@ ban_line_points = (
     (int(9.5 * d), int(7 * sqrt(3) * d)),
     (int(10.5 * d), int(7 * sqrt(3) * d)),
 )
+# 已经经过的大回合数
+major_round_num = 0
+# 已经经过的小回合数
+minor_round_num = 0
 while isRunning:
     clock.tick(60)
     # 统一处理事件
@@ -484,15 +488,39 @@ while isRunning:
             country_dict[player_country], True, "black"
         )
         window.blit(country_tag, (int(window_Width - window_Height * 0.15), 0))
+        # 左下角"下一回合"按钮
+        pg.draw.circle(
+            window,
+            "black",
+            (int(window_Width - window_Height * 0.15), int(window_Height * 0.85)),
+            int(window_Height * 0.15),
+            10,
+        )
+        arrow_image = pg.transform.scale(
+            pg.image.load(os.path.join(pictures_path, "arrow.jpg")),
+            (
+                int(window_Height * 0.13 * sqrt(2)),
+                int(window_Height * 0.13 * sqrt(2)),
+            ),
+        )
+        window.blit(
+            arrow_image,
+            (
+                int(
+                    window_Width
+                    - window_Height * 0.15
+                    - window_Height * 0.13 * 0.5 * sqrt(2)
+                ),
+                int(window_Height * 0.85 - window_Height * 0.065 * sqrt(2)),
+            ),
+        )
         # 画出左侧游戏地图
         for lattice_to_draw in lattices:
             draw_hexagon(
-                window, color_dict[lattice_to_draw.country], lattice_to_draw.pos, d
+                window, color_dict[lattice_to_draw.country], lattice_to_draw.pos, d, 10
             )
             draw_terrain_icon(window, lattice_to_draw.pos, d, lattice_to_draw.terrain)
-            if lattice_to_draw.unit == None:
-                pass
-            else:
+            if lattice_to_draw.unit:
                 for unit in lattice_to_draw.unit:
                     unit_type_num = len(
                         lattice_to_draw.unit
