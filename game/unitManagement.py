@@ -52,75 +52,75 @@ def draw_unit_icon(surface, unit_type, d, pos):
     """
     infantry_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "infantry_icon.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     infantry_image_2 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "infantry_icon_2.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     infantry_image_3 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "infantry_icon_3.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     cavalry_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "cavalry_icon.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     cavalry_image_2 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "cavalry_icon_2.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     cavalry_image_3 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "cavalry_icon_3.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     archer_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "archer_icon.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     archer_image_2 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "archer_icon_2.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     archer_image_3 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "archer_icon_3.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     JIEFAN_infantry_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "JIEFAN_infantry_icon.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     JIEFAN_infantry_image_2 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "JIEFAN_infantry_icon_2.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     JIEFAN_infantry_image_3 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "JIEFAN_infantry_icon_3.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     HUBAO_cavalry_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "HUBAO_cavalry_icon.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     HUBAO_cavalry_image_2 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "HUBAO_cavalry_icon_2.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     HUBAO_cavalry_image_3 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "HUBAO_cavalry_icon_3.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     WUDANG_archer_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "WUDANG_archer_icon.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     WUDANG_archer_image_2 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "WUDANG_archer_icon_2.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
     WUDANG_archer_image_3 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "WUDANG_archer_icon_3.jpg")),
-        (int(0.5 * d), int(0.5 * d)),
+        (int(0.7 * d), int(0.7 * d)),
     )
 
     if unit_type == "infantry_1":

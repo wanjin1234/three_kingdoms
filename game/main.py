@@ -27,28 +27,28 @@ color_dict = {"SHU": "red", "WU": "green", "WEI": "blue"}
 # 格子数据
 lattice_initialized = False
 d = window_Height * 2 / (19 * sqrt(3))
-lattice_1 = lattice("WEI", None, "plain", 0, (int(d), int(0.5 * sqrt(3) * d)), 0.5)
-lattice_2 = lattice("SHU", None, "plain", 0, (int(d), int(15 * sqrt(3) / 2 * d)), 0.5)
+lattice_1 = lattice("WEI", [], "plain", 0, (int(d), int(0.5 * sqrt(3) * d)), 0.5)
+lattice_2 = lattice("SHU", [], "plain", 0, (int(d), int(15 * sqrt(3) / 2 * d)), 0.5)
 lattice_roll_1 = [lattice_1, lattice_2]
 """第一列格子"""
 
-lattice_3 = lattice("WEI", None, "city", 2, (int(2.5 * d), int(sqrt(3) * d)), 3)  # 凉州
-lattice_4 = lattice("SHU", None, "plain", 0, (int(2.5 * d), int(6 * sqrt(3) * d)), 0.5)
-lattice_5 = lattice("SHU", None, "plain", 0, (int(2.5 * d), int(7 * sqrt(3) * d)), 0.5)
-lattice_6 = lattice("SHU", None, "plain", 0, (int(2.5 * d), int(8 * sqrt(3) * d)), 0.5)
+lattice_3 = lattice("WEI", [], "city", 2, (int(2.5 * d), int(sqrt(3) * d)), 3)  # 凉州
+lattice_4 = lattice("SHU", [], "plain", 0, (int(2.5 * d), int(6 * sqrt(3) * d)), 0.5)
+lattice_5 = lattice("SHU", [], "plain", 0, (int(2.5 * d), int(7 * sqrt(3) * d)), 0.5)
+lattice_6 = lattice("SHU", [], "plain", 0, (int(2.5 * d), int(8 * sqrt(3) * d)), 0.5)
 lattice_roll_2 = [lattice_3, lattice_4, lattice_5, lattice_6]
 """第二列格子"""
 
-lattice_7 = lattice("WEI", None, "plain", 0, (int(4 * d), int(1.5 * sqrt(3) * d)), 0.5)
-lattice_8 = lattice("WEI", None, "plain", 0, (int(4 * d), int(2.5 * sqrt(3) * d)), 0.5)
-lattice_9 = lattice("SHU", None, "hill", 0, (int(4 * d), int(3.5 * sqrt(3) * d)), 0.5)
-lattice_10 = lattice("SHU", None, "plain", 0, (int(4 * d), int(4.5 * sqrt(3) * d)), 0.5)
+lattice_7 = lattice("WEI", [], "plain", 0, (int(4 * d), int(1.5 * sqrt(3) * d)), 0.5)
+lattice_8 = lattice("WEI", [], "plain", 0, (int(4 * d), int(2.5 * sqrt(3) * d)), 0.5)
+lattice_9 = lattice("SHU", [], "hill", 0, (int(4 * d), int(3.5 * sqrt(3) * d)), 0.5)
+lattice_10 = lattice("SHU", [], "plain", 0, (int(4 * d), int(4.5 * sqrt(3) * d)), 0.5)
 lattice_11 = lattice(
-    "SHU", None, "city", 2, (int(4 * d), int(5.5 * sqrt(3) * d)), 5
+    "SHU", ["WUDANG_archer_1"], "city", 2, (int(4 * d), int(5.5 * sqrt(3) * d)), 5
 )  # 成都
-lattice_12 = lattice("SHU", None, "plain", 0, (int(4 * d), int(6.5 * sqrt(3) * d)), 0.5)
-lattice_13 = lattice("SHU", None, "plain", 0, (int(4 * d), int(7.5 * sqrt(3) * d)), 0.5)
-lattice_14 = lattice("SHU", None, "plain", 0, (int(4 * d), int(8.5 * sqrt(3) * d)), 0.5)
+lattice_12 = lattice("SHU", [], "plain", 0, (int(4 * d), int(6.5 * sqrt(3) * d)), 0.5)
+lattice_13 = lattice("SHU", [], "plain", 0, (int(4 * d), int(7.5 * sqrt(3) * d)), 0.5)
+lattice_14 = lattice("SHU", [], "plain", 0, (int(4 * d), int(8.5 * sqrt(3) * d)), 0.5)
 lattice_roll_3 = [
     lattice_7,
     lattice_8,
@@ -60,16 +60,16 @@ lattice_roll_3 = [
     lattice_14,
 ]
 """第三列格子"""
-lattice_15 = lattice("WEI", None, "plain", 0, (int(5.5 * d), int(2 * sqrt(3) * d)), 0.5)
-lattice_16 = lattice("WEI", None, "plain", 0, (int(5.5 * d), int(3 * sqrt(3) * d)), 0.5)
+lattice_15 = lattice("WEI", [], "plain", 0, (int(5.5 * d), int(2 * sqrt(3) * d)), 0.5)
+lattice_16 = lattice("WEI", [], "plain", 0, (int(5.5 * d), int(3 * sqrt(3) * d)), 0.5)
 lattice_17 = lattice(
-    "SHU", None, "city", 2, (int(5.5 * d), int(4 * sqrt(3) * d)), 3
+    "SHU", [], "city", 2, (int(5.5 * d), int(4 * sqrt(3) * d)), 3
 )  # 汉中
-lattice_18 = lattice("SHU", None, "plain", 0, (int(5.5 * d), int(5 * sqrt(3) * d)), 0.5)
-lattice_19 = lattice("SHU", None, "plain", 0, (int(5.5 * d), int(6 * sqrt(3) * d)), 0.5)
-lattice_20 = lattice("SHU", None, "plain", 0, (int(5.5 * d), int(7 * sqrt(3) * d)), 0.5)
-lattice_21 = lattice("SHU", None, "plain", 0, (int(5.5 * d), int(8 * sqrt(3) * d)), 0.5)
-lattice_22 = lattice("SHU", None, "plain", 0, (int(5.5 * d), int(9 * sqrt(3) * d)), 0.5)
+lattice_18 = lattice("SHU", [], "plain", 0, (int(5.5 * d), int(5 * sqrt(3) * d)), 0.5)
+lattice_19 = lattice("SHU", [], "plain", 0, (int(5.5 * d), int(6 * sqrt(3) * d)), 0.5)
+lattice_20 = lattice("SHU", [], "plain", 0, (int(5.5 * d), int(7 * sqrt(3) * d)), 0.5)
+lattice_21 = lattice("SHU", [], "plain", 0, (int(5.5 * d), int(8 * sqrt(3) * d)), 0.5)
+lattice_22 = lattice("SHU", [], "plain", 0, (int(5.5 * d), int(9 * sqrt(3) * d)), 0.5)
 lattice_roll_4 = [
     lattice_15,
     lattice_16,
@@ -81,16 +81,16 @@ lattice_roll_4 = [
     lattice_22,
 ]
 """第四列格子"""
-lattice_23 = lattice("WEI", None, "plain", 0, (int(7 * d), int(1.5 * sqrt(3) * d)), 0.5)
-lattice_24 = lattice("WEI", None, "plain", 0, (int(7 * d), int(2.5 * sqrt(3) * d)), 0.5)
+lattice_23 = lattice("WEI", [], "plain", 0, (int(7 * d), int(1.5 * sqrt(3) * d)), 0.5)
+lattice_24 = lattice("WEI", [], "plain", 0, (int(7 * d), int(2.5 * sqrt(3) * d)), 0.5)
 lattice_25 = lattice(
     "WEI", None, "city", 2, (int(7 * d), int(3.5 * sqrt(3) * d)), 3
 )  # 长安
-lattice_26 = lattice("SHU", None, "hill", 0, (int(7 * d), int(4.5 * sqrt(3) * d)), 0.5)
-lattice_27 = lattice("SHU", None, "hill", 0, (int(7 * d), int(5.5 * sqrt(3) * d)), 0.5)
-lattice_28 = lattice("SHU", None, "hill", 0, (int(7 * d), int(6.5 * sqrt(3) * d)), 0.5)
-lattice_29 = lattice("SHU", None, "plain", 0, (int(7 * d), int(7.5 * sqrt(3) * d)), 0.5)
-lattice_30 = lattice("SHU", None, "plain", 0, (int(7 * d), int(8.5 * sqrt(3) * d)), 0.5)
+lattice_26 = lattice("SHU", [], "hill", 0, (int(7 * d), int(4.5 * sqrt(3) * d)), 0.5)
+lattice_27 = lattice("SHU", [], "hill", 0, (int(7 * d), int(5.5 * sqrt(3) * d)), 0.5)
+lattice_28 = lattice("SHU", [], "hill", 0, (int(7 * d), int(6.5 * sqrt(3) * d)), 0.5)
+lattice_29 = lattice("SHU", [], "plain", 0, (int(7 * d), int(7.5 * sqrt(3) * d)), 0.5)
+lattice_30 = lattice("SHU", [], "plain", 0, (int(7 * d), int(8.5 * sqrt(3) * d)), 0.5)
 lattice_roll_5 = [
     lattice_23,
     lattice_24,
@@ -102,17 +102,17 @@ lattice_roll_5 = [
     lattice_30,
 ]
 """第五列格子"""
-lattice_31 = lattice("WEI", None, "plain", 0, (int(8.5 * d), int(sqrt(3) * d)), 0.5)
-lattice_32 = lattice("WEI", None, "plain", 0, (int(8.5 * d), int(2 * sqrt(3) * d)), 0.5)
-lattice_33 = lattice("WEI", None, "plain", 0, (int(8.5 * d), int(3 * sqrt(3) * d)), 0.5)
-lattice_34 = lattice("WEI", None, "plain", 0, (int(8.5 * d), int(4 * sqrt(3) * d)), 0.5)
+lattice_31 = lattice("WEI", [], "plain", 0, (int(8.5 * d), int(sqrt(3) * d)), 0.5)
+lattice_32 = lattice("WEI", [], "plain", 0, (int(8.5 * d), int(2 * sqrt(3) * d)), 0.5)
+lattice_33 = lattice("WEI", [], "plain", 0, (int(8.5 * d), int(3 * sqrt(3) * d)), 0.5)
+lattice_34 = lattice("WEI", [], "plain", 0, (int(8.5 * d), int(4 * sqrt(3) * d)), 0.5)
 lattice_35 = lattice(
     "SHU", None, "city", 2, (int(8.5 * d), int(5 * sqrt(3) * d)), 3
 )  # 荆州
-lattice_36 = lattice("SHU", None, "plain", 0, (int(8.5 * d), int(6 * sqrt(3) * d)), 0.5)
-lattice_37 = lattice("SHU", None, "plain", 0, (int(8.5 * d), int(7 * sqrt(3) * d)), 0.5)
-lattice_38 = lattice("WU", None, "plain", 0, (int(8.5 * d), int(8 * sqrt(3) * d)), 0.5)
-lattice_39 = lattice("WU", None, "plain", 0, (int(8.5 * d), int(9 * sqrt(3) * d)), 0.5)
+lattice_36 = lattice("SHU", [], "plain", 0, (int(8.5 * d), int(6 * sqrt(3) * d)), 0.5)
+lattice_37 = lattice("SHU", [], "plain", 0, (int(8.5 * d), int(7 * sqrt(3) * d)), 0.5)
+lattice_38 = lattice("WU", [], "plain", 0, (int(8.5 * d), int(8 * sqrt(3) * d)), 0.5)
+lattice_39 = lattice("WU", [], "plain", 0, (int(8.5 * d), int(9 * sqrt(3) * d)), 0.5)
 lattice_roll_6 = [
     lattice_31,
     lattice_32,
@@ -125,25 +125,19 @@ lattice_roll_6 = [
     lattice_39,
 ]
 """第六列格子"""
-lattice_40 = lattice("WEI", None, "hill", 0, (int(10 * d), int(0.5 * sqrt(3) * d)), 0.5)
-lattice_41 = lattice("WEI", None, "hill", 0, (int(10 * d), int(1.5 * sqrt(3) * d)), 0.5)
-lattice_42 = lattice(
-    "WEI", None, "plain", 0, (int(10 * d), int(2.5 * sqrt(3) * d)), 0.5
-)
-lattice_43 = lattice(
-    "WEI", None, "plain", 0, (int(10 * d), int(3.5 * sqrt(3) * d)), 0.5
-)
+lattice_40 = lattice("WEI", [], "hill", 0, (int(10 * d), int(0.5 * sqrt(3) * d)), 0.5)
+lattice_41 = lattice("WEI", [], "hill", 0, (int(10 * d), int(1.5 * sqrt(3) * d)), 0.5)
+lattice_42 = lattice("WEI", [], "plain", 0, (int(10 * d), int(2.5 * sqrt(3) * d)), 0.5)
+lattice_43 = lattice("WEI", [], "plain", 0, (int(10 * d), int(3.5 * sqrt(3) * d)), 0.5)
 lattice_44 = lattice(
-    "WEI", None, "city", 2, (int(10 * d), int(4.5 * sqrt(3) * d)), 2
+    "WEI", [], "city", 2, (int(10 * d), int(4.5 * sqrt(3) * d)), 2
 )  # 襄阳
-lattice_45 = lattice(
-    "SHU", None, "plain", 0, (int(10 * d), int(5.5 * sqrt(3) * d)), 0.5
-)
+lattice_45 = lattice("SHU", [], "plain", 0, (int(10 * d), int(5.5 * sqrt(3) * d)), 0.5)
 lattice_46 = lattice(
     "SHU", None, "plain", 0, (int(10 * d), int(6.5 * sqrt(3) * d)), 0.5
 )
-lattice_47 = lattice("WU", None, "plain", 0, (int(10 * d), int(7.5 * sqrt(3) * d)), 0.5)
-lattice_48 = lattice("WU", None, "plain", 0, (int(10 * d), int(8.5 * sqrt(3) * d)), 0.5)
+lattice_47 = lattice("WU", [], "plain", 0, (int(10 * d), int(7.5 * sqrt(3) * d)), 0.5)
+lattice_48 = lattice("WU", [], "plain", 0, (int(10 * d), int(8.5 * sqrt(3) * d)), 0.5)
 lattice_roll_7 = [
     lattice_40,
     lattice_41,
@@ -156,25 +150,21 @@ lattice_roll_7 = [
     lattice_48,
 ]
 """第七列格子"""
-lattice_49 = lattice("WEI", None, "plain", 0, (int(11.5 * d), int(sqrt(3) * d)), 0.5)
-lattice_50 = lattice(
-    "WEI", None, "plain", 0, (int(11.5 * d), int(2 * sqrt(3) * d)), 0.5
-)
+lattice_49 = lattice("WEI", [], "plain", 0, (int(11.5 * d), int(sqrt(3) * d)), 0.5)
+lattice_50 = lattice("WEI", [], "plain", 0, (int(11.5 * d), int(2 * sqrt(3) * d)), 0.5)
 lattice_51 = lattice(
-    "WEI", None, "city", 2, (int(11.5 * d), int(3 * sqrt(3) * d)), 5
+    "WEI", ["HUBAO_cavalry_1"], "city", 2, (int(11.5 * d), int(3 * sqrt(3) * d)), 5
 )  # 洛阳
-lattice_52 = lattice(
-    "WEI", None, "plain", 0, (int(11.5 * d), int(4 * sqrt(3) * d)), 0.5
-)
+lattice_52 = lattice("WEI", [], "plain", 0, (int(11.5 * d), int(4 * sqrt(3) * d)), 0.5)
 lattice_53 = lattice(
-    "WU", None, "city", 2, (int(11.5 * d), int(5 * sqrt(3) * d)), 2
+    "WU", [], "city", 2, (int(11.5 * d), int(5 * sqrt(3) * d)), 2
 )  # 武昌
-lattice_54 = lattice("WU", None, "plain", 0, (int(11.5 * d), int(6 * sqrt(3) * d)), 0.5)
+lattice_54 = lattice("WU", [], "plain", 0, (int(11.5 * d), int(6 * sqrt(3) * d)), 0.5)
 lattice_55 = lattice(
-    "WU", None, "city", 2, (int(11.5 * d), int(7 * sqrt(3) * d)), 2
+    "WU", [], "city", 2, (int(11.5 * d), int(7 * sqrt(3) * d)), 2
 )  # 长沙
-lattice_56 = lattice("WU", None, "plain", 0, (int(11.5 * d), int(8 * sqrt(3) * d)), 0.5)
-lattice_57 = lattice("WU", None, "plain", 0, (int(11.5 * d), int(9 * sqrt(3) * d)), 0.5)
+lattice_56 = lattice("WU", [], "plain", 0, (int(11.5 * d), int(8 * sqrt(3) * d)), 0.5)
+lattice_57 = lattice("WU", [], "plain", 0, (int(11.5 * d), int(9 * sqrt(3) * d)), 0.5)
 lattice_roll_8 = [
     lattice_49,
     lattice_50,
@@ -188,24 +178,18 @@ lattice_roll_8 = [
 ]
 """第八列格子"""
 lattice_58 = lattice(
-    "WEI", None, "city", 2, (int(13 * d), int(0.5 * sqrt(3) * d)), 2
+    "WEI", [], "city", 2, (int(13 * d), int(0.5 * sqrt(3) * d)), 2
 )  # 幽州
-lattice_59 = lattice(
-    "WEI", None, "plain", 0, (int(13 * d), int(1.5 * sqrt(3) * d)), 0.5
-)
-lattice_60 = lattice(
-    "WEI", None, "plain", 0, (int(13 * d), int(2.5 * sqrt(3) * d)), 0.5
-)
-lattice_61 = lattice(
-    "WEI", None, "plain", 0, (int(13 * d), int(3.5 * sqrt(3) * d)), 0.5
-)
+lattice_59 = lattice("WEI", [], "plain", 0, (int(13 * d), int(1.5 * sqrt(3) * d)), 0.5)
+lattice_60 = lattice("WEI", [], "plain", 0, (int(13 * d), int(2.5 * sqrt(3) * d)), 0.5)
+lattice_61 = lattice("WEI", [], "plain", 0, (int(13 * d), int(3.5 * sqrt(3) * d)), 0.5)
 lattice_62 = lattice(
-    "WEI", None, "city", 2, (int(13 * d), int(4.5 * sqrt(3) * d)), 2
+    "WEI", [], "city", 2, (int(13 * d), int(4.5 * sqrt(3) * d)), 2
 )  # 合肥
-lattice_63 = lattice("WU", None, "plain", 0, (int(13 * d), int(5.5 * sqrt(3) * d)), 0.5)
-lattice_64 = lattice("WU", None, "plain", 0, (int(13 * d), int(6.5 * sqrt(3) * d)), 0.5)
-lattice_65 = lattice("WU", None, "plain", 0, (int(13 * d), int(7.5 * sqrt(3) * d)), 0.5)
-lattice_66 = lattice("WU", None, "plain", 0, (int(13 * d), int(8.5 * sqrt(3) * d)), 0.5)
+lattice_63 = lattice("WU", [], "plain", 0, (int(13 * d), int(5.5 * sqrt(3) * d)), 0.5)
+lattice_64 = lattice("WU", [], "plain", 0, (int(13 * d), int(6.5 * sqrt(3) * d)), 0.5)
+lattice_65 = lattice("WU", [], "plain", 0, (int(13 * d), int(7.5 * sqrt(3) * d)), 0.5)
+lattice_66 = lattice("WU", [], "plain", 0, (int(13 * d), int(8.5 * sqrt(3) * d)), 0.5)
 lattice_roll_9 = [
     lattice_58,
     lattice_59,
@@ -218,19 +202,13 @@ lattice_roll_9 = [
     lattice_66,
 ]
 """第九列格子"""
-lattice_67 = lattice(
-    "WEI", None, "plain", 0, (int(14.5 * d), int(2 * sqrt(3) * d)), 0.5
-)
-lattice_68 = lattice(
-    "WEI", None, "plain", 0, (int(14.5 * d), int(3 * sqrt(3) * d)), 0.5
-)
-lattice_69 = lattice(
-    "WEI", None, "plain", 0, (int(14.5 * d), int(4 * sqrt(3) * d)), 0.5
-)
-lattice_70 = lattice("WU", None, "plain", 0, (int(14.5 * d), int(5 * sqrt(3) * d)), 0.5)
-lattice_71 = lattice("WU", None, "plain", 0, (int(14.5 * d), int(6 * sqrt(3) * d)), 0.5)
-lattice_72 = lattice("WU", None, "plain", 0, (int(14.5 * d), int(7 * sqrt(3) * d)), 0.5)
-lattice_73 = lattice("WU", None, "plain", 0, (int(14.5 * d), int(8 * sqrt(3) * d)), 0.5)
+lattice_67 = lattice("WEI", [], "plain", 0, (int(14.5 * d), int(2 * sqrt(3) * d)), 0.5)
+lattice_68 = lattice("WEI", [], "plain", 0, (int(14.5 * d), int(3 * sqrt(3) * d)), 0.5)
+lattice_69 = lattice("WEI", [], "plain", 0, (int(14.5 * d), int(4 * sqrt(3) * d)), 0.5)
+lattice_70 = lattice("WU", [], "plain", 0, (int(14.5 * d), int(5 * sqrt(3) * d)), 0.5)
+lattice_71 = lattice("WU", [], "plain", 0, (int(14.5 * d), int(6 * sqrt(3) * d)), 0.5)
+lattice_72 = lattice("WU", [], "plain", 0, (int(14.5 * d), int(7 * sqrt(3) * d)), 0.5)
+lattice_73 = lattice("WU", [], "plain", 0, (int(14.5 * d), int(8 * sqrt(3) * d)), 0.5)
 lattice_roll_10 = [
     lattice_67,
     lattice_68,
@@ -241,15 +219,13 @@ lattice_roll_10 = [
     lattice_73,
 ]
 """第十列格子"""
-lattice_74 = lattice(
-    "WEI", None, "plain", 0, (int(16 * d), int(1.5 * sqrt(3) * d)), 0.5
-)
+lattice_74 = lattice("WEI", [], "plain", 0, (int(16 * d), int(1.5 * sqrt(3) * d)), 0.5)
 lattice_75 = lattice(
-    "WU", None, "city", 2, (int(16 * d), int(4.5 * sqrt(3) * d)), 5
+    "WU", ["JIEFAN_infantry_2"], "city", 2, (int(16 * d), int(4.5 * sqrt(3) * d)), 5
 )  # 建邺
-lattice_76 = lattice("WU", None, "plain", 2, (int(16 * d), int(5.5 * sqrt(3) * d)), 0.5)
-lattice_77 = lattice("WU", None, "plain", 2, (int(16 * d), int(6.5 * sqrt(3) * d)), 0.5)
-lattice_78 = lattice("WU", None, "plain", 2, (int(16 * d), int(7.5 * sqrt(3) * d)), 0.5)
+lattice_76 = lattice("WU", [], "plain", 2, (int(16 * d), int(5.5 * sqrt(3) * d)), 0.5)
+lattice_77 = lattice("WU", [], "plain", 2, (int(16 * d), int(6.5 * sqrt(3) * d)), 0.5)
+lattice_78 = lattice("WU", [], "plain", 2, (int(16 * d), int(7.5 * sqrt(3) * d)), 0.5)
 lattice_roll_11 = [lattice_74, lattice_75, lattice_76, lattice_77, lattice_78]
 lattices = (
     lattice_roll_1
@@ -514,13 +490,20 @@ while isRunning:
                 window, color_dict[lattice_to_draw.country], lattice_to_draw.pos, d
             )
             draw_terrain_icon(window, lattice_to_draw.pos, d, lattice_to_draw.terrain)
-            for unit in lattice_to_draw.unit:
-                unit_type_num = len(lattice_to_draw.unit)  # 获取这个格子上有多少种兵
-                for i in range(unit_type_num):
-                    draw_unit_icon(
-                        window,
-                        lattice_to_draw.unit[i],
-                    )
+            if lattice_to_draw.unit == None:
+                pass
+            else:
+                for unit in lattice_to_draw.unit:
+                    unit_type_num = len(
+                        lattice_to_draw.unit
+                    )  # 获取这个格子上有多少种兵
+                    for i in range(unit_type_num):
+                        draw_unit_icon(
+                            window,
+                            lattice_to_draw.unit[i],
+                            d,
+                            lattice_draw_pos(lattice_to_draw.pos, d)[i],
+                        )
         pg.draw.lines(window, "black", False, ban_line_points, 20)
         pg.draw.lines(window, (173, 216, 230), False, yantze_river_points_1, 20)
         pg.draw.lines(window, (173, 216, 230), False, yantze_river_points_2, 20)
