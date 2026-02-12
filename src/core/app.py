@@ -1,4 +1,7 @@
-"""High-level pygame app orchestration."""
+"""
+这里包含了整个游戏应用的核心逻辑：GameApp。
+它是总导演，管理着游戏状态、循环、渲染和逻辑更新。
+"""
 from __future__ import annotations
 
 import logging
@@ -20,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 SQRT3 = sqrt(3)
 
+# --- 河流数据定义 ---
+# 这些是预定义好的坐标点序列，用来在地图上画出长江和黄河的线条。
+# 坐标单位是逻辑格子单位，之后会被转换成屏幕像素坐标。
 YANGTZE_POINTS_1: Sequence[Tuple[float, float]] = (
     (4.5, 6.0),
     (5.0, 5.5),
@@ -59,6 +65,7 @@ YELLOW_RIVER_POINTS: Sequence[Tuple[float, float]] = (
     (13.5, 2.0),
     (14.0, 1.5),
 )
+# 这是一条禁止通行的线（可能是山脉或者关隘）
 BAN_LINE_POINTS: Sequence[Tuple[float, float]] = (
     (7.5, 9.0),
     (8.0, 8.5),
@@ -73,6 +80,13 @@ SelectionEntry = Tuple[int, int]
 
 
 class GameState(Enum):
+    """
+    游戏状态枚举。
+    游戏在任一时刻只能处于以下一种状态：
+    - LOADING: 初始加载界面
+    - CHOOSING: 选择势力界面
+    - PLAYING: 正式游玩状态
+    """
     LOADING = auto()
     CHOOSING = auto()
     PLAYING = auto()
@@ -80,12 +94,19 @@ class GameState(Enum):
 
 class GameApp:
     def __init__(self, *, settings: Settings, debug: bool = False) -> None:
+        """
+        初始化游戏应用。
+        就像搭建舞台一样，准备好所有的资源、管理器和变量。
+        """
         self.settings = settings
         self.debug = debug
-        self._running = False
+        self._running = False # 游戏循环开关
 
+        # 初始化 Pygame 库
         pg.init()
-        self.clock = pg.time.Clock()
+        self.clock = pg.time.Clock() # 用于控制游戏帧率
+        
+        # 获取当前屏幕分辨率并创建窗口
         display_info = pg.display.Info()
         self.screen_width = display_info.current_w
         self.screen_height = display_info.current_h
@@ -93,10 +114,14 @@ class GameApp:
         self.window = pg.display.set_mode((self.screen_width, self.screen_height), flags)
         pg.display.set_caption(settings.window_title)
 
+        # 计算六边形格子的边长，使其刚好能铺满屏幕高度的一部分
         self.hex_side = self.screen_height * 2 / (19 * SQRT3)
 
+        # 初始状态设为 LOADING
         self.state = GameState.LOADING
-        self.player_country: str | None = None
+        self.player_country: str | None = None # 玩家选择的国家
+        
+        # 定义三个国家的标签和颜色
         self.country_labels: Dict[str, str] = {"SHU": "蜀", "WU": "吴", "WEI": "魏"}
         self.country_button_colors: Dict[str, pg.Color] = {
             "SHU": pg.Color("red"),
@@ -104,7 +129,9 @@ class GameApp:
             "WEI": pg.Color("blue"),
         }
 
+        # 初始化各个子系统管理器
         self.kingdom_repository = KingdomRepository(settings.kingdoms_file)
+        
         self.map_manager = MapManager(
             definition_file=settings.map_definition_file,
             terrain_graphics_dir=settings.map_graphics_dir,
@@ -128,11 +155,17 @@ class GameApp:
         self.camera = Camera()
         self.event_manager = EventManager(self)
 
+        # 预加载各个界面的素材，防止游戏运行时卡顿
         self._build_loading_assets()
         self._build_choosing_assets()
         self._build_play_assets()
 
     def run(self) -> None:
+        """
+        启动游戏主循环。
+        这是一个死循环，直到 _running 变为 False。
+        顺序：处理事件 -> 更新数据 -> 重新绘制
+        """
         self._running = True
         logger.info(
             "Starting game loop at %s FPS, resolution %sx%s",
@@ -141,24 +174,34 @@ class GameApp:
             self.screen_height,
         )
         while self._running:
-            self.event_manager.process()
-            self._update()
-            self._render()
+            self.event_manager.process() # 1. 处理鼠标键盘输入
+            self._update()               # 2. 更新游戏逻辑
+            self._render()               # 3. 绘制画面
+            
+            # pg.display.flip() 将绘制好的缓冲区画面一次性显示到屏幕上
             pg.display.flip()
+            # 休息一小会儿，以保持稳定的 FPS
             self.clock.tick(self.settings.fps)
 
         pg.quit()
 
     def stop(self) -> None:
+        """停止游戏循环，准备退出"""
         self._running = False
 
     def clear_selection(self) -> None:
+        """清空当前选中的单位"""
         self.selected_units.clear()
 
     def add_selection(self, province_id: int, slot_index: int) -> None:
+        """添加一个选中单位"""
         self.selected_units.append((province_id, slot_index))
 
     def handle_event(self, event: pg.event.Event) -> None:
+        """
+        分发处理具体的事件。
+        根据当前的游戏状态（LOADING/CHOOSING/PLAYING），交给不同的函数处理。
+        """
         if event.type == pg.QUIT:
             self.stop()
             return
@@ -171,16 +214,19 @@ class GameApp:
             self._handle_playing_event(event)
 
     def _handle_loading_event(self, event: pg.event.Event) -> None:
+        """处理加载界面的事件（比如点击开始按钮）"""
         if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
             if self.start_button_rect.collidepoint(event.pos):
                 self.state = GameState.CHOOSING
 
     def _handle_choosing_event(self, event: pg.event.Event) -> None:
+        """处理选人界面的事件（点击三个国家的圆球）"""
         if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
             for country, button in self.faction_buttons.items():
                 cx, cy = button["center"]
                 dx = event.pos[0] - cx
                 dy = event.pos[1] - cy
+                # 判断点击点是否在圆形按钮内：距离平方 <= 半径平方
                 if dx * dx + dy * dy <= self.faction_button_radius**2:
                     self.player_country = country
                     self.state = GameState.PLAYING
@@ -188,19 +234,27 @@ class GameApp:
                     return
 
     def _handle_playing_event(self, event: pg.event.Event) -> None:
+        """处理游戏中的事件"""
         if event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE:
-            self.clear_selection()
+            self.clear_selection() # 按ESC取消选择
         elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+            # Shift + 左键：选择单位
             if pg.key.get_mods() & pg.KMOD_SHIFT:
                 self._handle_selection_click(event.pos)
 
     def _handle_selection_click(self, mouse_pos: Tuple[int, int]) -> None:
+        """
+        检查鼠标是否点击到了某个己方单位。
+        """
         if not self.player_country:
             return
+        
+        # 遍历所有格子，检查点击碰撞
         for province in self.map_manager.provinces:
             if province.country != self.player_country or not province.units:
                 continue
             center = province.compute_center(self.hex_side)
+            # 获取该格子里所有单位的矩形框
             rects = self.unit_renderer.selection_rects(center, len(province.units))
             for idx, rect in enumerate(rects):
                 if rect.collidepoint(mouse_pos):
@@ -208,9 +262,11 @@ class GameApp:
                     return
 
     def _update(self) -> None:
+        """更新每一帧的数据逻辑（目前只有镜头输入检查）"""
         self.camera.handle_input()
 
     def _render(self) -> None:
+        """渲染总控：根据状态画对应的界面"""
         if self.state == GameState.LOADING:
             self._render_loading_screen()
         elif self.state == GameState.CHOOSING:
@@ -219,6 +275,7 @@ class GameApp:
             self._render_gameplay()
 
     def _render_loading_screen(self) -> None:
+        """画加载/开始界面"""
         self.window.fill(pg.Color("white"))
         self.window.blit(self.loading_image_right, self.loading_image_right_pos)
         self.window.blit(self.loading_image_left, self.loading_image_left_pos)
@@ -227,6 +284,7 @@ class GameApp:
         self.window.blit(self.loading_button_surface, self.loading_button_pos)
 
     def _render_choosing_screen(self) -> None:
+        """画选择势力界面"""
         self.window.fill(pg.Color("white"))
         for surface, position in self.choosing_portraits:
             self.window.blit(surface, position)
@@ -236,17 +294,24 @@ class GameApp:
             self.window.blit(button["label_surface"], button["label_pos"])
 
     def _render_gameplay(self) -> None:
+        """画游戏主战场"""
         self.window.fill(pg.Color("white"))
+        
+        # 1. 画地图底层（格子+地形）
         self.map_manager.draw(self.window)
+        
+        # 2. 画所有兵种单位
         for province in self.map_manager.provinces:
             center = province.compute_center(self.hex_side)
             self.unit_renderer.draw_units(self.window, center, province.units)
 
+        # 3. 画河流和阻挡线
         for polyline in self.yangtze_polylines:
             pg.draw.lines(self.window, pg.Color(173, 216, 230), False, polyline, 20)
         pg.draw.lines(self.window, pg.Color(173, 216, 230), False, self.yellow_river_polyline, 20)
         pg.draw.lines(self.window, pg.Color("black"), False, self.ban_line_polyline, 20)
 
+        # 4. 画回合结束按钮（右下角的圆圈）
         pg.draw.circle(
             self.window,
             pg.Color("black"),
@@ -256,10 +321,12 @@ class GameApp:
         )
         self.window.blit(self.arrow_image, self.arrow_pos)
 
+        # 5. 画当前玩家国家标签
         if self.player_country:
             tag_surface = self.country_tag_surfaces[self.player_country]
             self.window.blit(tag_surface, self.country_tag_pos)
 
+        # 6. 画选中框（覆盖在最上层）
         self.selection_overlay.draw(
             surface=self.window,
             selections=self.selected_units,
@@ -268,8 +335,11 @@ class GameApp:
             hex_side=self.hex_side,
         )
 
-    # --- asset builders -------------------------------------------------
+    # --- 资源构建辅助方法 (Asset Builders) -------------------------------------------------
+    # 这些方法负责在游戏开始前把图片、文字预先处理好存入内存
+    
     def _build_loading_assets(self) -> None:
+        """准备加载界面的图片和文字"""
         height = self.screen_height
         width = self.screen_width
 
@@ -281,7 +351,7 @@ class GameApp:
         raw_left = self._load_ui_image(
             "start_SIMAYI.jpg", (int(height * 0.5), int(height * 0.625))
         )
-        self.loading_image_left = pg.transform.flip(raw_left, True, False)
+        self.loading_image_left = pg.transform.flip(raw_left, True, False) # 镜像翻转
         self.loading_image_left_pos = (int(height * 0.03), int(height * 0.25))
 
         self.start_button_rect = pg.Rect(
@@ -300,6 +370,7 @@ class GameApp:
         self.loading_button_pos = (int(width * 0.5 - height * 0.2), int(height * 0.75))
 
     def _build_choosing_assets(self) -> None:
+        """准备选人界面的图片和文字"""
         height = self.screen_height
         width = self.screen_width
         image_size = (int(height * 0.3), int(height * 0.3))
@@ -349,6 +420,7 @@ class GameApp:
         }
 
     def _build_play_assets(self) -> None:
+        """准备游戏主界面的图片（箭头、标签等）"""
         height = self.screen_height
         width = self.screen_width
 
@@ -369,12 +441,19 @@ class GameApp:
         }
         self.country_tag_pos = (int(width - height * 0.15), 0)
 
+        # 预计算河流的像素点
         self.yangtze_polylines = tuple(self._scale_points(points) for points in (YANGTZE_POINTS_1, YANGTZE_POINTS_2))
         self.yellow_river_polyline = tuple(self._scale_points(YELLOW_RIVER_POINTS))
         self.ban_line_polyline = tuple(self._scale_points(BAN_LINE_POINTS))
 
-    # --- helpers --------------------------------------------------------
+    # --- 辅助工具方法 (Helpers) --------------------------------------------------------
+    
     def _scale_points(self, normalized_points: Sequence[Tuple[float, float]]) -> List[Tuple[int, int]]:
+        """
+        将逻辑坐标转换为屏幕像素坐标。
+        逻辑坐标 -> (乘以边长) -> 像素坐标
+        Y轴需要额外乘以 根号3，这是六边形几何的特性。
+        """
         scaled = []
         for x_factor, y_factor in normalized_points:
             x = int(x_factor * self.hex_side)
@@ -383,12 +462,15 @@ class GameApp:
         return scaled
 
     def _load_ui_image(self, filename: str, size: Tuple[int, int]) -> pg.Surface:
+        """加载图片并直接缩放到指定大小"""
         surface = pg.image.load(self.settings.ui_graphics_dir / filename).convert_alpha()
         return pg.transform.smoothscale(surface, size)
 
     def _font(self, filename: str, size: int) -> pg.font.Font:
+        """加载字体"""
         return pg.font.Font(self.settings.fonts_dir / filename, size)
 
     def _render_text(self, filename: str, size: int, text: str, color: pg.Color | str = "black") -> pg.Surface:
+        """使用指定字体和大小渲染一段文字，返回图片表面"""
         font = self._font(filename, size)
         return font.render(text, True, pg.Color(color))
