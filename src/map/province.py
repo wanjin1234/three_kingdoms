@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from math import sqrt
 from typing import List, Tuple
 
+from src.game_objects.unit import UnitState
+
 # SQRT3 是根号3 (约等于 1.732)，在六边形几何计算中非常重要。
 # 因为正六边形的高等于 根号3 倍的边长。
 SQRT3 = sqrt(3)
@@ -28,7 +30,7 @@ class Province:
     victory_point: float # 占领这个点的分数
     x_factor: float     # 在逻辑地图上的横坐标 (不是像素坐标)
     y_factor: float     # 在逻辑地图上的纵坐标
-    units: List[str] = field(default_factory=list)    # 当前格子上有什么兵，存的是兵种代号列表，比如 ["infantry", "cavalry"]
+    units: List[UnitState] = field(default_factory=list)    # 当前格子上有什么兵，存的是 UnitState 对象
 
     def compute_center(self, hex_side: float) -> Tuple[int, int]:
         """

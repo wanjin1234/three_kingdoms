@@ -15,6 +15,21 @@ import pygame as pg
 Slot = Tuple[int, int]
 
 
+@dataclass
+class UnitState:
+    """
+    单个作战单位的实时状态。
+    包含：类型、血量、是否混乱、本回合攻击次数等。
+    """
+    unit_type: str
+    hp: int = 2
+    is_confused: bool = False
+    attack_count: int = 0
+    
+    @property
+    def is_injured(self) -> bool:
+        return self.hp < 2
+
 @dataclass(frozen=True)
 class UnitDefinition:
     """
@@ -103,24 +118,33 @@ class UnitRenderer:
                 surface, (self._icon_size, self._icon_size)
             )
 
-    def draw_units(self, surface: pg.Surface, center: Tuple[int, int], units: Sequence[str]) -> None:
+    def draw_units(self, surface: pg.Surface, center: Tuple[int, int], units: Sequence[UnitState]) -> None:
         """
         画兵的主函数。
         surface: 画布（屏幕）
         center: 格子的中心像素坐标
-        units: 这个格子里有哪些兵（名字列表）
+        units: 这个格子里有哪些兵（UnitState 对象列表）
         """
         if not units or not self._icon_size:
             return
         
         # 遍历每个兵，算出它的位置，然后画上去
-        for idx, unit_type in enumerate(units):
-            icon = self._scaled_icons.get(unit_type)
+        for idx, unit_state in enumerate(units):
+            icon = self._scaled_icons.get(unit_state.unit_type)
             if icon is None:
                 continue
             # 计算第 idx 个兵应该放在格子的哪个小角落
             pos = self._slot_position(center, idx)
             surface.blit(icon, pos)
+            
+            # TODO: 如果受伤或混乱，可以在这里画状态图标
+            if unit_state.is_confused:
+                # 简单画个紫色圈表示混乱
+                cx, cy = pos[0] + self._icon_size // 2, pos[1] + self._icon_size // 2
+                pg.draw.circle(surface, pg.Color("purple"), (cx, cy), 5)
+            elif unit_state.is_injured:
+                # 简单画个红点表示受伤
+                pg.draw.circle(surface, pg.Color("red"), (pos[0] + 5, pos[1] + 5), 4)
 
     def selection_rects(self, center: Tuple[int, int], unit_count: int) -> List[pg.Rect]:
         """

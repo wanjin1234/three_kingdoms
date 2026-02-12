@@ -15,6 +15,7 @@ import pygame as pg
 from settings import Settings
 from src.core.camera import Camera
 from src.core.events import EventManager
+from src.core.combat import get_ratio_column, resolve_combat, COMBAT_TABLE, CombatPreview
 from src.game_objects.kingdom import KingdomRepository
 from src.game_objects.unit import UnitRenderer, UnitRepository
 from src.map.map_manager import MapManager
@@ -172,11 +173,11 @@ class GameApp:
         self.event_manager = EventManager(self)
         
         # 初始化右侧信息面板 (使用相对坐标使其自适应分辨率)
-        # 左侧位于屏幕75%，右侧位于100%，上侧位于15%，下侧50%
-        panel_x = int(self.screen_width * 0.75)
+        # 左侧位于屏幕70%，右侧位于100%（即拓宽5%），上侧位于15%，下侧60%（往下移10%）
+        panel_x = int(self.screen_width * 0.70)
         panel_y = int(self.screen_height * 0.15)
-        panel_w = int(self.screen_width * 0.25)  # 100% - 75%
-        panel_h = int(self.screen_height * 0.35) # 50% - 15%
+        panel_w = int(self.screen_width * 0.30)  
+        panel_h = int(self.screen_height * 0.45) # 60% - 15%
         
         panel_rect = pg.Rect(panel_x, panel_y, panel_w, panel_h)
         self.info_panel: InfoPanel | None = None
@@ -193,12 +194,12 @@ class GameApp:
         self.info_panel = InfoPanel(panel_rect, info_font)
         
         # 初始化 CardPanel
-        # 垂直位置 50% - 85%，水平同 InfoPanel
+        # 垂直位置 60% - 85%，水平同 InfoPanel
         card_rect = pg.Rect(
             panel_x,
-            int(self.screen_height * 0.50),
+            int(self.screen_height * 0.60),
             panel_w,
-            int(self.screen_height * 0.35) # 85% - 50%
+            int(self.screen_height * 0.25) # 85% - 60%
         )
         self.card_panel = CardPanel(card_rect, info_font)
 
@@ -231,13 +232,67 @@ class GameApp:
         """停止游戏循环，准备退出"""
         self._running = False
 
-    def clear_selection(self) -> None:
+    def clear_selection(self, clear_ui: bool = True) -> None:
         """清空当前选中的单位"""
         self.selected_units.clear()
+        if clear_ui and self.info_panel: 
+             self.info_panel.show_properties("") # 清空面板
 
     def add_selection(self, province_id: int, slot_index: int) -> None:
         """添加一个选中单位"""
-        self.selected_units.append((province_id, slot_index))
+        # 防止重复添加
+        new_entry = (province_id, slot_index)
+        if new_entry in self.selected_units:
+            return
+            
+        self.selected_units.append(new_entry)
+        self._update_selection_info() # 更新面板信息
+
+    def _get_unit_abbr(self, unit_type: str) -> str:
+        """获取单位类型的单字简称"""
+        if "infantry" in unit_type: return "步"
+        if "cavalry" in unit_type: return "骑"
+        if "archer" in unit_type: return "弓"
+        return unit_type[0].upper()
+
+    def _format_unit_info(self, u_state, prefix: str = "") -> str:
+        """通用单位信息格式化"""
+        u_def = self.unit_repository.get_definition(u_state.unit_type)
+        u_abbr = self._get_unit_abbr(u_state.unit_type)
+        
+        status = []
+        if u_state.is_injured: status.append("伤")
+        if u_state.is_confused: status.append("乱")
+        status_str = f"({''.join(status)})" if status else ""
+        
+        # [Prefix步(伤)]
+        label = f"[{prefix}{u_abbr}{status_str}]"
+        
+        attrs = [
+            f"血{u_state.hp}",
+            f"攻{u_def.attack}",
+            f"防{u_def.defense}",
+            f"移{u_def.move}",
+            f"射{u_def.range}",
+            f"疲{u_state.attack_count}"
+        ]
+        return f"{label} {'·'.join(attrs)}"
+
+    def _update_selection_info(self) -> None:
+        """更新信息面板显示的选中单位属性"""
+        if not self.selected_units:
+            return
+
+        lines = []
+        for pid, idx in self.selected_units:
+            prov = self.map_manager.get_by_id(pid)
+            if not prov: continue
+            u_state = prov.units[idx]
+            lines.append(self._format_unit_info(u_state))
+            lines.append("-" * 15)
+            
+        if self.info_panel:
+            self.info_panel.show_properties("\n".join(lines))
 
     def handle_event(self, event: pg.event.Event) -> None:
         """
@@ -318,12 +373,19 @@ class GameApp:
         if not target_province:
             return
             
-        # 根据目标格子的归属判断是移动还是进攻
-        # (假设非玩家控制的国家都是敌人/中立，可攻击)
-        if target_province.country == self.player_country:
-            self._handle_movement(target_province)
-        else:
+        # 3. 如果目标地是敌方且有兵 -> 战斗
+        # 4. 如果目标地是敌方但无兵 -> 移动（占领）
+        # 5. 如果目标地是己方 -> 移动（调动）
+        
+        # 检查是否是敌方
+        is_enemy = (target_province.country != self.player_country)
+        has_enemy_units = (len(target_province.units) > 0)
+        
+        if is_enemy and has_enemy_units:
             self._handle_combat(target_province)
+        else:
+            # 移动或占领空地
+            self._handle_movement(target_province)
 
     def _handle_movement(self, target: object) -> None: # target: Province
         """处理移动逻辑"""
@@ -355,18 +417,16 @@ class GameApp:
         
         moving_units = []
         for idx in selected_indices:
-            unit_type = source.units[idx]
-            definition = self.unit_repository.get_definition(unit_type)
+            unit_state = source.units[idx]
+            definition = self.unit_repository.get_definition(unit_state.unit_type)
             
             # 允许的像素距离 = Move * stride * 1.1 (宽松系数)
-            # 例如 Move=2，允许移动约 2 格距离
             max_pixel_dist = definition.move * unit_stride * 1.1
             
             if pixel_dist > max_pixel_dist:
-                # 按照需求：如果可以移动到就...，如果不可以呢？这里假定有一个跑不到就都不跑
                 self.info_panel.show_message("距离过远")
                 return
-            moving_units.append(unit_type)
+            moving_units.append(unit_state)
             
         # 3. 堆叠检查
         # 目标格子已有兵 + 即将移动过去的兵 > 3
@@ -375,8 +435,6 @@ class GameApp:
             return
             
         # 4. 执行移动
-        # 从源格子移除及其 tricky，因为 indices 是下标。
-        # 我们用 rebuild 的方式最安全
         new_source_list = []
         for i, u in enumerate(source.units):
             if i not in selected_indices:
@@ -386,72 +444,325 @@ class GameApp:
         # 添加到目标格子
         target.units.extend(moving_units)
         
+        # 如果移动成功且有单位进入，占领该地
+        if moving_units:
+             target.country = self.player_country
+        
         # 移除选中状态
         self.clear_selection()
         
         # 简单反馈
         logger.info(f"Moved {len(moving_units)} units from {source.name} to {target.name}")
 
+    def _calculate_unit_powers(self, unit_state) -> Tuple[float, float]:
+        """计算单位当前的攻击力和防御力 (考虑受伤和混乱)"""
+        definition = self.unit_repository.get_definition(unit_state.unit_type)
+        atk = float(definition.attack)
+        dfs = float(definition.defense)
+        
+        # 受伤减半
+        if unit_state.is_injured:
+            atk *= 0.5
+            dfs *= 0.5
+            
+        # 混乱 -1
+        if unit_state.is_confused:
+            atk = max(0, atk - 1)
+            dfs = max(0, dfs - 1)
+            
+        return atk, dfs
+
     def _handle_combat(self, target: object) -> None: # target: Province
         """处理战斗逻辑"""
         unit_stride = SQRT3 * self.hex_side
-        total_attack = 0
+        total_attack = 0.0
         
-        # 1. 检查所有攻击者的射程
+        participating_attackers = [] # List[(province, unit_state)]
+        
+        # 1. 检查所有攻击者的射程并计算攻击力
         for pid, idx in self.selected_units:
             province = self.map_manager.get_by_id(pid)
             if not province: continue
             
-            unit_type = province.units[idx]
-            definition = self.unit_repository.get_definition(unit_type)
+            unit_state = province.units[idx]
+            definition = self.unit_repository.get_definition(unit_state.unit_type)
             
-            distance = dist(province.compute_center(self.hex_side), target.compute_center(self.hex_side))
+            current_distance = dist(province.compute_center(self.hex_side), target.compute_center(self.hex_side))
+            allowed_range_px = definition.range * unit_stride * 1.1 
             
-            # 射程判定
-            # Range=1: 覆盖 1 格 (约 1.0 * stride)
-            # Range=2: 覆盖 2 格 (约 2.0 * stride)
-            allowed_range_px = definition.range * unit_stride * 1.1 # 1.1 是容差
-            
-            if distance > allowed_range_px:
-                self.info_panel.show_message("攻击距离不足", duration=2.0)
-                self.clear_selection()
+            if current_distance > allowed_range_px:
+                self.info_panel.show_message(f"距离不足:{definition.range}", duration=2.0)
+                self.clear_selection(clear_ui=False)
                 return
 
-            total_attack += definition.attack
+            atk, _ = self._calculate_unit_powers(unit_state)
+            total_attack += atk
+            participating_attackers.append((province, unit_state))
 
-        if total_attack == 0:
+        if total_attack <= 0:
+            self.info_panel.show_message("攻击力太低")
             return
 
-        # 2. 计算防御总和
-        total_defense = target.defense
+        # 2. 计算防御总和 (单位防御总和)
+        # 地形防御加成 (Target Defense) 暂不是防御力的一部分？通常是防御力 + 地形？
+        # 用户需求："计算防御时按照它们防御力的总和"。没提地形。这里先忽略地形defense属性，或者地形作为修正？
+        # 大部分游戏是 (UnitDef + Terrain) * Stack。还是 UnitDef * Stack + Terrain? 
+        # 用户说："计算防御时按照它们防御力的总和"。严格按字面意思。
+        total_defense = 0.0
         for u in target.units:
-            total_defense += self.unit_repository.get_definition(u).defense
+            _, dfs = self._calculate_unit_powers(u)
+            total_defense += dfs
             
-        # 避免除以0
         if total_defense <= 0.1:
-            total_defense = 1.0
+            total_defense = 0.1 # 防止除零
             
-        ratio = total_attack / total_defense
+        # 3. 夹击检测
+        # "一方单位所在格子周围的6格上有两格及以上存在参与进攻的敌方部队...判定向不利于其的方向移动一列"
+        # 这里判断防守方(target)是否被夹击
+        # 我们检查参与进攻的部队来自哪些格子
+        attacker_provinces = {p.province_id for p, _ in participating_attackers}
+        # 还要检查其他未参与进攻但 adjacent 的 friendly units?
+        # 用户说："存在参与进攻的敌方部队"。Implicitly MUST be participating.
+        # 所以只看 attacker_provinces.
         
-        # 3. 准备投骰子
-        self.info_panel.show_combat_request(ratio, lambda: self._resolve_combat(ratio))
+        # 理论上 attacker_provinces 肯定是 target 的邻居 (range 1) 或者 range 2.
+        # 如果 range 2 即使不相邻也算夹击吗？ "所在格子周围的6格上有..." -> 必须相邻。
+        
+        neighbor_count = 0
+        target_center = target.compute_center(self.hex_side)
+        neighbor_threshold = unit_stride * 1.1
+        
+        for p_id in attacker_provinces:
+            prov = self.map_manager.get_by_id(p_id)
+            d = dist(prov.compute_center(self.hex_side), target_center)
+            if d < neighbor_threshold:
+                neighbor_count += 1
+                
+        is_flanked = (neighbor_count >= 2)
 
-    def _resolve_combat(self, ratio: float) -> None:
-        """投骰子后的回调"""
-        dice = random.randint(1, 6)
-        # 规则：这里暂定为 simple score
-        # 实际规则可以按需修改
-        final_score = ratio * dice
+        # 4. 计算 CRT 列
+        col_index = get_ratio_column(total_attack, total_defense, is_flanked)
+        ratio_val = total_attack / total_defense
         
-        # 显示结果
-        if final_score > 5:
-            msg = f"大胜! ({final_score:.1f})"
-        elif final_score > 2:
-            msg = f"小胜 ({final_score:.1f})"
-        else:
-            msg = f"进攻受挫 ({final_score:.1f})"
+        # 5. 准备投骰子
+        # 生成进攻方预览信息
+        atk_lines = []
+        for _, u_state in participating_attackers:
+             atk_lines.append(self._format_unit_info(u_state, prefix="攻"))
+        attacker_info = "\n".join(atk_lines)
+
+        # 生成防守方预览信息
+        def_lines = []
+        for u in target.units:
+             def_lines.append(self._format_unit_info(u, prefix="防"))
+        defender_info = "\n".join(def_lines)
+
+        self.info_panel.show_combat_request(ratio_val, attacker_info, defender_info, lambda: self._resolve_combat(col_index, participating_attackers, target))
+
+    def _resolve_combat(self, col_index: int, attackers: List, target_province: object) -> None:
+        """投骰子后的回调"""
+        # 战斗开始结算，立刻清除选中状态，防止后续操作引用到已死亡或移动的单位
+        self.clear_selection(clear_ui=False)
+
+        dice = random.randint(1, 6)
+        result_code = resolve_combat(dice, col_index)
+        
+        # 解析结果并应用伤害
+        import re
+        
+        # 伤害统计
+        dmg_attacker = 0
+        dmg_defender = 0
+        confused_defender = False
+        retreat_defender = False
+        
+        if "A2" in result_code: dmg_attacker = 2
+        elif "A1" in result_code: dmg_attacker = 1
+        
+        if "D1" in result_code: dmg_defender = 1
+        
+        if "AG" in result_code:
+            self._apply_confusion(attackers)
             
-        self.info_panel.show_combat_result(dice, msg)
+        if "DG" in result_code:
+            self._apply_confusion([(None, u) for u in target_province.units])
+            confused_defender = True
+            
+        if "DR" in result_code or "R" in result_code and "D" in result_code: # D1R or DR
+            retreat_defender = True
+            
+        # Apply Damage
+        if dmg_attacker > 0:
+            self._apply_damage([u for _, u in attackers], dmg_attacker)
+            
+        if dmg_defender > 0:
+            self._apply_damage(target_province.units, dmg_defender)
+            
+        # Retreat Logic
+        if retreat_defender:
+            self._handle_retreat(target_province)
+            
+        # 疲劳判定
+        for _, u in attackers:
+            u.attack_count += 1
+            if u.attack_count >= 2:
+                u.is_confused = True
+                
+        # 战斗后清理
+        self._cleanup_dead_units(attackers, target_province)
+        
+        # 进占逻辑
+        if not target_province.units:
+            self._advance_after_combat(attackers, target_province)
+            
+        # --- 生成详细战报 ---
+        
+        # 1. 战果标题: 比值·骰点·结果
+        ratio_strs = ["1:2", "1:1", "2:1", "3:1", "4:1", "5:1"]
+        # col_index 可能会稍越界（比如夹击后），限制一下查找
+        r_idx = max(0, min(5, col_index))
+        ratio_str = ratio_strs[r_idx]
+        
+        # 结果标题行： 1:1 · 骰6 · A1
+        title_str = f"{ratio_str} · 骰{dice} · {result_code}"
+        
+        logs = []
+        # 结果简报行： 攻损X · 防损Y
+        logs.append(f"攻损{dmg_attacker} · 防损{dmg_defender}")
+        
+        status_msgs = []
+        if confused_defender: status_msgs.append("防乱")
+        if retreat_defender: status_msgs.append("防退")
+        if status_msgs:
+            logs.append(" · ".join(status_msgs))
+        
+        # 2. 进攻方战后状态
+        logs.append("--- 进攻方 ---")
+        for _, u_state in attackers:
+            logs.append(self._format_unit_info(u_state, prefix="攻"))
+                
+        # 3. 防守方战后状态
+        if target_province.units:
+            logs.append("--- 防守方 ---")
+            for u_state in target_province.units:
+                logs.append(self._format_unit_info(u_state, prefix="防"))
+        else:
+             logs.append("防守方全灭或撤离")
+        
+        self.info_panel.show_combat_result(dice, title_str, "\n".join(logs))
+            
+    def _apply_damage(self, units: List, amount: int) -> None:
+        """分配伤害"""
+        # 排序：未受伤(False) < 已受伤(True). 防御力低 < 防御力高.
+        # Key: (is_injured, defense)
+        # 我们希望打 未受伤且防御低 的。
+        # (False, 3), (False, 5), (True, 3)
+        # Sort Ascending works perfectly.
+        
+        # 为了能 modifying state, we create a list of candidates
+        candidates = sorted(units, key=lambda u: (u.is_injured, self.unit_repository.get_definition(u.unit_type).defense))
+        
+        hits_left = amount
+        for u in candidates:
+            if hits_left <= 0: break
+            # 扣血
+            u.hp -= 1
+            hits_left -= 1
+            
+    def _apply_confusion(self, unit_tuples: List) -> None:
+        """应用混乱，传入 (prov, unit) 列表"""
+        # 这里的排序逻辑同伤害
+        units = [u for _, u in unit_tuples]
+        candidates = sorted(units, key=lambda u: (u.is_injured, self.unit_repository.get_definition(u.unit_type).defense))
+        
+        if candidates:
+            target = candidates[0] # 只混乱一个？"DG" usually entire stack or 1? 
+            # Rule: "选取混乱单位的机制与伤害相同" implies singular target or distributed? 
+            # Usually status effects apply to the stack or top unit. 
+            # "DG" likely means "Defender Disordered/Grim".
+            # Given "机制与伤害相同", and damage has a number (1,2), maybe confusion is 1 unit?
+            # Let's assume 1 unit for now.
+            
+            if target.is_confused:
+                target.hp -= 1 # 连续混乱 -> 扣血
+            else:
+                target.is_confused = True
+
+    def _handle_retreat(self, province: object) -> None:
+        """处理撤退"""
+        # 尝试找一个友方或空的格子
+        neighbors = self._get_neighbors(province)
+        valid_retreats = [n for n in neighbors if n.country == province.country or not n.units]
+        
+        if valid_retreats:
+            # 随机选一个撤
+            dest = valid_retreats[0]
+            dest.units.extend(province.units)
+            province.units.clear()
+            logger.info(f"Defenders retreated to {dest.name}")
+        else:
+            # 没地方跑 -> 受到 1 点额外伤害
+            self._apply_damage(province.units, 1)
+
+    def _cleanup_dead_units(self, attackers: List, target: object) -> None:
+        """清理战场"""
+        # 清理进攻方
+        # 注意：UnitState 和 Province 是 mutable dataclass，不能直接放入 set 哈希去重
+        # 所以我们需要通过 id 或遍历来检查
+        
+        any_dead = False
+        for _, u in attackers:
+            if u.hp <= 0:
+                any_dead = True
+                break
+        
+        if any_dead:
+            # 找出涉及的省份并去重 (通过 province_id)
+            seen_prov_ids = set()
+            unique_provs = []
+            for p, _ in attackers:
+                if p.province_id not in seen_prov_ids:
+                    seen_prov_ids.add(p.province_id)
+                    unique_provs.append(p)
+            
+            # 对每个省份执行清理
+            for p in unique_provs:
+                p.units = [u for u in p.units if u.hp > 0]
+                
+        # 清理防守方
+        target.units = [u for u in target.units if u.hp > 0]
+        
+    def _advance_after_combat(self, attackers: List, target: object) -> None:
+        """进占: 派出至多2个单位"""
+        # 简单策略：移动前两个还能动的进攻单位
+        movers = 0
+        limit = 2
+        
+        # 必须是未死亡的
+        # 为了避免 modify list while iterating, we query current state
+        # attackers links to (prov, unit_state)
+        
+        for prov, unit in attackers:
+            if movers >= limit: break
+            if unit.hp > 0 and unit in prov.units: # 确保还在原格子里（有的可能死了）
+                prov.units.remove(unit)
+                target.units.append(unit)
+                # 占领变更
+                target.country = self.player_country
+                movers += 1
+                
+    def _get_neighbors(self, unit_prov: object) -> List[object]:
+        """获取邻居"""
+        # 简单暴力遍历判断距离
+        # 优化：应该在 map_manager 里存邻接表，这里先实时算
+        nbs = []
+        center = unit_prov.compute_center(self.hex_side)
+        threshold = SQRT3 * self.hex_side * 1.5
+        for p in self.map_manager.provinces:
+            if p == unit_prov: continue
+            if dist(center, p.compute_center(self.hex_side)) < threshold:
+                nbs.append(p)
+        return nbs
 
     def _handle_selection_click(self, mouse_pos: Tuple[int, int]) -> None:
         """

@@ -12,6 +12,7 @@ import pygame as pg
 
 from .geometry import hex_vertices
 from .province import Province
+from src.game_objects.unit import UnitState
 
 # ColorResolver 是一个函数类型的别名，它接收一个国家代码字符串，返回一个颜色对象。
 # 这样做是为了让类型提示更清晰。
@@ -51,7 +52,9 @@ class MapManager:
             for row in reader:
                 # 解析单位列表，比如 "unit1;unit2" 分割成 ["unit1", "unit2"]
                 units_raw = row.get("units", "").strip()
-                units = [token for token in units_raw.split(";") if token]
+                unit_types = [token for token in units_raw.split(";") if token]
+                # 转换为 UnitState 对象
+                units_objs = [UnitState(u_type) for u_type in unit_types]
                 
                 provinces.append(
                     Province(
@@ -63,7 +66,7 @@ class MapManager:
                         victory_point=float(row["point"]),
                         x_factor=float(row["x_factor"]),
                         y_factor=float(row["y_factor"]),
-                        units=units,
+                        units=units_objs,
                     )
                 )
         return provinces
