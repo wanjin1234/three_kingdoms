@@ -1,1 +1,1 @@
-# 这是__init__.py文件，位于src\core目录下，是core目录的初始化文件
+"""Core runtime loop, events, and camera utilities."""

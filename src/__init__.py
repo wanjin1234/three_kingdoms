@@ -1,1 +1,1 @@
-# 这是__init__.py文件，位于src目录下，是src目录的初始化文件
+"""Top-level package for the Three Kingdoms game."""
