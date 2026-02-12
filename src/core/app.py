@@ -307,9 +307,9 @@ class GameApp:
 
         # 3. 画河流和阻挡线
         for polyline in self.yangtze_polylines:
-            pg.draw.lines(self.window, pg.Color(173, 216, 230), False, polyline, 20)
-        pg.draw.lines(self.window, pg.Color(173, 216, 230), False, self.yellow_river_polyline, 20)
-        pg.draw.lines(self.window, pg.Color("black"), False, self.ban_line_polyline, 20)
+            self._draw_smooth_polyline(pg.Color(173, 216, 230), polyline, 20)
+        self._draw_smooth_polyline(pg.Color(173, 216, 230), self.yellow_river_polyline, 20)
+        self._draw_smooth_polyline(pg.Color("black"), self.ban_line_polyline, 20)
 
         # 4. 画回合结束按钮（右下角的圆圈）
         pg.draw.circle(
@@ -334,6 +334,80 @@ class GameApp:
             rect_provider=self.unit_renderer.selection_rects,
             hex_side=self.hex_side,
         )
+
+    def _draw_smooth_polyline(self, color: pg.Color, points: Sequence[Tuple[int, int]], width: int) -> None:
+        """
+        绘制硬朗连接的折线（Miter Join）。
+        普通的 pg.draw.lines 会有缺口，而画圆填充太圆润了。
+        这个方法通过计算几何转角，生成一个完美闭合的多边形，
+        让河流的转弯呈现出整齐的 120 度切角，符合六边形地图的风格。
+        """
+        if len(points) < 2:
+            return
+
+        # 把点转换成向量方便计算
+        vectors = [pg.math.Vector2(p) for p in points]
+        half_width = width / 2
+        
+        # 存储“上岸”和“下岸”的顶点列表
+        upper_edge = []
+        lower_edge = []
+
+        for i in range(len(vectors)):
+            curr = vectors[i]
+            
+            # 计算当前点的切线方向（即线条走向）
+            if i == 0:
+                # 起点：切线就是第一段的方向
+                tangent = (vectors[1] - vectors[0]).normalize()
+            elif i == len(vectors) - 1:
+                # 终点：切线就是最后一段的方向
+                tangent = (vectors[-1] - vectors[-2]).normalize()
+            else:
+                # 中间点：切线是前后两段方向的平均值（角平分线方向）
+                v_in = (curr - vectors[i - 1]).normalize()
+                v_out = (vectors[i + 1] - curr).normalize()
+                # 如果两段线几乎反向（折返），为了避免除零错误，稍微偏移一点
+                tangent = (v_in + v_out)
+                if tangent.length() < 0.01:
+                    tangent = pg.math.Vector2(-v_in.y, v_in.x) # 垂直方向
+                else:
+                    tangent = tangent.normalize()
+
+            # 计算法线方向（垂直于切线）
+            # 我们需要把法线旋转 90 度得到宽度方向
+            # (-y, x) 是逆时针旋转 90 度
+            normal = pg.math.Vector2(-tangent.y, tangent.x)
+
+            # 计算 Miter 长度修正
+            # 在转角处，线条会变宽，需要根据角度进行修正
+            # 修正系数 miter_len = width / 2 / sin(angle/2)
+            # 这里用点积简化计算：dot(normal, segment_normal)
+            if 0 < i < len(vectors) - 1:
+                # 真实的段法线
+                real_segment_normal = pg.math.Vector2(-(vectors[i+1]-curr).y, (vectors[i+1]-curr).x).normalize()
+                # 投影长度，避免尖角过长，限制最大长度
+                cos_half_angle = normal.dot(real_segment_normal)
+                # 防止极其尖锐的角度导致射线过长
+                if abs(cos_half_angle) < 0.1: 
+                    miter_length = half_width
+                else:
+                    miter_length = half_width / cos_half_angle
+            else:
+                miter_length = half_width
+
+            # 生成两个边缘点
+            p_upper = curr + normal * miter_length
+            p_lower = curr - normal * miter_length
+            
+            upper_edge.append(p_upper)
+            lower_edge.append(p_lower)
+
+        # 构建闭合多边形：上岸点正序 + 下岸点倒序
+        full_poly = upper_edge + lower_edge[::-1]
+        
+        # 绘制实心多边形
+        pg.draw.polygon(self.window, color, full_poly)
 
     # --- 资源构建辅助方法 (Asset Builders) -------------------------------------------------
     # 这些方法负责在游戏开始前把图片、文字预先处理好存入内存

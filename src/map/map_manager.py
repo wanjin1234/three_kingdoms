@@ -100,10 +100,88 @@ class MapManager:
             
             # 4. 画白色的底色（填充）
             pg.draw.polygon(surface, pg.Color("white"), vertices)
-            # 5. 画彩色的边框
-            pg.draw.polygon(surface, color, vertices, self._border_width)
+            # 5. 画彩色的边框（使用自定义的硬角连接绘制）
+            self._draw_hex_border(surface, color, vertices, self._border_width)
             # 6. 画地形图标 (山、城等)
             self._draw_terrain_icon(surface, province.terrain, center)
+
+    def _draw_hex_border(self, surface: pg.Surface, color: pg.Color, vertices: Sequence[Tuple[int, int]], width: int) -> None:
+        """
+        绘制六边形的边框，使用硬朗的棱角连接 (Miter Join)。
+        """
+        if len(vertices) < 3:
+            return
+
+        # 把点转换成向量方便计算
+        vectors = [pg.math.Vector2(p) for p in vertices]
+        count = len(vectors)
+        half_width = width / 2
+        
+        upper_edge = []
+        lower_edge = []
+
+        for i in range(count):
+            curr = vectors[i]
+            prev = vectors[(i - 1) % count]
+            next_p = vectors[(i + 1) % count]
+            
+            # 计算前后两段线的方向
+            v_in = (curr - prev).normalize()
+            v_out = (next_p - curr).normalize()
+            
+            # 切线方向是角平分线
+            tangent = (v_in + v_out).normalize()
+            
+            # 法线方向（垂直于切线）
+            # (-y, x) 是逆时针旋转 90 度
+            normal = pg.math.Vector2(-tangent.y, tangent.x)
+            
+            # 真实的段法线 (当前点到下一点的边的法线)
+            segment_vec = next_p - curr
+            segment_normal = pg.math.Vector2(-segment_vec.y, segment_vec.x).normalize()
+            
+            # 投影计算 Miter 长度
+            cos_half_angle = normal.dot(segment_normal)
+            if abs(cos_half_angle) < 0.1:
+                miter_length = half_width
+            else:
+                miter_length = half_width / cos_half_angle
+
+            # 生成两个边缘点
+            p_upper = curr + normal * miter_length
+            p_lower = curr - normal * miter_length
+            
+            upper_edge.append(p_upper)
+            lower_edge.append(p_lower)
+
+        # 构建闭合多边形 (外圈 + 内圈)
+        # 注意：为了让边框是空的（只画环），我们需要用 construct properly
+        # 但 pygame.draw.polygon 只能画实心的。
+        # 这里我们其实是想画一个 "有宽度的闭合线框"。
+        # 最简单的方法是：画一个大的实心多边形（外圈），然后再画一个小的实心多边形（内圈，用白色盖住？不对，这会盖住地形）
+        # 等等，之前的代码是先画白色底色，再画边框，再画地形。
+        # 如果我画实心边框，它就是一条很粗的线。
+        
+        # 修正策略：
+        # 我们计算出了外圈点 (upper_edge) 和内圈点 (lower_edge)。
+        # 对于六边形，upper_edge 是往外扩的，lower_edge 是往里缩的 (假设逆时针顺序)。
+        # 我们可以直接构造一个带孔的多边形？Pygame 不支持直接画带孔的。
+        # 我们可以画 6 个四边形拼接起来！
+        # 每一条边对应一个四边形：
+        # (Upper[i], Upper[i+1], Lower[i+1], Lower[i])
+        
+        for i in range(count):
+            next_i = (i + 1) % count
+            poly = [
+                upper_edge[i],
+                upper_edge[next_i],
+                lower_edge[next_i],
+                lower_edge[i]
+            ]
+            pg.draw.polygon(surface, color, poly)
+            # 为了防止四边形接缝处有微小缝隙，可以稍微重叠一点或者画个小圆
+            # 但理论上数学坐标是完美的。像素光栅化可能会有缝隙。
+            # 鉴于 width=10 很大，应该没事。
 
     def _draw_terrain_icon(self, surface: pg.Surface, terrain: str, center: tuple[int, int]) -> None:
         """绘制地形图标，放在格子的左上角"""
