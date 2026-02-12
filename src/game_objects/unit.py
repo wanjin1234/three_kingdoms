@@ -141,8 +141,8 @@ class UnitRenderer:
         布局逻辑：
         - 左上角：留给地形图标了（在 map_manager.py 里画）
         - 右上角：第 1 个兵 (idx=0)
-        - 左下角：第 2 个兵 (idx=1)
-        - 右下角：第 3 个兵 (idx=2)
+        - 右下角：第 2 个兵 (idx=1)
+        - 左下角：第 3 个兵 (idx=2)
         """
         cx, cy = center
         # icon_size 大约是半个格子的边长
@@ -151,8 +151,8 @@ class UnitRenderer:
         # 定义四个可能的槽位坐标（这里存的是绘图时的左上角坐标）
         slots = [
             (cx, cy - offset),      # 兵1：右上角
-            (cx - offset, cy),      # 兵2：左下角
-            (cx, cy),               # 兵3：右下角
+            (cx, cy),               # 兵2：右下角
+            (cx - offset, cy),      # 兵3：左下角
         ]
         
         # 防止兵太多溢出，如果超出了3个，就都叠在最后一个位置上
