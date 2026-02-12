@@ -19,7 +19,7 @@ from src.game_objects.kingdom import KingdomRepository
 from src.game_objects.unit import UnitRenderer, UnitRepository
 from src.map.map_manager import MapManager
 from src.ui.panels import SelectionOverlay
-from src.ui.info_panel import InfoPanel
+from src.ui.info_panel import InfoPanel, CardPanel
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,16 @@ class GameApp:
         self.debug = debug
         self._running = False # 游戏循环开关
 
+        # 在初始化 Pygame 之前设置 DPI 感知，以确保获取到正确的物理分辨率
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
         # 初始化 Pygame 库
         pg.init()
         self.clock = pg.time.Clock() # 用于控制游戏帧率
@@ -115,6 +125,10 @@ class GameApp:
         flags = pg.NOFRAME if settings.borderless else 0
         self.window = pg.display.set_mode((self.screen_width, self.screen_height), flags)
         pg.display.set_caption(settings.window_title)
+        
+        # 设置窗口图标 (可选，让 Alt+Tab 时显示漂亮的图标)
+        # icon = pg.image.load(settings.graphics_dir / "icon.jpg")
+        # pg.display.set_icon(icon)
 
         # 计算六边形格子的边长，使其刚好能铺满屏幕高度的一部分
         self.hex_side = self.screen_height * 2 / (19 * SQRT3)
@@ -157,12 +171,16 @@ class GameApp:
         self.camera = Camera()
         self.event_manager = EventManager(self)
         
-        # 初始化右侧信息面板
-        # 假设右侧留白区域宽度为 300 像素
-        panel_rect = pg.Rect(self.screen_width - 300, 50, 280, 400)
-        # 我们可以复用一个现有的字体或者稍后在 build_assets 里加载
-        # 这里为了避免 None，稍微把 InfoPanel 的初始化推迟到 _build_play_assets 或者先给个默认字体
+        # 初始化右侧信息面板 (使用相对坐标使其自适应分辨率)
+        # 左侧位于屏幕75%，右侧位于100%，上侧位于15%，下侧50%
+        panel_x = int(self.screen_width * 0.75)
+        panel_y = int(self.screen_height * 0.15)
+        panel_w = int(self.screen_width * 0.25)  # 100% - 75%
+        panel_h = int(self.screen_height * 0.35) # 50% - 15%
+        
+        panel_rect = pg.Rect(panel_x, panel_y, panel_w, panel_h)
         self.info_panel: InfoPanel | None = None
+        self.card_panel: CardPanel | None = None
 
         # 预加载各个界面的素材，防止游戏运行时卡顿
         self._build_loading_assets()
@@ -170,8 +188,19 @@ class GameApp:
         self._build_play_assets()
         
         # 初始化 InfoPanel (在 build_play_assets 加载了字体之后)
-        info_font = self._font("msyh.ttc", 20) # 微软雅黑，大小20
+        font_size = int(self.screen_height * 0.025) # 字体大小约占屏幕高度的 2.5%
+        info_font = self._font("msyh.ttc", font_size) 
         self.info_panel = InfoPanel(panel_rect, info_font)
+        
+        # 初始化 CardPanel
+        # 垂直位置 50% - 85%，水平同 InfoPanel
+        card_rect = pg.Rect(
+            panel_x,
+            int(self.screen_height * 0.50),
+            panel_w,
+            int(self.screen_height * 0.35) # 85% - 50%
+        )
+        self.card_panel = CardPanel(card_rect, info_font)
 
     def run(self) -> None:
         """
@@ -520,6 +549,10 @@ class GameApp:
         # 7. 画右侧信息面板 (UI)
         if self.info_panel:
             self.info_panel.draw(self.window)
+            
+        # 8. 画卡牌面板
+        if self.card_panel:
+            self.card_panel.draw(self.window)
 
     def _draw_smooth_polyline(self, color: pg.Color, points: Sequence[Tuple[int, int]], width: int) -> None:
         """
@@ -684,14 +717,23 @@ class GameApp:
         height = self.screen_height
         width = self.screen_width
 
-        self.next_turn_center = (int(width - height * 0.15), int(height * 0.85))
-        self.next_turn_radius = int(height * 0.15)
+        # 调整右下角回合结束按钮
+        # 仅占下方 12%，对齐右下角
+        # 半径 = 高度 * 12% / 2 = 6%
+        r = int(height * 0.06)
+        self.next_turn_radius = r
+        # 中心点：紧贴右下角 (留一点点缝隙比如 5px 可能会更好看，但用户说对齐右下角)
+        self.next_turn_center = (int(width - r), int(height - r))
 
-        arrow_size = int(height * 0.13 * sqrt(2))
+        # 箭头图片随之缩小
+        # 假设箭头是个正方形，边长稍微比直径小一点点
+        # 再次缩小，使其看起来更精致 (r * 1.4 -> r * 1.0)
+        arrow_size = int(r * 1.0) 
         self.arrow_image = self._load_ui_image("arrow.jpg", (arrow_size, arrow_size))
+        # 箭头居中于圆心
         self.arrow_pos = (
-            int(width - height * 0.15 - height * 0.13 * 0.5 * sqrt(2)),
-            int(height * 0.85 - height * 0.065 * sqrt(2)),
+            self.next_turn_center[0] - arrow_size // 2,
+            self.next_turn_center[1] - arrow_size // 2,
         )
 
         self.country_tag_font = self._font("STZHONGS.TTF", int(height * 0.1))
