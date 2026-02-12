@@ -193,6 +193,9 @@ class GameApp:
         info_font = self._font("msyh.ttc", font_size) 
         self.info_panel = InfoPanel(panel_rect, info_font)
         
+        # 保存字体给战斗UI使用
+        self.combat_ui_font = info_font
+        
         # 初始化 CardPanel
         # 垂直位置 60% - 85%，水平同 InfoPanel
         card_rect = pg.Rect(
@@ -202,6 +205,12 @@ class GameApp:
             int(self.screen_height * 0.25) # 85% - 60%
         )
         self.card_panel = CardPanel(card_rect, info_font)
+        
+        # 战斗UI状态 (位于顶部栏)
+        self.show_combat_ui = False
+        self.combat_ratio_val: float = 0.0
+        self.combat_callback: Callable[[], None] | None = None
+        self.combat_btn_rect: pg.Rect | None = None  # 在 render 时计算
 
     def run(self) -> None:
         """
@@ -235,6 +244,10 @@ class GameApp:
     def clear_selection(self, clear_ui: bool = True) -> None:
         """清空当前选中的单位"""
         self.selected_units.clear()
+        
+        # 无论如何，只要取消选择，战斗请求UI（按钮）就应该消失
+        self.show_combat_ui = False 
+        
         if clear_ui and self.info_panel: 
              self.info_panel.show_properties("") # 清空面板
 
@@ -336,6 +349,14 @@ class GameApp:
             self.clear_selection() # 按ESC取消选择
         elif event.type == pg.MOUSEBUTTONDOWN:
             if event.button == 1:
+                # 0. 优先处理顶部的战斗按钮
+                if self.show_combat_ui and self.combat_btn_rect and self.combat_btn_rect.collidepoint(event.pos):
+                    if self.combat_callback:
+                        self.combat_callback()
+                    # 点击按钮后，UI会在 clear_selection 关闭，或者在 callback 里处理
+                    # 这里 return 防止点穿到下面地图
+                    return
+
                 # 优先处理 UI 面板点击
                 if self.info_panel and self.info_panel.handle_click(event.pos):
                     return
@@ -557,12 +578,22 @@ class GameApp:
              def_lines.append(self._format_unit_info(u, prefix="防"))
         defender_info = "\n".join(def_lines)
 
-        self.info_panel.show_combat_request(ratio_val, attacker_info, defender_info, lambda: self._resolve_combat(col_index, participating_attackers, target))
+        # 设置战斗 UI 状态
+        self.show_combat_ui = True
+        self.combat_ratio_val = ratio_val
+        self.combat_callback = lambda: self._resolve_combat(col_index, participating_attackers, target)
+        
+        # 面板只显示详情
+        self.info_panel.show_combat_details(attacker_info, defender_info)
 
     def _resolve_combat(self, col_index: int, attackers: List, target_province: object) -> None:
         """投骰子后的回调"""
         # 战斗开始结算，立刻清除选中状态，防止后续操作引用到已死亡或移动的单位
         self.clear_selection(clear_ui=False)
+        
+        # 记录战斗前的防守方列表（引用），以便战后统计（其中单位的属性会被修改）
+        # target_province.units 之后会被清理移除死亡单位，所以由于我们要显示战损，需要先存一份
+        defenders_snapshot = list(target_province.units)
 
         dice = random.randint(1, 6)
         result_code = resolve_combat(dice, col_index)
@@ -642,9 +673,10 @@ class GameApp:
             logs.append(self._format_unit_info(u_state, prefix="攻"))
                 
         # 3. 防守方战后状态
-        if target_province.units:
+        # 使用 defenders_snapshot 确保显示所有参与战斗的单位（包括死亡的）
+        if defenders_snapshot:
             logs.append("--- 防守方 ---")
-            for u_state in target_province.units:
+            for u_state in defenders_snapshot:
                 logs.append(self._format_unit_info(u_state, prefix="防"))
         else:
              logs.append("防守方全灭或撤离")
@@ -847,6 +879,43 @@ class GameApp:
         if self.player_country:
             tag_surface = self.country_tag_surfaces[self.player_country]
             self.window.blit(tag_surface, self.country_tag_pos)
+
+            # --- 画战斗UI (攻防比 + 投骰子) ---
+            if self.show_combat_ui:
+                # 使用跟 InfoPanel 一样的字体
+                font = self.combat_ui_font
+                
+                # 1. 投骰子按钮
+                btn_text = "投骰子"
+                btn_surf = font.render(btn_text, True, pg.Color("white"))
+                
+                # 按钮背景尺寸
+                btn_w = btn_surf.get_width() + 20
+                btn_h = btn_surf.get_height() + 10
+                
+                # 位置：在国家标签左侧 30px 处，且在 TOP 15% 区域内垂直居中
+                top_area_height = int(self.screen_height * 0.15)
+                
+                tag_x = self.country_tag_pos[0]
+                btn_x = tag_x - btn_w - 30
+                btn_y = (top_area_height - btn_h) // 2 
+                
+                self.combat_btn_rect = pg.Rect(btn_x, btn_y, btn_w, btn_h)
+                
+                # 画按钮背景
+                pg.draw.rect(self.window, pg.Color("blue"), self.combat_btn_rect, border_radius=5)
+                # 画文字
+                text_rect = btn_surf.get_rect(center=self.combat_btn_rect.center)
+                self.window.blit(btn_surf, text_rect)
+                
+                # 2. 攻防比文字
+                ratio_str = f"比 {self.combat_ratio_val:.1f}"
+                ratio_surf = font.render(ratio_str, True, pg.Color("black"))
+                
+                ratio_x = btn_x - ratio_surf.get_width() - 30
+                ratio_y = btn_y + (btn_h - ratio_surf.get_height()) // 2
+                
+                self.window.blit(ratio_surf, (ratio_x, ratio_y))
 
         # 6. 画选中框（覆盖在最上层）
         self.selection_overlay.draw(

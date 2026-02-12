@@ -51,10 +51,17 @@ class BasePanel:
         # 1. 先按换行符拆分段落，确保 \n 生效
         paragraphs = text.replace('\r', '').split('\n')
         
+        # 记录每行的颜色（与lines一一对应）
+        line_colors = []
+
         for paragraph in paragraphs:
+            # 判定颜色：如果包含 "血0" 或 "血-" (负数)，则变红
+            para_color = pg.Color("red") if ("血0" in paragraph or "血-" in paragraph) else color
+
             # 如果是空行，插入占位符以便后面渲染时增加 Y 轴距离
             if not paragraph:
                 lines.append("")
+                line_colors.append(para_color)
                 continue
 
             # 2. 对每个段落进行自动换行处理
@@ -65,25 +72,28 @@ class BasePanel:
                 if w > max_width:
                     if not current_line: 
                         lines.append(char)
+                        line_colors.append(para_color)
                         current_line = ""
                     else:
                         lines.append(current_line)
+                        line_colors.append(para_color)
                         current_line = char
                 else:
                     current_line = test_line
             if current_line:
                 lines.append(current_line)
+                line_colors.append(para_color)
             
         y = start_y
         font_height = self.font.get_height()
         
-        for line in lines:
+        for i, line in enumerate(lines):
             if not line:
                 # 空行，只移动 y 坐标
                 y += font_height // 2 # 空行高度给一半？或者给全高
                 continue
                 
-            surf = self.font.render(line, True, color)
+            surf = self.font.render(line, True, line_colors[i])
             rect = surf.get_rect(midtop=(self.rect.centerx, y))
             surface.blit(surf, rect)
             y += surf.get_height() + 5
@@ -106,48 +116,30 @@ class InfoPanel(BasePanel):
         self._message_end_time: float = 0.0
         
         # 战斗相关状态
-        self.show_dice_button = False
-        self.combat_ratio: float = 0.0
         self.dice_result: int | None = None
         self.combat_result_text: str | None = None
         self._combat_attacker_info: str | None = None
         self._combat_enemy_info: str | None = None
-        
-        # 按钮区域
-        btn_width = max(120, int(rect.width * 0.6))
-        btn_height = max(40, int(rect.height * 0.1))
-        btn_x = rect.centerx - btn_width // 2
-        btn_y = rect.y + int(rect.height * 0.3)
-        
-        self.button_rect = pg.Rect(btn_x, btn_y, btn_width, btn_height)
-        self._on_dice_click: Callable[[], None] | None = None
 
     def show_properties(self, props: str) -> None:
         """显示选中单位/格子的属性列表"""
         self._message = props
         self._message_end_time = float("inf") # 永久显示，直到被覆盖
         # 清除战斗状态但保留消息
-        self.show_dice_button = False
         self.dice_result = None
         self.combat_result_text = None
         self._combat_attacker_info = None
         self._combat_enemy_info = None # 清除之前的敌方预览
-        self._on_dice_click = None
 
     def show_message(self, text: str, duration: float = 2.0) -> None:
         """显示一条临时消息"""
         self._message = text
         self._message_end_time = time.time() + duration
-        # 显示消息时隐藏战斗UI，避免冲突
-        # self.reset_combat_state() # 暂时注释掉，避免冲掉正在进行的战斗请求显示
 
-    def show_combat_request(self, ratio: float, attacker_info: str, defender_info: str, on_roll: Callable[[], None]) -> None:
-        """显示战斗请求（投骰子按钮）"""
-        self.combat_ratio = ratio
+    def show_combat_details(self, attacker_info: str, defender_info: str) -> None:
+        """显示战斗双方详情"""
         self._combat_attacker_info = attacker_info
         self._combat_enemy_info = defender_info
-        self.show_dice_button = True
-        self._on_dice_click = on_roll
         self.dice_result = None
         self.combat_result_text = None
         # 清除选中的单位信息，避免重叠
@@ -157,7 +149,8 @@ class InfoPanel(BasePanel):
         """显示战斗结果"""
         self.dice_result = dice
         self.combat_result_text = result_text
-        self.show_dice_button = False # 隐藏按钮
+        self._combat_attacker_info = None
+        self._combat_enemy_info = None
         
         # 详细战报显示在消息区域（不包含标题，标题单独绘制）
         self._message = detail_msg
@@ -166,22 +159,16 @@ class InfoPanel(BasePanel):
 
     def reset_combat_state(self) -> None:
         """重置战斗面板"""
-        self.show_dice_button = False
         self.dice_result = None
         self.combat_result_text = None
-        self._on_dice_click = None
         self._combat_attacker_info = None
         self._combat_enemy_info = None
 
     def handle_click(self, pos: Tuple[int, int]) -> bool:
         """
         处理点击事件。
-        如果点击了按钮，返回 True。
         """
-        if self.show_dice_button and self.button_rect.collidepoint(pos):
-            if self._on_dice_click:
-                self._on_dice_click()
-            return True
+        # 现在面板本身没有按钮了，返回 False (如果有其他交互需求再加)
         return False
 
     def _draw_separator(self, surface: pg.Surface, y: int) -> int:
@@ -236,41 +223,22 @@ class InfoPanel(BasePanel):
 
         # 3. 绘制临时消息 (或者属性列表/战报详情)
         current_time = time.time()
-        # 如果还在显示时间内，或者是永久消息(inf)，且不在战斗投骰子状态（避免重叠）
-        if self._message and (self._message_end_time > current_time or self._message_end_time == float("inf")) and not self.show_dice_button:
+        # 如果还在显示时间内，或者是永久消息(inf)
+        if self._message and (self._message_end_time > current_time or self._message_end_time == float("inf")):
             # 如果没有战斗UI，那整个面板都可以用来显示文字
             last_y = self.draw_text_wrapped(surface, self._message, pg.Color("black"), content_y)
             content_y = last_y + 10 
 
-        # 4. 绘制战斗UI (三个部分：攻击者 -> --- -> 防守者 -> --- -> 按钮)
-        if self.show_dice_button:
-            # Part 1: 攻击者
-            if self._combat_attacker_info:
-                content_y = self.draw_text_wrapped(surface, self._combat_attacker_info, pg.Color("black"), content_y)
-                content_y = self._draw_separator(surface, content_y)
-                
-            # Part 2: 防守者
-            if self._combat_enemy_info:
-                content_y = self.draw_text_wrapped(surface, self._combat_enemy_info, pg.Color("black"), content_y)
-                content_y = self._draw_separator(surface, content_y)
+        # 4. 绘制战斗详情 (两个部分：攻击者 -> --- -> 防守者)
+        # Part 1: 攻击者
+        if self._combat_attacker_info:
+            content_y = self.draw_text_wrapped(surface, self._combat_attacker_info, pg.Color("black"), content_y)
+            content_y = self._draw_separator(surface, content_y)
             
-            # Part 3: 攻防比 + 投骰子按钮
-            # 显示攻防比
-            ratio_text = f"攻防比: {self.combat_ratio:.1f}"
-            ratio_surf = self.font.render(ratio_text, True, pg.Color("blue"))
-            ratio_rect = ratio_surf.get_rect(midtop=(self.rect.centerx, content_y))
-            surface.blit(ratio_surf, ratio_rect)
-            
-            # 更新按钮位置到攻防比下方
-            btn_y = ratio_rect.bottom + 10
-            self.button_rect.y = btn_y
-            self.button_rect.centerx = self.rect.centerx
-            
-            # 绘制按钮
-            pg.draw.rect(surface, pg.Color("blue"), self.button_rect)
-            btn_text = self.font.render("投骰子", True, pg.Color("white"))
-            btn_text_rect = btn_text.get_rect(center=self.button_rect.center)
-            surface.blit(btn_text, btn_text_rect)
+        # Part 2: 防守者
+        if self._combat_enemy_info:
+            content_y = self.draw_text_wrapped(surface, self._combat_enemy_info, pg.Color("black"), content_y)
+            # content_y = self._draw_separator(surface, content_y) # 底部不需要分隔符了
 
         # 4. 绘制战斗结果 (现已合并到 message 中显示详细版，这里保留简单骰子显示)
         # if self.dice_result is not None:
