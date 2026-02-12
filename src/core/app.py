@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import logging
 from enum import Enum, auto
-from math import sqrt
+from math import sqrt, dist
+import random
 from typing import Dict, List, Sequence, Tuple
 
 import pygame as pg
@@ -18,6 +19,7 @@ from src.game_objects.kingdom import KingdomRepository
 from src.game_objects.unit import UnitRenderer, UnitRepository
 from src.map.map_manager import MapManager
 from src.ui.panels import SelectionOverlay
+from src.ui.info_panel import InfoPanel
 
 logger = logging.getLogger(__name__)
 
@@ -154,11 +156,22 @@ class GameApp:
 
         self.camera = Camera()
         self.event_manager = EventManager(self)
+        
+        # 初始化右侧信息面板
+        # 假设右侧留白区域宽度为 300 像素
+        panel_rect = pg.Rect(self.screen_width - 300, 50, 280, 400)
+        # 我们可以复用一个现有的字体或者稍后在 build_assets 里加载
+        # 这里为了避免 None，稍微把 InfoPanel 的初始化推迟到 _build_play_assets 或者先给个默认字体
+        self.info_panel: InfoPanel | None = None
 
         # 预加载各个界面的素材，防止游戏运行时卡顿
         self._build_loading_assets()
         self._build_choosing_assets()
         self._build_play_assets()
+        
+        # 初始化 InfoPanel (在 build_play_assets 加载了字体之后)
+        info_font = self._font("msyh.ttc", 20) # 微软雅黑，大小20
+        self.info_panel = InfoPanel(panel_rect, info_font)
 
     def run(self) -> None:
         """
@@ -237,10 +250,179 @@ class GameApp:
         """处理游戏中的事件"""
         if event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE:
             self.clear_selection() # 按ESC取消选择
-        elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
-            # Shift + 左键：选择单位
-            if pg.key.get_mods() & pg.KMOD_SHIFT:
-                self._handle_selection_click(event.pos)
+        elif event.type == pg.MOUSEBUTTONDOWN:
+            if event.button == 1:
+                # 优先处理 UI 面板点击
+                if self.info_panel and self.info_panel.handle_click(event.pos):
+                    return
+                # Shift + 左键：选择单位
+                if pg.key.get_mods() & pg.KMOD_SHIFT:
+                    self._handle_selection_click(event.pos)
+            elif event.button == 3:
+                # 右键点击：移动或攻击
+                self._handle_game_right_click(event.pos)
+
+    def _get_province_at(self, pos: Tuple[int, int]) -> object | None: # object -> Province
+        """简单的点击拾取检测"""
+        best_p = None
+        min_dist = float("inf")
+        # 判定阈值：内切圆半径 = hex_side * sqrt(3)/2 ≈ 0.866
+        threshold = self.hex_side * 0.9 
+        
+        for province in self.map_manager.provinces:
+            center = province.compute_center(self.hex_side)
+            d = dist(pos, center)
+            if d < min_dist:
+                min_dist = d
+                best_p = province
+                
+        if min_dist <= threshold:
+            return best_p
+        return None
+
+    def _handle_game_right_click(self, pos: Tuple[int, int]) -> None:
+        """处理游戏场景的右键逻辑"""
+        if not self.selected_units:
+            return
+            
+        target_province = self._get_province_at(pos)
+        if not target_province:
+            return
+            
+        # 根据目标格子的归属判断是移动还是进攻
+        # (假设非玩家控制的国家都是敌人/中立，可攻击)
+        if target_province.country == self.player_country:
+            self._handle_movement(target_province)
+        else:
+            self._handle_combat(target_province)
+
+    def _handle_movement(self, target: object) -> None: # target: Province
+        """处理移动逻辑"""
+        # 1. 检查选中单位的来源（只能来自同一个格子）
+        source_ids = {pid for pid, _ in self.selected_units}
+        if len(source_ids) > 1:
+            self.info_panel.show_message("选择单位过多")
+            return
+        
+        # 获取源格子
+        source_id = list(source_ids)[0]
+        source = self.map_manager.get_by_id(source_id)
+        if not source: return
+        
+        if source.province_id == target.province_id:
+            return # 原地不动
+            
+        # 2. 检查移动距离与行动点
+        selected_indices = sorted([idx for pid, idx in self.selected_units if pid == source_id])
+        if not selected_indices: return
+        
+        # 计算物理距离
+        start_pos = source.compute_center(self.hex_side)
+        end_pos = target.compute_center(self.hex_side)
+        pixel_dist = dist(start_pos, end_pos)
+        
+        # 单位移动步长 (一格圆心距)
+        unit_stride = SQRT3 * self.hex_side
+        
+        moving_units = []
+        for idx in selected_indices:
+            unit_type = source.units[idx]
+            definition = self.unit_repository.get_definition(unit_type)
+            
+            # 允许的像素距离 = Move * stride * 1.1 (宽松系数)
+            # 例如 Move=2，允许移动约 2 格距离
+            max_pixel_dist = definition.move * unit_stride * 1.1
+            
+            if pixel_dist > max_pixel_dist:
+                # 按照需求：如果可以移动到就...，如果不可以呢？这里假定有一个跑不到就都不跑
+                self.info_panel.show_message("距离过远")
+                return
+            moving_units.append(unit_type)
+            
+        # 3. 堆叠检查
+        # 目标格子已有兵 + 即将移动过去的兵 > 3
+        if len(target.units) + len(moving_units) > 3:
+            self.info_panel.show_message("堆叠部队过多")
+            return
+            
+        # 4. 执行移动
+        # 从源格子移除及其 tricky，因为 indices 是下标。
+        # 我们用 rebuild 的方式最安全
+        new_source_list = []
+        for i, u in enumerate(source.units):
+            if i not in selected_indices:
+                new_source_list.append(u)
+        source.units = new_source_list
+        
+        # 添加到目标格子
+        target.units.extend(moving_units)
+        
+        # 移除选中状态
+        self.clear_selection()
+        
+        # 简单反馈
+        logger.info(f"Moved {len(moving_units)} units from {source.name} to {target.name}")
+
+    def _handle_combat(self, target: object) -> None: # target: Province
+        """处理战斗逻辑"""
+        unit_stride = SQRT3 * self.hex_side
+        total_attack = 0
+        
+        # 1. 检查所有攻击者的射程
+        for pid, idx in self.selected_units:
+            province = self.map_manager.get_by_id(pid)
+            if not province: continue
+            
+            unit_type = province.units[idx]
+            definition = self.unit_repository.get_definition(unit_type)
+            
+            distance = dist(province.compute_center(self.hex_side), target.compute_center(self.hex_side))
+            
+            # 射程判定
+            # Range=1: 覆盖 1 格 (约 1.0 * stride)
+            # Range=2: 覆盖 2 格 (约 2.0 * stride)
+            allowed_range_px = definition.range * unit_stride * 1.1 # 1.1 是容差
+            
+            if distance > allowed_range_px:
+                self.info_panel.show_message("攻击距离不足", duration=2.0)
+                self.clear_selection()
+                return
+
+            total_attack += definition.attack
+
+        if total_attack == 0:
+            return
+
+        # 2. 计算防御总和
+        total_defense = target.defense
+        for u in target.units:
+            total_defense += self.unit_repository.get_definition(u).defense
+            
+        # 避免除以0
+        if total_defense <= 0.1:
+            total_defense = 1.0
+            
+        ratio = total_attack / total_defense
+        
+        # 3. 准备投骰子
+        self.info_panel.show_combat_request(ratio, lambda: self._resolve_combat(ratio))
+
+    def _resolve_combat(self, ratio: float) -> None:
+        """投骰子后的回调"""
+        dice = random.randint(1, 6)
+        # 规则：这里暂定为 simple score
+        # 实际规则可以按需修改
+        final_score = ratio * dice
+        
+        # 显示结果
+        if final_score > 5:
+            msg = f"大胜! ({final_score:.1f})"
+        elif final_score > 2:
+            msg = f"小胜 ({final_score:.1f})"
+        else:
+            msg = f"进攻受挫 ({final_score:.1f})"
+            
+        self.info_panel.show_combat_result(dice, msg)
 
     def _handle_selection_click(self, mouse_pos: Tuple[int, int]) -> None:
         """
@@ -334,6 +516,10 @@ class GameApp:
             rect_provider=self.unit_renderer.selection_rects,
             hex_side=self.hex_side,
         )
+        
+        # 7. 画右侧信息面板 (UI)
+        if self.info_panel:
+            self.info_panel.draw(self.window)
 
     def _draw_smooth_polyline(self, color: pg.Color, points: Sequence[Tuple[int, int]], width: int) -> None:
         """
