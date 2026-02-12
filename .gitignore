@@ -1,0 +1,19 @@
+# 这是.gitignore文件，内容为git忽略的文件（即：git时自动跳过这些文件）
+
+# Python 垃圾
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+
+# OS 垃圾
+.DS_Store
+Thumbs.db
+
+# 虚拟环境
+venv/
+env/
