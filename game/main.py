@@ -4,7 +4,8 @@ from math import sqrt
 import pygame as pg
 from drawmap import draw_hexagon, draw_terrain_icon
 from latticeManagement import lattice
-from unitManagement import Unit, draw_unit_icon, lattice_draw_pos
+from unitChoose import unit_choose_check
+from unitManagement import draw_unit_icon, lattice_draw_pos
 
 pg.init()
 window = pg.display.set_mode(flags=pg.NOFRAME)
@@ -32,7 +33,14 @@ lattice_2 = lattice("SHU", [], "plain", 0, (int(d), int(15 * sqrt(3) / 2 * d)), 
 lattice_roll_1 = [lattice_1, lattice_2]
 """第一列格子"""
 
-lattice_3 = lattice("WEI", [], "city", 2, (int(2.5 * d), int(sqrt(3) * d)), 3)  # 凉州
+lattice_3 = lattice(
+    "WEI",
+    ["infantry", "cavalry", "cavalry"],
+    "city",
+    2,
+    (int(2.5 * d), int(sqrt(3) * d)),
+    3,
+)  # 凉州
 lattice_4 = lattice("SHU", [], "plain", 0, (int(2.5 * d), int(6 * sqrt(3) * d)), 0.5)
 lattice_5 = lattice("SHU", [], "plain", 0, (int(2.5 * d), int(7 * sqrt(3) * d)), 0.5)
 lattice_6 = lattice("SHU", [], "plain", 0, (int(2.5 * d), int(8 * sqrt(3) * d)), 0.5)
@@ -44,10 +52,17 @@ lattice_8 = lattice("WEI", [], "plain", 0, (int(4 * d), int(2.5 * sqrt(3) * d)),
 lattice_9 = lattice("SHU", [], "hill", 0, (int(4 * d), int(3.5 * sqrt(3) * d)), 0.5)
 lattice_10 = lattice("SHU", [], "plain", 0, (int(4 * d), int(4.5 * sqrt(3) * d)), 0.5)
 lattice_11 = lattice(
-    "SHU", ["WUDANG_archer"], "city", 2, (int(4 * d), int(5.5 * sqrt(3) * d)), 5
+    "SHU",
+    ["WUDANG_archer", "infantry", "infantry"],
+    "city",
+    2,
+    (int(4 * d), int(5.5 * sqrt(3) * d)),
+    5,
 )  # 成都
 lattice_12 = lattice("SHU", [], "plain", 0, (int(4 * d), int(6.5 * sqrt(3) * d)), 0.5)
-lattice_13 = lattice("SHU", [], "plain", 0, (int(4 * d), int(7.5 * sqrt(3) * d)), 0.5)
+lattice_13 = lattice(
+    "SHU", ["cavalry"], "plain", 0, (int(4 * d), int(7.5 * sqrt(3) * d)), 0.5
+)
 lattice_14 = lattice("SHU", [], "plain", 0, (int(4 * d), int(8.5 * sqrt(3) * d)), 0.5)
 lattice_roll_3 = [
     lattice_7,
@@ -63,9 +78,21 @@ lattice_roll_3 = [
 lattice_15 = lattice("WEI", [], "plain", 0, (int(5.5 * d), int(2 * sqrt(3) * d)), 0.5)
 lattice_16 = lattice("WEI", [], "plain", 0, (int(5.5 * d), int(3 * sqrt(3) * d)), 0.5)
 lattice_17 = lattice(
-    "SHU", [], "city", 2, (int(5.5 * d), int(4 * sqrt(3) * d)), 3
+    "SHU",
+    ["cavalry", "infantry", "archer"],
+    "city",
+    2,
+    (int(5.5 * d), int(4 * sqrt(3) * d)),
+    3,
 )  # 汉中
-lattice_18 = lattice("SHU", [], "plain", 0, (int(5.5 * d), int(5 * sqrt(3) * d)), 0.5)
+lattice_18 = lattice(
+    "SHU",
+    ["infantry"],
+    "plain",
+    0,
+    (int(5.5 * d), int(5 * sqrt(3) * d)),
+    0.5,
+)
 lattice_19 = lattice("SHU", [], "plain", 0, (int(5.5 * d), int(6 * sqrt(3) * d)), 0.5)
 lattice_20 = lattice("SHU", [], "plain", 0, (int(5.5 * d), int(7 * sqrt(3) * d)), 0.5)
 lattice_21 = lattice("SHU", [], "plain", 0, (int(5.5 * d), int(8 * sqrt(3) * d)), 0.5)
@@ -84,7 +111,12 @@ lattice_roll_4 = [
 lattice_23 = lattice("WEI", [], "plain", 0, (int(7 * d), int(1.5 * sqrt(3) * d)), 0.5)
 lattice_24 = lattice("WEI", [], "plain", 0, (int(7 * d), int(2.5 * sqrt(3) * d)), 0.5)
 lattice_25 = lattice(
-    "WEI", None, "city", 2, (int(7 * d), int(3.5 * sqrt(3) * d)), 3
+    "WEI",
+    ["infantry", "infantry", "archer"],
+    "city",
+    2,
+    (int(7 * d), int(3.5 * sqrt(3) * d)),
+    3,
 )  # 长安
 lattice_26 = lattice("SHU", [], "hill", 0, (int(7 * d), int(4.5 * sqrt(3) * d)), 0.5)
 lattice_27 = lattice("SHU", [], "hill", 0, (int(7 * d), int(5.5 * sqrt(3) * d)), 0.5)
@@ -107,10 +139,17 @@ lattice_32 = lattice("WEI", [], "plain", 0, (int(8.5 * d), int(2 * sqrt(3) * d))
 lattice_33 = lattice("WEI", [], "plain", 0, (int(8.5 * d), int(3 * sqrt(3) * d)), 0.5)
 lattice_34 = lattice("WEI", [], "plain", 0, (int(8.5 * d), int(4 * sqrt(3) * d)), 0.5)
 lattice_35 = lattice(
-    "SHU", None, "city", 2, (int(8.5 * d), int(5 * sqrt(3) * d)), 3
+    "SHU",
+    ["infantry", "infantry", "archer"],
+    "city",
+    2,
+    (int(8.5 * d), int(5 * sqrt(3) * d)),
+    3,
 )  # 荆州
 lattice_36 = lattice("SHU", [], "plain", 0, (int(8.5 * d), int(6 * sqrt(3) * d)), 0.5)
-lattice_37 = lattice("SHU", [], "plain", 0, (int(8.5 * d), int(7 * sqrt(3) * d)), 0.5)
+lattice_37 = lattice(
+    "SHU", ["cavalry"], "plain", 0, (int(8.5 * d), int(7 * sqrt(3) * d)), 0.5
+)
 lattice_38 = lattice("WU", [], "plain", 0, (int(8.5 * d), int(8 * sqrt(3) * d)), 0.5)
 lattice_39 = lattice("WU", [], "plain", 0, (int(8.5 * d), int(9 * sqrt(3) * d)), 0.5)
 lattice_roll_6 = [
@@ -127,17 +166,36 @@ lattice_roll_6 = [
 """第六列格子"""
 lattice_40 = lattice("WEI", [], "hill", 0, (int(10 * d), int(0.5 * sqrt(3) * d)), 0.5)
 lattice_41 = lattice("WEI", [], "hill", 0, (int(10 * d), int(1.5 * sqrt(3) * d)), 0.5)
-lattice_42 = lattice("WEI", [], "plain", 0, (int(10 * d), int(2.5 * sqrt(3) * d)), 0.5)
+lattice_42 = lattice(
+    "WEI",
+    ["cavalry", "cavalry", "infantry"],
+    "plain",
+    0,
+    (int(10 * d), int(2.5 * sqrt(3) * d)),
+    0.5,
+)
 lattice_43 = lattice("WEI", [], "plain", 0, (int(10 * d), int(3.5 * sqrt(3) * d)), 0.5)
 lattice_44 = lattice(
-    "WEI", [], "city", 2, (int(10 * d), int(4.5 * sqrt(3) * d)), 2
+    "WEI",
+    ["infantry", "infantry", "archer"],
+    "city",
+    2,
+    (int(10 * d), int(4.5 * sqrt(3) * d)),
+    2,
 )  # 襄阳
 lattice_45 = lattice("SHU", [], "plain", 0, (int(10 * d), int(5.5 * sqrt(3) * d)), 0.5)
 lattice_46 = lattice(
     "SHU", None, "plain", 0, (int(10 * d), int(6.5 * sqrt(3) * d)), 0.5
 )
 lattice_47 = lattice("WU", [], "plain", 0, (int(10 * d), int(7.5 * sqrt(3) * d)), 0.5)
-lattice_48 = lattice("WU", [], "plain", 0, (int(10 * d), int(8.5 * sqrt(3) * d)), 0.5)
+lattice_48 = lattice(
+    "WU",
+    ["cavalry", "infantry"],
+    "plain",
+    0,
+    (int(10 * d), int(8.5 * sqrt(3) * d)),
+    0.5,
+)
 lattice_roll_7 = [
     lattice_40,
     lattice_41,
@@ -155,13 +213,25 @@ lattice_50 = lattice("WEI", [], "plain", 0, (int(11.5 * d), int(2 * sqrt(3) * d)
 lattice_51 = lattice(
     "WEI", ["HUBAO_cavalry"], "city", 2, (int(11.5 * d), int(3 * sqrt(3) * d)), 5
 )  # 洛阳
-lattice_52 = lattice("WEI", [], "plain", 0, (int(11.5 * d), int(4 * sqrt(3) * d)), 0.5)
+lattice_52 = lattice(
+    "WEI",
+    ["infantry", "archer"],
+    "plain",
+    0,
+    (int(11.5 * d), int(4 * sqrt(3) * d)),
+    0.5,
+)
 lattice_53 = lattice(
-    "WU", [], "city", 2, (int(11.5 * d), int(5 * sqrt(3) * d)), 2
+    "WU",
+    ["infantry", "archer", "archer"],
+    "city",
+    2,
+    (int(11.5 * d), int(5 * sqrt(3) * d)),
+    2,
 )  # 武昌
 lattice_54 = lattice("WU", [], "plain", 0, (int(11.5 * d), int(6 * sqrt(3) * d)), 0.5)
 lattice_55 = lattice(
-    "WU", [], "city", 2, (int(11.5 * d), int(7 * sqrt(3) * d)), 2
+    "WU", ["infantry", "cavalry"], "city", 2, (int(11.5 * d), int(7 * sqrt(3) * d)), 2
 )  # 长沙
 lattice_56 = lattice("WU", [], "plain", 0, (int(11.5 * d), int(8 * sqrt(3) * d)), 0.5)
 lattice_57 = lattice("WU", [], "plain", 0, (int(11.5 * d), int(9 * sqrt(3) * d)), 0.5)
@@ -178,13 +248,23 @@ lattice_roll_8 = [
 ]
 """第八列格子"""
 lattice_58 = lattice(
-    "WEI", [], "city", 2, (int(13 * d), int(0.5 * sqrt(3) * d)), 2
+    "WEI",
+    ["infantry", "infantry", "cavalry"],
+    "city",
+    2,
+    (int(13 * d), int(0.5 * sqrt(3) * d)),
+    2,
 )  # 幽州
 lattice_59 = lattice("WEI", [], "plain", 0, (int(13 * d), int(1.5 * sqrt(3) * d)), 0.5)
 lattice_60 = lattice("WEI", [], "plain", 0, (int(13 * d), int(2.5 * sqrt(3) * d)), 0.5)
 lattice_61 = lattice("WEI", [], "plain", 0, (int(13 * d), int(3.5 * sqrt(3) * d)), 0.5)
 lattice_62 = lattice(
-    "WEI", [], "city", 2, (int(13 * d), int(4.5 * sqrt(3) * d)), 2
+    "WEI",
+    ["infantry", "infantry", "infantry"],
+    "city",
+    2,
+    (int(13 * d), int(4.5 * sqrt(3) * d)),
+    2,
 )  # 合肥
 lattice_63 = lattice("WU", [], "plain", 0, (int(13 * d), int(5.5 * sqrt(3) * d)), 0.5)
 lattice_64 = lattice("WU", [], "plain", 0, (int(13 * d), int(6.5 * sqrt(3) * d)), 0.5)
@@ -205,8 +285,17 @@ lattice_roll_9 = [
 lattice_67 = lattice("WEI", [], "plain", 0, (int(14.5 * d), int(2 * sqrt(3) * d)), 0.5)
 lattice_68 = lattice("WEI", [], "plain", 0, (int(14.5 * d), int(3 * sqrt(3) * d)), 0.5)
 lattice_69 = lattice("WEI", [], "plain", 0, (int(14.5 * d), int(4 * sqrt(3) * d)), 0.5)
-lattice_70 = lattice("WU", [], "plain", 0, (int(14.5 * d), int(5 * sqrt(3) * d)), 0.5)
-lattice_71 = lattice("WU", [], "plain", 0, (int(14.5 * d), int(6 * sqrt(3) * d)), 0.5)
+lattice_70 = lattice(
+    "WU",
+    ["infantry", "infantry"],
+    "plain",
+    0,
+    (int(14.5 * d), int(5 * sqrt(3) * d)),
+    0.5,
+)
+lattice_71 = lattice(
+    "WU", ["cavalry"], "plain", 0, (int(14.5 * d), int(6 * sqrt(3) * d)), 0.5
+)
 lattice_72 = lattice("WU", [], "plain", 0, (int(14.5 * d), int(7 * sqrt(3) * d)), 0.5)
 lattice_73 = lattice("WU", [], "plain", 0, (int(14.5 * d), int(8 * sqrt(3) * d)), 0.5)
 lattice_roll_10 = [
@@ -222,7 +311,7 @@ lattice_roll_10 = [
 lattice_74 = lattice("WEI", [], "plain", 0, (int(16 * d), int(1.5 * sqrt(3) * d)), 0.5)
 lattice_75 = lattice(
     "WU",
-    ["JIEFAN_infantry", "JIEFAN_infantry"],
+    ["JIEFAN_infantry", "JIEFAN_infantry", "cavalry"],
     "city",
     2,
     (int(16 * d), int(4.5 * sqrt(3) * d)),
@@ -297,6 +386,7 @@ ban_line_points = (
     (int(9.5 * d), int(7 * sqrt(3) * d)),
     (int(10.5 * d), int(7 * sqrt(3) * d)),
 )
+selected_units = []
 # 已经经过的大回合数
 major_round_num = 0
 # 已经经过的小回合数
@@ -539,6 +629,9 @@ while isRunning:
         pg.draw.lines(window, (173, 216, 230), False, yantze_river_points_1, 20)
         pg.draw.lines(window, (173, 216, 230), False, yantze_river_points_2, 20)
         pg.draw.lines(window, (173, 216, 230), False, yellow_river_points, 20)
-
+        # 接下来是兵牌交互逻辑
+        for lattice_to_check in lattices:
+            if lattice_to_check.country == player_country:
+                unit_choose_check(window, lattice_to_check)
         pg.display.update()
 pg.quit()
