@@ -406,7 +406,7 @@ class GameApp:
         # 构建闭合多边形：上岸点正序 + 下岸点倒序
         full_poly = upper_edge + lower_edge[::-1]
         
-        # 绘制实心多边形
+        # 1. 绘制实心多边形
         pg.draw.polygon(self.window, color, full_poly)
 
     # --- 资源构建辅助方法 (Asset Builders) -------------------------------------------------

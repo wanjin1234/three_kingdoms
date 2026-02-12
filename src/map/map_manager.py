@@ -100,7 +100,7 @@ class MapManager:
             
             # 4. 画白色的底色（填充）
             pg.draw.polygon(surface, pg.Color("white"), vertices)
-            # 5. 画彩色的边框（使用自定义的硬角连接绘制）
+            # 5. 画彩色的边框
             self._draw_hex_border(surface, color, vertices, self._border_width)
             # 6. 画地形图标 (山、城等)
             self._draw_terrain_icon(surface, province.terrain, center)
@@ -154,22 +154,8 @@ class MapManager:
             upper_edge.append(p_upper)
             lower_edge.append(p_lower)
 
-        # 构建闭合多边形 (外圈 + 内圈)
-        # 注意：为了让边框是空的（只画环），我们需要用 construct properly
-        # 但 pygame.draw.polygon 只能画实心的。
-        # 这里我们其实是想画一个 "有宽度的闭合线框"。
-        # 最简单的方法是：画一个大的实心多边形（外圈），然后再画一个小的实心多边形（内圈，用白色盖住？不对，这会盖住地形）
-        # 等等，之前的代码是先画白色底色，再画边框，再画地形。
-        # 如果我画实心边框，它就是一条很粗的线。
-        
-        # 修正策略：
-        # 我们计算出了外圈点 (upper_edge) 和内圈点 (lower_edge)。
-        # 对于六边形，upper_edge 是往外扩的，lower_edge 是往里缩的 (假设逆时针顺序)。
-        # 我们可以直接构造一个带孔的多边形？Pygame 不支持直接画带孔的。
-        # 我们可以画 6 个四边形拼接起来！
-        # 每一条边对应一个四边形：
-        # (Upper[i], Upper[i+1], Lower[i+1], Lower[i])
-        
+        # 1. 填充实体颜色
+        # 我们用6个四边形拼出一个闭合的粗框
         for i in range(count):
             next_i = (i + 1) % count
             poly = [
@@ -179,9 +165,6 @@ class MapManager:
                 lower_edge[i]
             ]
             pg.draw.polygon(surface, color, poly)
-            # 为了防止四边形接缝处有微小缝隙，可以稍微重叠一点或者画个小圆
-            # 但理论上数学坐标是完美的。像素光栅化可能会有缝隙。
-            # 鉴于 width=10 很大，应该没事。
 
     def _draw_terrain_icon(self, surface: pg.Surface, terrain: str, center: tuple[int, int]) -> None:
         """绘制地形图标，放在格子的左上角"""
