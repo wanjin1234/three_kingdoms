@@ -35,9 +35,9 @@ def lattice_draw_pos(lattice_pos, d):
     """
     center_x, center_y = lattice_pos
     draw_pos = [
-        (center_x, int(center_y - 0.5 * d)),
-        (center_x, int(center_y + 0.5 * d)),
-        (int(center_x - 0.5 * d), int(center_y + 0.5 * d)),
+        (center_x, int(center_y - 0.6 * d)),
+        (center_x, int(center_y)),
+        (int(center_x - 0.6 * d), int(center_y)),
     ]
     return draw_pos
 
@@ -46,116 +46,44 @@ def draw_unit_icon(surface, unit_type, d, pos):
     """根据格子上单位的数量和格子所在的位置画出单位图标
     参数：
     surface:要画的屏幕
-    unit_type:部队种类(含数量,如1个infantry为infantry_1,2个为infantry_2)
+    unit_type:部队种类
     d:格子的边长
     pos:画的位置
     """
     infantry_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "infantry_icon.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    infantry_image_2 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "infantry_icon_2.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    infantry_image_3 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "infantry_icon_3.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
+        (int(0.6 * d), int(0.6 * d)),
     )
     cavalry_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "cavalry_icon.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    cavalry_image_2 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "cavalry_icon_2.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    cavalry_image_3 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "cavalry_icon_3.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
+        (int(0.6 * d), int(0.6 * d)),
     )
     archer_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "archer_icon.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    archer_image_2 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "archer_icon_2.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    archer_image_3 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "archer_icon_3.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
+        (int(0.6 * d), int(0.6 * d)),
     )
     JIEFAN_infantry_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "JIEFAN_infantry_icon.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    JIEFAN_infantry_image_2 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "JIEFAN_infantry_icon_2.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    JIEFAN_infantry_image_3 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "JIEFAN_infantry_icon_3.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
+        (int(0.6 * d), int(0.6 * d)),
     )
     HUBAO_cavalry_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "HUBAO_cavalry_icon.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    HUBAO_cavalry_image_2 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "HUBAO_cavalry_icon_2.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    HUBAO_cavalry_image_3 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "HUBAO_cavalry_icon_3.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
+        (int(0.6 * d), int(0.6 * d)),
     )
     WUDANG_archer_image_1 = pg.transform.scale(
         pg.image.load(os.path.join(pictures_path, "WUDANG_archer_icon.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    WUDANG_archer_image_2 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "WUDANG_archer_icon_2.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
-    )
-    WUDANG_archer_image_3 = pg.transform.scale(
-        pg.image.load(os.path.join(pictures_path, "WUDANG_archer_icon_3.jpg")),
-        (int(0.7 * d), int(0.7 * d)),
+        (int(0.6 * d), int(0.6 * d)),
     )
 
-    if unit_type == "infantry_1":
+    if unit_type == "infantry":
         surface.blit(infantry_image_1, pos)
-    elif unit_type == "infantry_2":
-        surface.blit(infantry_image_2, pos)
-    elif unit_type == "infantry_3":
-        surface.blit(infantry_image_3, pos)
-    elif unit_type == "cavalry_1":
+    elif unit_type == "cavalry":
         surface.blit(cavalry_image_1, pos)
-    elif unit_type == "cavalry_2":
-        surface.blit(cavalry_image_2, pos)
-    elif unit_type == "cavalry_3":
-        surface.blit(cavalry_image_3, pos)
-    elif unit_type == "archer_1":
+    elif unit_type == "archer":
         surface.blit(archer_image_1, pos)
-    elif unit_type == "archer_2":
-        surface.blit(archer_image_2, pos)
-    elif unit_type == "archer_3":
-        surface.blit(archer_image_3, pos)
-    elif unit_type == "JIEFAN_infantry_1":
+    elif unit_type == "JIEFAN_infantry":
         surface.blit(JIEFAN_infantry_image_1, pos)
-    elif unit_type == "JIEFAN_infantry_2":
-        surface.blit(JIEFAN_infantry_image_2, pos)
-    elif unit_type == "JIEFAN_infantry_3":
-        surface.blit(JIEFAN_infantry_image_3, pos)
-    elif unit_type == "HUBAO_cavalry_1":
+    elif unit_type == "HUBAO_cavalry":
         surface.blit(HUBAO_cavalry_image_1, pos)
-    elif unit_type == "HUBAO_cavalry_2":
-        surface.blit(HUBAO_cavalry_image_2, pos)
-    elif unit_type == "HUBAO_cavalry_3":
-        surface.blit(HUBAO_cavalry_image_3, pos)
-    elif unit_type == "WUDANG_archer_1":
+    elif unit_type == "WUDANG_archer":
         surface.blit(WUDANG_archer_image_1, pos)
-    elif unit_type == "WUDANG_archer_2":
-        surface.blit(WUDANG_archer_image_2, pos)
-    elif unit_type == "WUDANG_archer_3":
-        surface.blit(WUDANG_archer_image_3, pos)

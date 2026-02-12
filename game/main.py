@@ -44,7 +44,7 @@ lattice_8 = lattice("WEI", [], "plain", 0, (int(4 * d), int(2.5 * sqrt(3) * d)),
 lattice_9 = lattice("SHU", [], "hill", 0, (int(4 * d), int(3.5 * sqrt(3) * d)), 0.5)
 lattice_10 = lattice("SHU", [], "plain", 0, (int(4 * d), int(4.5 * sqrt(3) * d)), 0.5)
 lattice_11 = lattice(
-    "SHU", ["WUDANG_archer_1"], "city", 2, (int(4 * d), int(5.5 * sqrt(3) * d)), 5
+    "SHU", ["WUDANG_archer"], "city", 2, (int(4 * d), int(5.5 * sqrt(3) * d)), 5
 )  # 成都
 lattice_12 = lattice("SHU", [], "plain", 0, (int(4 * d), int(6.5 * sqrt(3) * d)), 0.5)
 lattice_13 = lattice("SHU", [], "plain", 0, (int(4 * d), int(7.5 * sqrt(3) * d)), 0.5)
@@ -153,7 +153,7 @@ lattice_roll_7 = [
 lattice_49 = lattice("WEI", [], "plain", 0, (int(11.5 * d), int(sqrt(3) * d)), 0.5)
 lattice_50 = lattice("WEI", [], "plain", 0, (int(11.5 * d), int(2 * sqrt(3) * d)), 0.5)
 lattice_51 = lattice(
-    "WEI", ["HUBAO_cavalry_1"], "city", 2, (int(11.5 * d), int(3 * sqrt(3) * d)), 5
+    "WEI", ["HUBAO_cavalry"], "city", 2, (int(11.5 * d), int(3 * sqrt(3) * d)), 5
 )  # 洛阳
 lattice_52 = lattice("WEI", [], "plain", 0, (int(11.5 * d), int(4 * sqrt(3) * d)), 0.5)
 lattice_53 = lattice(
@@ -221,7 +221,12 @@ lattice_roll_10 = [
 """第十列格子"""
 lattice_74 = lattice("WEI", [], "plain", 0, (int(16 * d), int(1.5 * sqrt(3) * d)), 0.5)
 lattice_75 = lattice(
-    "WU", ["JIEFAN_infantry_2"], "city", 2, (int(16 * d), int(4.5 * sqrt(3) * d)), 5
+    "WU",
+    ["JIEFAN_infantry", "JIEFAN_infantry"],
+    "city",
+    2,
+    (int(16 * d), int(4.5 * sqrt(3) * d)),
+    5,
 )  # 建邺
 lattice_76 = lattice("WU", [], "plain", 2, (int(16 * d), int(5.5 * sqrt(3) * d)), 0.5)
 lattice_77 = lattice("WU", [], "plain", 2, (int(16 * d), int(6.5 * sqrt(3) * d)), 0.5)
@@ -518,20 +523,18 @@ while isRunning:
         for lattice_to_draw in lattices:
             draw_hexagon(
                 window, color_dict[lattice_to_draw.country], lattice_to_draw.pos, d, 10
-            )
-            draw_terrain_icon(window, lattice_to_draw.pos, d, lattice_to_draw.terrain)
+            )  # 画出六边形格子
+            draw_terrain_icon(
+                window, lattice_to_draw.pos, d, lattice_to_draw.terrain
+            )  # 画出地形图标
             if lattice_to_draw.unit:
-                for unit in lattice_to_draw.unit:
-                    unit_type_num = len(
-                        lattice_to_draw.unit
-                    )  # 获取这个格子上有多少种兵
-                    for i in range(unit_type_num):
-                        draw_unit_icon(
-                            window,
-                            lattice_to_draw.unit[i],
-                            d,
-                            lattice_draw_pos(lattice_to_draw.pos, d)[i],
-                        )
+                for i in range(len(lattice_to_draw.unit)):
+                    draw_unit_icon(
+                        window,
+                        lattice_to_draw.unit[i],
+                        d,
+                        lattice_draw_pos(lattice_to_draw.pos, d)[i],
+                    )
         pg.draw.lines(window, "black", False, ban_line_points, 20)
         pg.draw.lines(window, (173, 216, 230), False, yantze_river_points_1, 20)
         pg.draw.lines(window, (173, 216, 230), False, yantze_river_points_2, 20)
