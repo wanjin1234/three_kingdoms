@@ -242,6 +242,34 @@ class GameApp:
                 
                 unit.mp = max_mp
 
+    def _manual_end_turn(self) -> None:
+        """手动结束回合：恢复行动力"""
+        self._replenish_action_points()
+        if self.info_panel:
+            self.info_panel.show_message("回合结束，行动力已恢复")
+            
+    def _restart_game(self) -> None:
+        """重置游戏状态并返回选人界面"""
+        # 1. 重新加载地图以重置单位
+        self.map_manager = MapManager(
+            definition_file=self.settings.map_definition_file,
+            terrain_graphics_dir=self.settings.map_graphics_dir,
+            color_resolver=self.kingdom_repository.get_color,
+        )
+        self.map_manager.set_hex_side(self.hex_side)
+        
+        # 2. 清理选择和UI
+        self.clear_selection()
+        self.show_combat_ui = False
+        self.combat_result_title = None
+        if self.info_panel: 
+             self.info_panel.show_properties("")
+             
+        # 3. 切换状态
+        self.player_country = None
+        self.state = GameState.CHOOSING
+        logger.info("Game restarted.")
+
     def run(self) -> None:
         """
         启动游戏主循环。
@@ -401,6 +429,18 @@ class GameApp:
             self.clear_selection() # 按ESC取消选择
         elif event.type == pg.MOUSEBUTTONDOWN:
             if event.button == 1:
+                # 0.0 检查功能按钮
+                for btn in getattr(self, "control_btns", []):
+                    if btn["rect"].collidepoint(event.pos):
+                        action = btn["action"]
+                        if action == "EXIT":
+                            self.stop()
+                        elif action == "RESTART":
+                            self._restart_game()
+                        elif action == "END_TURN":
+                            self._manual_end_turn()
+                        return
+
                 # 0. 优先处理顶部的战斗按钮
                 if self.show_combat_ui and self.combat_btn_rect and self.combat_btn_rect.collidepoint(event.pos):
                     if self.combat_callback:
@@ -1113,6 +1153,17 @@ class GameApp:
         self._draw_smooth_polyline(pg.Color(173, 216, 230), self.yellow_river_polyline, 20)
         self._draw_smooth_polyline(pg.Color("black"), self.ban_line_polyline, 20)
 
+        # 3.5 画功能按钮
+        for btn in getattr(self, "control_btns", []):
+            # 简单的悬停效果
+            color = btn["bg_color"]
+            if btn["rect"].collidepoint(pg.mouse.get_pos()):
+                color = pg.Color("#666666") # Lighter gray
+            
+            pg.draw.rect(self.window, color, btn["rect"], border_radius=5)
+            pg.draw.rect(self.window, btn["border_color"], btn["rect"], 2, border_radius=5)
+            self.window.blit(btn["surface"], btn["text_pos"])
+
         # 4. 画回合结束按钮（右下角的圆圈）
         pg.draw.circle(
             self.window,
@@ -1428,6 +1479,43 @@ class GameApp:
             country: self.country_tag_font.render(label, True, pg.Color("black"))
             for country, label in self.country_labels.items()
         }
+
+        # --- 右下角功能按钮 ---
+        # 视觉顺序从左到右: [退出] [重开] [手动结束] [O]
+        # 我们从圆圈左侧开始往左排布
+        btn_font = self._font("msyh.ttc", int(height * 0.025))
+        
+        # 列表顺序：最靠近圆圈的是 "手动结束"，然后是 "重开"，最左是 "退出"
+        labels = ["手动结束回合", "重开一局", "退出游戏"]
+        actions = ["END_TURN", "RESTART", "EXIT"]
+        
+        self.control_btns = []
+        
+        # 起始X坐标：圆圈左边缘 (width - 2r) 再往左一点
+        current_x_right = int(width - 2 * r - 20)
+        
+        for label, action in zip(labels, actions):
+            surf = btn_font.render(label, True, pg.Color("white"))
+            w = surf.get_width() + 20
+            h = surf.get_height() + 10
+            
+            x = current_x_right - w
+            # 垂直居中于圆心 y = height - r
+            y = int(height - r - h / 2)
+            
+            rect = pg.Rect(x, y, w, h)
+            
+            self.control_btns.append({
+                "rect": rect,
+                "surface": surf,
+                "text_pos": (x + 10, y + 5),
+                "action": action,
+                "bg_color": pg.Color("#444444"),  # 深灰背景
+                "border_color": pg.Color("white")
+            })
+            
+            # 往左移，留出间隙
+            current_x_right -= (w + 10)
         # 往右调一点，之前是 width - height * 0.15，现在改为 0.05，更靠右
         self.country_tag_pos = (int(width - height * 0.12), 0)
 
