@@ -205,6 +205,12 @@ class GameApp:
         
         # 保存字体给战斗UI使用
         self.combat_ui_font = info_font
+        # 预渲染解除混乱按钮文字
+        self._recover_btn_surf = self.combat_ui_font.render("解除混乱", True, pg.Color("white"))
+
+        # Tooltip Caching
+        self._last_tooltip_data = None
+        self._cached_tooltip_surface: pg.Surface | None = None
         
         # 初始化悬停提示字体 (比标准字体小一圈)
         tooltip_size = max(12, int(self.screen_height * 0.018))
@@ -704,6 +710,7 @@ class GameApp:
         # 如果移动成功且有单位进入，占领该地
         if moving_units:
              target.country = self.player_country
+             self.map_manager.invalidate_cache()
         
         # 移除选中状态
         self.clear_selection()
@@ -1184,21 +1191,13 @@ class GameApp:
                 # 占领变更
                 target.country = self.player_country
                 movers += 1
+        
+        if movers > 0:
+            self.map_manager.invalidate_cache()
                 
     def _get_neighbors(self, unit_prov: object) -> List[object]:
         """获取邻居"""
-        # 简单暴力遍历判断距离
-        # 优化：应该在 map_manager 里存邻接表，这里先实时算
-        nbs = []
-        center = unit_prov.center_cache if unit_prov.center_cache else unit_prov.compute_center(self.hex_side)
-        threshold = SQRT3 * self.hex_side * 1.5
-        for p in self.map_manager.provinces:
-            if p == unit_prov: continue
-            
-            p_center = p.center_cache if p.center_cache else p.compute_center(self.hex_side)
-            if dist(center, p_center) < threshold:
-                nbs.append(p)
-        return nbs
+        return self.map_manager.get_neighbors(unit_prov.province_id)
 
     def _handle_selection_click(self, mouse_pos: Tuple[int, int]) -> None:
         """
@@ -1373,9 +1372,7 @@ class GameApp:
                 
                 if len(confused_list) == 1:
                     # 绘制解除混乱按钮
-                    font = self.combat_ui_font
-                    btn_text = "解除混乱"
-                    btn_surf = font.render(btn_text, True, pg.Color("white"))
+                    btn_surf = self._recover_btn_surf
                     
                     btn_w = btn_surf.get_width() + 20
                     btn_h = btn_surf.get_height() + 10
@@ -1564,54 +1561,60 @@ class GameApp:
                     tooltip_parts.append((f"({country_cn})", c_color, True, True)) # 国家名也给个阴影会让颜色更突出
 
         if tooltip_parts:
-             # 计算总宽度和高度
-             font_regular = self.tooltip_font
-             font_bold = self.tooltip_bold_font 
-             
-             # 渲染每个部分
-             rendered_surfaces = []
-             total_w = 0
-             max_h = 0
-             
-             shadow_offset = (1, 1)
-             shadow_color = pg.Color("black") # 或者深灰
+             # 检查缓存
+             if tooltip_parts == self._last_tooltip_data and self._cached_tooltip_surface:
+                 final_surf = self._cached_tooltip_surface
+             else:
+                 # 计算总宽度和高度
+                 font_regular = self.tooltip_font
+                 font_bold = self.tooltip_bold_font 
+                 
+                 # 渲染每个部分
+                 rendered_surfaces = []
+                 total_w = 0
+                 max_h = 0
+                 
+                 shadow_offset = (1, 1)
+                 shadow_color = pg.Color("black") # 或者深灰
 
-             for text, color, is_bold, has_shadow in tooltip_parts:
-                 font = font_bold if is_bold else font_regular
-                 
-                 # 渲染文字
-                 fg_surf = font.render(text, True, color)
-                 
-                 if has_shadow:
-                     # 渲染阴影 (渲染黑色并轻微模糊/偏移)
-                     shadow_surf = font.render(text, True, shadow_color)
-                     # 创建一个够大的容器容纳影子和正文
-                     w = fg_surf.get_width() + abs(shadow_offset[0])
-                     h = fg_surf.get_height() + abs(shadow_offset[1])
-                     container = pg.Surface((w, h), pg.SRCALPHA)
+                 for text, color, is_bold, has_shadow in tooltip_parts:
+                     font = font_bold if is_bold else font_regular
                      
-                     # 先画影子
-                     container.blit(shadow_surf, shadow_offset)
-                     # 再画正文
-                     container.blit(fg_surf, (0, 0))
-                     s = container
-                 else:
-                     s = fg_surf
+                     # 渲染文字
+                     fg_surf = font.render(text, True, color)
+                     
+                     if has_shadow:
+                         # 渲染阴影 (渲染黑色并轻微模糊/偏移)
+                         shadow_surf = font.render(text, True, shadow_color)
+                         # 创建一个够大的容器容纳影子和正文
+                         w = fg_surf.get_width() + abs(shadow_offset[0])
+                         h = fg_surf.get_height() + abs(shadow_offset[1])
+                         container = pg.Surface((w, h), pg.SRCALPHA)
+                         
+                         # 先画影子
+                         container.blit(shadow_surf, shadow_offset)
+                         # 再画正文
+                         container.blit(fg_surf, (0, 0))
+                         s = container
+                     else:
+                         s = fg_surf
 
-                 rendered_surfaces.append(s)
-                 total_w += s.get_width()
-                 max_h = max(max_h, s.get_height())
-             
-             # 创建合成Surface
-             
-             # 创建合成Surface
-             final_surf = pg.Surface((total_w, max_h), pg.SRCALPHA)
-             current_x = 0
-             for s in rendered_surfaces:
-                 # 垂直居中
-                 y_offset = (max_h - s.get_height()) // 2
-                 final_surf.blit(s, (current_x, y_offset))
-                 current_x += s.get_width()
+                     rendered_surfaces.append(s)
+                     total_w += s.get_width()
+                     max_h = max(max_h, s.get_height())
+                 
+                 # 创建合成Surface
+                 final_surf = pg.Surface((total_w, max_h), pg.SRCALPHA)
+                 current_x = 0
+                 for s in rendered_surfaces:
+                     # 垂直居中
+                     y_offset = (max_h - s.get_height()) // 2
+                     final_surf.blit(s, (current_x, y_offset))
+                     current_x += s.get_width()
+                     
+                 # 更新缓存
+                 self._last_tooltip_data = tooltip_parts
+                 self._cached_tooltip_surface = final_surf
 
              # 计算位置：鼠标右下方 15px
              x, y = mouse_pos

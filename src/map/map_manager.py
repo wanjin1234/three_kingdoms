@@ -38,11 +38,13 @@ class MapManager:
         self._ban_polylines = ban_polylines
         
         # 加载所有格子数据
-        self._provinces = self._load_provinces(definition_file)
+        self._provinces_list = self._load_provinces(definition_file)
+        self._provinces_map: Dict[int, Province] = {p.province_id: p for p in self._provinces_list}
         
         self._hex_side = 0.0  # 格子边长 (像素)，初始为0，稍后会设置
         self._terrain_cache: Dict[str, pg.Surface | None] = {} # 缓存地形图片，避免重复读取硬盘
         self._border_width = 10 # 格子边框的粗细
+        self._cached_background: pg.Surface | None = None # 预渲染的地图背景缓存
 
     @staticmethod
     def _load_provinces(definition_file: Path) -> List[Province]:
@@ -79,7 +81,10 @@ class MapManager:
         """设置格子的边长，这通常在窗口大小确定后调用"""
         self._hex_side = side_length
         # 预计算所有格子的几何信息 (利用 Pygame Vector2 进行优化)
-        for p in self._provinces:
+        # 重置缓存
+        self._cached_background = None
+        
+        for p in self._provinces_list:
             # 1. 计算中心点 (Tuple -> Vector2)
             cx, cy = p.compute_center(side_length)
             p.center_cache = pg.math.Vector2(cx, cy)
@@ -117,9 +122,9 @@ class MapManager:
              for i in range(len(polyline) - 1):
                  ban_segments.append((polyline[i], polyline[i+1]))
 
-        for p1 in self._provinces:
+        for p1 in self._provinces_list:
             self._adjacency[p1.province_id] = []
-            for p2 in self._provinces:
+            for p2 in self._provinces_list:
                 if p1.province_id == p2.province_id:
                     continue
                 
@@ -227,39 +232,57 @@ class MapManager:
     @property
     def provinces(self) -> Sequence[Province]:
         """返回所有格子的列表（只读）"""
-        return self._provinces
+        return self._provinces_list
 
     def get_by_id(self, province_id: int) -> Province | None:
         """根据 ID 查找格子"""
-        # 这是一个生成器表达式，寻找第一个匹配在这个 ID 的格子
-        return next((p for p in self._provinces if p.province_id == province_id), None)
+        return self._provinces_map.get(province_id)
+
+    def get_neighbors(self, province_id: int) -> List[Province]:
+        """获取相邻的格子"""
+        ids = self._adjacency.get(province_id, [])
+        return [self._provinces_map[i] for i in ids if i in self._provinces_map]
+
+    def invalidate_cache(self) -> None:
+        """使得缓存失效，强制下一帧重绘"""
+        self._cached_background = None
 
     def draw(self, surface: pg.Surface) -> None:
         """
         绘制整个地图。
-        这个函数会在每一帧被调用，所以效率很重要。
+        使用缓存机制优化性能。
         """
         if not self._hex_side:
             raise RuntimeError("Hex side length has not been initialized (格子边长未初始化)")
 
-        for province in self._provinces:
-            # 1. 使用缓存的中心点 (Vector2)
-            if province.center_cache is None or province.vertices_cache is None:
-                # 如果尚未初始化缓存（理论上不会发生），回退或跳过
-                continue
-                
-            center = province.center_cache
-            # 2. 获取所属国家的颜色
-            color = self._color_resolver(province.country)
-            # 3. 使用缓存的顶点 (List[Vector2])
-            vertices = province.vertices_cache
+        # 检查缓存是否有效 (存在且尺寸匹配)
+        if (self._cached_background is None or 
+            self._cached_background.get_size() != surface.get_size()):
             
-            # 4. 画白色的底色（填充）
-            pg.draw.polygon(surface, pg.Color("white"), vertices)
-            # 5. 画彩色的边框
-            self._draw_hex_border(surface, color, vertices, self._border_width)
-            # 6. 画地形图标 (山、城等)
-            self._draw_terrain_icon(surface, province.terrain, center)
+            # 创建新的缓存层 (带透明通道)
+            self._cached_background = pg.Surface(surface.get_size(), pg.SRCALPHA)
+            
+            # 在缓存层上绘制所有静态元素
+            for province in self._provinces_list:
+                # 1. 使用缓存的中心点 (Vector2)
+                if province.center_cache is None or province.vertices_cache is None:
+                    continue
+                    
+                center = province.center_cache
+                # 2. 获取所属国家的颜色
+                color = self._color_resolver(province.country)
+                # 3. 使用缓存的顶点 (List[Vector2])
+                vertices = province.vertices_cache
+                
+                # 4. 画白色的底色（填充）
+                pg.draw.polygon(self._cached_background, pg.Color("white"), vertices)
+                # 5. 画彩色的边框
+                self._draw_hex_border(self._cached_background, color, vertices, self._border_width)
+                # 6. 画地形图标 (山、城等)
+                self._draw_terrain_icon(self._cached_background, province.terrain, center)
+        
+        # 直接将缓存好的地图绘制到屏幕上
+        surface.blit(self._cached_background, (0, 0))
 
     def _draw_hex_border(self, surface: pg.Surface, color: pg.Color, vertices: Sequence[pg.math.Vector2], width: int) -> None:
         """
