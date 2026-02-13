@@ -49,7 +49,8 @@ class SelectionOverlay:
                 continue
 
             # 找到格子的屏幕位置
-            center = province.compute_center(hex_side)
+            # 优先使用缓存的中心点
+            center = province.center_cache if province.center_cache else province.compute_center(hex_side)
             
             # 找到该格子里那个兵的具体矩形位置
             rects = rect_provider(center, len(province.units))

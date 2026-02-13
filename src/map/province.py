@@ -31,6 +31,10 @@ class Province:
     x_factor: float     # 在逻辑地图上的横坐标 (不是像素坐标)
     y_factor: float     # 在逻辑地图上的纵坐标
     units: List[UnitState] = field(default_factory=list)    # 当前格子上有什么兵，存的是 UnitState 对象
+    
+    # 缓存字段 (不要在 init 里传参)
+    center_cache: pg.math.Vector2 | None = field(default=None, init=False)
+    vertices_cache: List[pg.math.Vector2] | None = field(default=None, init=False)
 
     def compute_center(self, hex_side: float) -> Tuple[int, int]:
         """

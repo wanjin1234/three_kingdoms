@@ -74,6 +74,17 @@ class MapManager:
     def set_hex_side(self, side_length: float) -> None:
         """设置格子的边长，这通常在窗口大小确定后调用"""
         self._hex_side = side_length
+        # 预计算所有格子的几何信息 (利用 Pygame Vector2 进行优化)
+        for p in self._provinces:
+            # 1. 计算中心点 (Tuple -> Vector2)
+            cx, cy = p.compute_center(side_length)
+            p.center_cache = pg.math.Vector2(cx, cy)
+            
+            # 2. 计算顶点 (Tuple -> Vector2)
+            # hex_vertices 返回 Tuple[Tuple[int, int], ...]
+            # 我们将其转换为 List[pg.math.Vector2] 方便后续数学计算
+            raw_verts = hex_vertices((cx, cy), side_length)
+            p.vertices_cache = [pg.math.Vector2(v) for v in raw_verts]
 
     @property
     def provinces(self) -> Sequence[Province]:
@@ -94,12 +105,16 @@ class MapManager:
             raise RuntimeError("Hex side length has not been initialized (格子边长未初始化)")
 
         for province in self._provinces:
-            # 1. 计算中心点
-            center = province.compute_center(self._hex_side)
+            # 1. 使用缓存的中心点 (Vector2)
+            if province.center_cache is None or province.vertices_cache is None:
+                # 如果尚未初始化缓存（理论上不会发生），回退或跳过
+                continue
+                
+            center = province.center_cache
             # 2. 获取所属国家的颜色
             color = self._color_resolver(province.country)
-            # 3. 计算六边形的 6 个顶点坐标
-            vertices = hex_vertices(center, self._hex_side)
+            # 3. 使用缓存的顶点 (List[Vector2])
+            vertices = province.vertices_cache
             
             # 4. 画白色的底色（填充）
             pg.draw.polygon(surface, pg.Color("white"), vertices)
@@ -108,15 +123,15 @@ class MapManager:
             # 6. 画地形图标 (山、城等)
             self._draw_terrain_icon(surface, province.terrain, center)
 
-    def _draw_hex_border(self, surface: pg.Surface, color: pg.Color, vertices: Sequence[Tuple[int, int]], width: int) -> None:
+    def _draw_hex_border(self, surface: pg.Surface, color: pg.Color, vertices: Sequence[pg.math.Vector2], width: int) -> None:
         """
         绘制六边形的边框，使用硬朗的棱角连接 (Miter Join)。
         """
         if len(vertices) < 3:
             return
 
-        # 把点转换成向量方便计算
-        vectors = [pg.math.Vector2(p) for p in vertices]
+        # 把点转换成向量方便计算 (现在传入的就是 List[Vector2])
+        vectors = vertices
         count = len(vectors)
         half_width = width / 2
         
@@ -169,20 +184,22 @@ class MapManager:
             ]
             pg.draw.polygon(surface, color, poly)
 
-    def _draw_terrain_icon(self, surface: pg.Surface, terrain: str, center: tuple[int, int]) -> None:
+    def _draw_terrain_icon(self, surface: pg.Surface, terrain: str, center: pg.math.Vector2) -> None:
         """绘制地形图标，放在格子的左上角"""
-        icon = self._get_terrain_icon(terrain)
-        if icon is None:
-            return
-            
+        if not terrain: return
+        
         # 2x2 网格布局: 左上角留给地形
         # 计算偏移量，大约是边长的一半
-        offset = int(self._hex_side * 0.5)
+        offset = self._hex_side * 0.5
         
         # 计算左上角的坐标
-        # 注意: blit 函数通常以图片的左上角为锚点
-        pos = (center[0] - offset, center[1] - offset)
-        surface.blit(icon, pos)
+        # Vector2 可以直接减去标量吗？不行。
+        # pos = center - (offset, offset)
+        pos = (center.x - offset, center.y - offset)
+        
+        icon = self._get_terrain_icon(terrain)
+        if icon:
+            surface.blit(icon, pos)
 
     def _get_terrain_icon(self, terrain: str) -> pg.Surface | None:
         """

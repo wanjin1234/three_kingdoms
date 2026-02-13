@@ -145,14 +145,14 @@ class InfoPanel(BasePanel):
         # 清除选中的单位信息，避免重叠
         self._message = None 
 
-    def show_combat_result(self, dice: int, result_text: str, detail_msg: str = "") -> None:
-        """显示战斗结果"""
+    def show_combat_result(self, dice: int | None, result_text: str | None, detail_msg: str = "") -> None:
+        """显示战斗结果详请（只显示详情，不显示标题）"""
         self.dice_result = dice
         self.combat_result_text = result_text
         self._combat_attacker_info = None
         self._combat_enemy_info = None
         
-        # 详细战报显示在消息区域（不包含标题，标题单独绘制）
+        # 详细战报显示在消息区域
         self._message = detail_msg
         self._message_end_time = float("inf")
 

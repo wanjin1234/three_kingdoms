@@ -211,6 +211,10 @@ class GameApp:
         self.combat_ratio_val: float = 0.0
         self.combat_callback: Callable[[], None] | None = None
         self.combat_btn_rect: pg.Rect | None = None  # 在 render 时计算
+        
+        # 战斗结果显示 (Top UI area)
+        self.combat_result_title: str | None = None # e.g. "1:1 · 骰6 · A1"
+        self.combat_result_timer: float = 0.0       # 显示倒计时
 
     def run(self) -> None:
         """
@@ -248,8 +252,12 @@ class GameApp:
         # 无论如何，只要取消选择，战斗请求UI（按钮）就应该消失
         self.show_combat_ui = False 
         
-        if clear_ui and self.info_panel: 
-             self.info_panel.show_properties("") # 清空面板
+        # 只要点击了地图上的其他东西（或者清空选择），就应该清空上一次的战果(Top UI)
+        if clear_ui:
+            self.combat_result_title = None
+            self.combat_result_timer = 0
+            if self.info_panel: 
+                 self.info_panel.show_properties("") # 清空面板
 
     def add_selection(self, province_id: int, slot_index: int) -> None:
         """添加一个选中单位"""
@@ -302,7 +310,7 @@ class GameApp:
             if not prov: continue
             u_state = prov.units[idx]
             lines.append(self._format_unit_info(u_state))
-            lines.append("-" * 15)
+            # lines.append("-" * 15) # 不需要分割线了
             
         if self.info_panel:
             self.info_panel.show_properties("\n".join(lines))
@@ -375,7 +383,8 @@ class GameApp:
         threshold = self.hex_side * 0.9 
         
         for province in self.map_manager.provinces:
-            center = province.compute_center(self.hex_side)
+            # 优先使用缓存的中心点
+            center = province.center_cache if province.center_cache else province.compute_center(self.hex_side)
             d = dist(pos, center)
             if d < min_dist:
                 min_dist = d
@@ -428,9 +437,9 @@ class GameApp:
         selected_indices = sorted([idx for pid, idx in self.selected_units if pid == source_id])
         if not selected_indices: return
         
-        # 计算物理距离
-        start_pos = source.compute_center(self.hex_side)
-        end_pos = target.compute_center(self.hex_side)
+        # 计算物理距离 (优先使用缓存)
+        start_pos = source.center_cache if source.center_cache else source.compute_center(self.hex_side)
+        end_pos = target.center_cache if target.center_cache else target.compute_center(self.hex_side)
         pixel_dist = dist(start_pos, end_pos)
         
         # 单位移动步长 (一格圆心距)
@@ -508,7 +517,10 @@ class GameApp:
             unit_state = province.units[idx]
             definition = self.unit_repository.get_definition(unit_state.unit_type)
             
-            current_distance = dist(province.compute_center(self.hex_side), target.compute_center(self.hex_side))
+            p_center = province.center_cache if province.center_cache else province.compute_center(self.hex_side)
+            t_center = target.center_cache if target.center_cache else target.compute_center(self.hex_side)
+            
+            current_distance = dist(p_center, t_center)
             allowed_range_px = definition.range * unit_stride * 1.1 
             
             if current_distance > allowed_range_px:
@@ -550,12 +562,15 @@ class GameApp:
         # 如果 range 2 即使不相邻也算夹击吗？ "所在格子周围的6格上有..." -> 必须相邻。
         
         neighbor_count = 0
-        target_center = target.compute_center(self.hex_side)
+        target_center = target.center_cache if target.center_cache else target.compute_center(self.hex_side)
         neighbor_threshold = unit_stride * 1.1
         
         for p_id in attacker_provinces:
             prov = self.map_manager.get_by_id(p_id)
-            d = dist(prov.compute_center(self.hex_side), target_center)
+            if not prov: continue 
+            
+            p_center = prov.center_cache if prov.center_cache else prov.compute_center(self.hex_side)
+            d = dist(p_center, target_center)
             if d < neighbor_threshold:
                 neighbor_count += 1
                 
@@ -580,6 +595,11 @@ class GameApp:
 
         # 设置战斗 UI 状态
         self.show_combat_ui = True
+        
+        # 既然开始了新的战斗准备，就清空上一轮的战果显示
+        self.combat_result_title = None
+        self.combat_result_timer = 0
+        
         self.combat_ratio_val = ratio_val
         self.combat_callback = lambda: self._resolve_combat(col_index, participating_attackers, target)
         
@@ -655,17 +675,26 @@ class GameApp:
         ratio_str = ratio_strs[r_idx]
         
         # 结果标题行： 1:1 · 骰6 · A1
-        title_str = f"{ratio_str} · 骰{dice} · {result_code}"
+        title_line = " · ".join([ratio_str, f"骰{dice}", result_code])
         
-        logs = []
         # 结果简报行： 攻损X · 防损Y
-        logs.append(f"攻损{dmg_attacker} · 防损{dmg_defender}")
+        summary_parts = [f"攻损{dmg_attacker}", f"防损{dmg_defender}"]
+        summary_line = " · ".join(summary_parts)
         
         status_msgs = []
         if confused_defender: status_msgs.append("防乱")
         if retreat_defender: status_msgs.append("防退")
-        if status_msgs:
-            logs.append(" · ".join(status_msgs))
+        status_line = " · ".join(status_msgs) if status_msgs else None
+        
+        # 最终组合：把所有非空行用换行符连起来
+        title_lines = [title_line, summary_line]
+        if status_line:
+            title_lines.append(status_line)
+            
+        full_title_str = "\n".join(title_lines)
+        
+        # 详细列表日志 (只保留具体单位状态)
+        logs = []
         
         # 2. 进攻方战后状态
         logs.append("--- 进攻方 ---")
@@ -681,7 +710,12 @@ class GameApp:
         else:
              logs.append("防守方全灭或撤离")
         
-        self.info_panel.show_combat_result(dice, title_str, "\n".join(logs))
+        # 3. 显示结果 (Top UI) + 详情 (InfoPanel)
+        self.combat_result_title = full_title_str
+        self.combat_result_timer = -1 # <0 表示不自动消失
+        
+        # 不再让 Panel 显示标题
+        self.info_panel.show_combat_result(None, None, "\n".join(logs))
             
     def _apply_damage(self, units: List, amount: int) -> None:
         """分配伤害"""
@@ -788,11 +822,13 @@ class GameApp:
         # 简单暴力遍历判断距离
         # 优化：应该在 map_manager 里存邻接表，这里先实时算
         nbs = []
-        center = unit_prov.compute_center(self.hex_side)
+        center = unit_prov.center_cache if unit_prov.center_cache else unit_prov.compute_center(self.hex_side)
         threshold = SQRT3 * self.hex_side * 1.5
         for p in self.map_manager.provinces:
             if p == unit_prov: continue
-            if dist(center, p.compute_center(self.hex_side)) < threshold:
+            
+            p_center = p.center_cache if p.center_cache else p.compute_center(self.hex_side)
+            if dist(center, p_center) < threshold:
                 nbs.append(p)
         return nbs
 
@@ -807,7 +843,7 @@ class GameApp:
         for province in self.map_manager.provinces:
             if province.country != self.player_country or not province.units:
                 continue
-            center = province.compute_center(self.hex_side)
+            center = province.center_cache if province.center_cache else province.compute_center(self.hex_side)
             # 获取该格子里所有单位的矩形框
             rects = self.unit_renderer.selection_rects(center, len(province.units))
             for idx, rect in enumerate(rects):
@@ -818,6 +854,14 @@ class GameApp:
     def _update(self) -> None:
         """更新每一帧的数据逻辑（目前只有镜头输入检查）"""
         self.camera.handle_input()
+        
+        # 更新战斗结果显示计时 (如果 timer > 0)
+        # 如果 timer < 0，则表示永久显示直到被覆盖
+        if self.combat_result_timer > 0:
+            self.combat_result_timer -= (1.0 / self.settings.fps)
+            if self.combat_result_timer < 0:
+                self.combat_result_timer = 0
+                self.combat_result_title = None
 
     def _render(self) -> None:
         """渲染总控：根据状态画对应的界面"""
@@ -856,7 +900,7 @@ class GameApp:
         
         # 2. 画所有兵种单位
         for province in self.map_manager.provinces:
-            center = province.compute_center(self.hex_side)
+            center = province.center_cache if province.center_cache else province.compute_center(self.hex_side)
             self.unit_renderer.draw_units(self.window, center, province.units)
 
         # 3. 画河流和阻挡线
@@ -909,13 +953,72 @@ class GameApp:
                 self.window.blit(btn_surf, text_rect)
                 
                 # 2. 攻防比文字
-                ratio_str = f"比 {self.combat_ratio_val:.1f}"
+                ratio_str = f"攻防比 {self.combat_ratio_val:.1f}"
                 ratio_surf = font.render(ratio_str, True, pg.Color("black"))
                 
                 ratio_x = btn_x - ratio_surf.get_width() - 30
                 ratio_y = btn_y + (btn_h - ratio_surf.get_height()) // 2
                 
                 self.window.blit(ratio_surf, (ratio_x, ratio_y))
+                
+            # --- 画战斗结果 (Top UI) ---
+            # 如果 timer != 0，则显示 (timer<0 为永久，timer>0 为倒计时)
+            if self.combat_result_title and self.combat_result_timer != 0:
+                font = self.combat_ui_font
+                
+                # 总高度区域
+                top_area_height = int(self.screen_height * 0.15)
+                # 以国家标签为参考点
+                tag_x = self.country_tag_pos[0]
+                
+                # 获取所有行
+                lines = self.combat_result_title.split("\n")
+                
+                # 倒序渲染行，确保最上面一行在最上面，但我们从下往上排？
+                # 或者从上往下排？因为这块区域在 header 
+                # 之前是 centered vertical.
+                # 由于是多行，我们先算总高度
+                line_height = font.get_height()
+                total_text_h = len(lines) * line_height + (len(lines) - 1) * 5 # 5px 行间距
+                
+                start_y = (top_area_height - total_text_h) // 2
+                
+                for line_idx, line in enumerate(lines):
+                    # 对每一行执行之前的“从右向左渲染”逻辑
+                    parts = line.split(" · ")
+                    
+                    # 当前行的 Y 坐标
+                    current_y_center = start_y + line_idx * (line_height + 5) + line_height // 2
+                    
+                    # 从右向左渲染，起始位置在 Tag 左边 30px
+                    current_right_x = tag_x - 30
+                    
+                    # 倒序遍历: A1, 骰6, 1:1
+                    reversed_parts = list(reversed(parts))
+                    
+                    for i, part in enumerate(reversed_parts):
+                        # 1. 绘制部件
+                        color = pg.Color("blue") if "骰" in part else pg.Color("black")
+                        surf = font.render(part, True, color)
+                        w, h_surf = surf.get_width(), surf.get_height()
+                        y = current_y_center - h_surf // 2
+                        
+                        self.window.blit(surf, (current_right_x - w, y))
+                        current_right_x -= w
+                        
+                        # 2. 绘制分隔符 (只要不是最后一个部件)
+                        if i < len(reversed_parts) - 1:
+                            # 右边距
+                            current_right_x -= 5
+                            
+                            sep_surf = font.render("·", True, pg.Color("black"))
+                            sep_sw = sep_surf.get_width()
+                            sep_y = current_y_center - sep_surf.get_height() // 2
+                            self.window.blit(sep_surf, (current_right_x - sep_sw, sep_y))
+                            
+                            current_right_x -= sep_sw
+                            # 左边距
+                            current_right_x -= 5
 
         # 6. 画选中框（覆盖在最上层）
         self.selection_overlay.draw(
@@ -934,7 +1037,7 @@ class GameApp:
         if self.card_panel:
             self.card_panel.draw(self.window)
 
-    def _draw_smooth_polyline(self, color: pg.Color, points: Sequence[Tuple[int, int]], width: int) -> None:
+    def _draw_smooth_polyline(self, color: pg.Color, points: Sequence[pg.math.Vector2], width: int) -> None:
         """
         绘制硬朗连接的折线（Miter Join）。
         普通的 pg.draw.lines 会有缺口，而画圆填充太圆润了。
@@ -944,8 +1047,8 @@ class GameApp:
         if len(points) < 2:
             return
 
-        # 把点转换成向量方便计算
-        vectors = [pg.math.Vector2(p) for p in points]
+        # 已经全部是 Vector2 了
+        vectors = points
         half_width = width / 2
         
         # 存储“上岸”和“下岸”的顶点列表
@@ -1121,7 +1224,8 @@ class GameApp:
             country: self.country_tag_font.render(label, True, pg.Color("black"))
             for country, label in self.country_labels.items()
         }
-        self.country_tag_pos = (int(width - height * 0.15), 0)
+        # 往右调一点，之前是 width - height * 0.15，现在改为 0.05，更靠右
+        self.country_tag_pos = (int(width - height * 0.12), 0)
 
         # 预计算河流的像素点
         self.yangtze_polylines = tuple(self._scale_points(points) for points in (YANGTZE_POINTS_1, YANGTZE_POINTS_2))
@@ -1130,17 +1234,18 @@ class GameApp:
 
     # --- 辅助工具方法 (Helpers) --------------------------------------------------------
     
-    def _scale_points(self, normalized_points: Sequence[Tuple[float, float]]) -> List[Tuple[int, int]]:
+    def _scale_points(self, normalized_points: Sequence[Tuple[float, float]]) -> List[pg.math.Vector2]:
         """
         将逻辑坐标转换为屏幕像素坐标。
         逻辑坐标 -> (乘以边长) -> 像素坐标
         Y轴需要额外乘以 根号3，这是六边形几何的特性。
         """
         scaled = []
-        for x_factor, y_factor in normalized_points:
-            x = int(x_factor * self.hex_side)
-            y = int(y_factor * SQRT3 * self.hex_side)
-            scaled.append((x, y))
+        for point in normalized_points:
+            x_factor, y_factor = point
+            x = x_factor * self.hex_side
+            y = y_factor * SQRT3 * self.hex_side
+            scaled.append(pg.math.Vector2(x, y))
         return scaled
 
     def _load_ui_image(self, filename: str, size: Tuple[int, int]) -> pg.Surface:
