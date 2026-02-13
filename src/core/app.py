@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 SQRT3 = sqrt(3)
 
+# --- 游戏规则常量 ---
+MAX_UNIT_STACK = 3          # 每个格子最多堆叠单位数
+COUNTER_BONUS = 0.5         # 兵种克制加成/惩罚
+INJURY_PENALTY = 0.5        # 受伤减少系数
+CONFUSION_PENALTY = 1       # 混乱惩罚值
+
 # --- 河流数据定义 ---
 # 这些是预定义好的坐标点序列，用来在地图上画出长江和黄河的线条。
 # 坐标单位是逻辑格子单位，之后会被转换成屏幕像素坐标。
@@ -248,6 +254,7 @@ class GameApp:
         """
         重置所有单位的行动力 (MP)。
         应该在回合开始时调用。
+        注意：根据规则，回合结束时只恢复行动力，不清除混乱状态。
         """
         for prov in self.map_manager.provinces:
             for unit in prov.units:
@@ -265,10 +272,7 @@ class GameApp:
                 # defs里已经是4了.
                 
                 unit.mp = max_mp
-                
-                # 回合开始时重置混乱状态和攻击计数
-                unit.is_confused = False
-                unit.confusion_count = 0
+                # 注意：回合结杞时不清除混乱状态，只重置攻击计数
                 unit.attack_count = 0
 
     def _manual_end_turn(self) -> None:
@@ -421,10 +425,13 @@ class GameApp:
         abbr_part = f"|{color_hex}|{u_abbr}|#000000|"
         label = f"[{prefix}{abbr_part}{status_str}]"
         
+        # 计算实际攻防值（考虑受伤和混乱）
+        actual_atk, actual_dfs = self._calculate_unit_powers(u_state)
+        
         attrs = [
             f"血{u_state.hp}",
-            f"攻{u_def.attack}",
-            f"防{u_def.defense}",
+            f"攻{actual_atk:.1f}",
+            f"防{actual_dfs:.1f}",
             f"动{u_state.mp}/{u_def.move}",
             f"射{u_def.range}",
             f"疲{u_state.attack_count}"
@@ -696,8 +703,8 @@ class GameApp:
             unit_costs.append(path_cost)
             
         # 3. 堆叠检查
-        # 目标格子已有兵 + 即将移动过去的兵 > 3
-        if len(target.units) + len(moving_units) > 3:
+        # 目标格子已有兵 + 即将移动过去的兵 > MAX_UNIT_STACK
+        if len(target.units) + len(moving_units) > MAX_UNIT_STACK:
             self.info_panel.show_message("堆叠部队过多")
             return
             
@@ -736,52 +743,61 @@ class GameApp:
         
         # 受伤减半
         if unit_state.is_injured:
-            atk *= 0.5
-            dfs *= 0.5
+            atk *= INJURY_PENALTY
+            dfs *= INJURY_PENALTY
             
         # 混乱 -1
         if unit_state.is_confused:
-            atk = max(0, atk - 1)
-            dfs = max(0, dfs - 1)
+            atk = max(0, atk - CONFUSION_PENALTY)
+            dfs = max(0, dfs - CONFUSION_PENALTY)
             
         return atk, dfs
-
-    def _get_counter_modifier(self, attacker_type: str, defender_type: str) -> float:
+    
+    def _get_base_unit_type(self, unit_type: str) -> str:
+        """提取兵种的基础类型 (infantry/cavalry/archer)"""
+        unit_lower = unit_type.lower()
+        if "infantry" in unit_lower: return "infantry"
+        if "cavalry" in unit_lower: return "cavalry"
+        if "archer" in unit_lower: return "archer"
+        return ""
+    
+    def _get_target_selection_key(self, unit_state) -> Tuple[int, int]:
+        """计算单位的目标选择优先级 (用于伤害和混乱分配)
+        返回: (是否受伤, 防御力)
+        优先级: 未受伤 > 已受伤, 低防御 > 高防御
         """
-        判断兵种克制关系，返回攻击力加成系数。
+        is_inj = 1 if unit_state.is_injured else 0
+        defense = self.unit_repository.get_definition(unit_state.unit_type).defense
+        return (is_inj, defense)
+
+    def _get_unit_relationship(self, attacker_type: str, defender_type: str) -> int:
+        """
+        判断兵种克制关系。
         克制规则：
         - 步兵 (infantry) 克制 弓兵 (archer)
         - 弓兵 (archer) 克制 骑兵 (cavalry)
         - 骑兵 (cavalry) 克制 步兵 (infantry)
         
-        如果克制，攻击力 +1 (或者 +25%? 为了简单且数值显著，暂定+1.5)
-        用户没说具体数值，但考虑到 base attack 是 3~4，+1 是个合理的 buff。
-        我们这里保守点，给 +1 攻击力。
+        返回: 1=克制, -1=被克制, 0=中立
         """
-        atk_type = attacker_type.lower()
-        def_type = defender_type.lower()
-        
-        # 提取基础兵种类型 (可能有前缀，如 HUBAO_cavalry)
-        def _base_type(t: str) -> str:
-            if "infantry" in t: return "infantry"
-            if "cavalry" in t: return "cavalry"
-            if "archer" in t: return "archer"
-            return ""
-
-        a_base = _base_type(atk_type)
-        d_base = _base_type(def_type)
+        a_base = self._get_base_unit_type(attacker_type)
+        d_base = self._get_base_unit_type(defender_type)
         
         if not a_base or not d_base:
-            return 0.0
-
-        if a_base == "infantry" and d_base == "archer":
-            return 1.0
-        if a_base == "archer" and d_base == "cavalry":
-            return 1.0
-        if a_base == "cavalry" and d_base == "infantry":
-            return 1.0
-            
-        return 0.0
+            return 0
+        
+        # 步(infantry) > 弓(archer) > 骑(cavalry) > 步(infantry)
+        if a_base == "infantry":
+            if d_base == "archer": return 1
+            if d_base == "cavalry": return -1
+        elif a_base == "archer":
+            if d_base == "cavalry": return 1
+            if d_base == "infantry": return -1
+        elif a_base == "cavalry":
+            if d_base == "infantry": return 1
+            if d_base == "archer": return -1
+        
+        return 0
 
     def _handle_combat(self, target: object) -> None: # target: Province
         """处理战斗逻辑"""
@@ -822,49 +838,18 @@ class GameApp:
             
             # --- 兵种克制计算 ---
             # 规则：步兵克弓兵，弓兵克骑兵，骑兵克步兵
-            # 加成：克制+0.5，被克制-0.5
+            # 加成：克制+COUNTER_BONUS，被克制-COUNTER_BONUS
             bonus = 0.0
-            
-            def get_relationship(attacker_type: str, defender_type: str) -> int:
-                # return 1 for advantage, -1 for disadvantage, 0 for neutral
-                a_type = attacker_type.lower()
-                d_type = defender_type.lower()
-                
-                a_base = ""
-                if "infantry" in a_type: a_base = "infantry"
-                elif "cavalry" in a_type: a_base = "cavalry"
-                elif "archer" in a_type: a_base = "archer"
-                
-                d_base = ""
-                if "infantry" in d_type: d_base = "infantry"
-                elif "cavalry" in d_type: d_base = "cavalry"
-                elif "archer" in d_type: d_base = "archer"
-                
-                if not a_base or not d_base: return 0
-                
-                # 步(infantry) > 弓(archer) > 骑(cavalry) > 步(infantry)
-                if a_base == "infantry":
-                    if d_base == "archer": return 1
-                    if d_base == "cavalry": return -1
-                elif a_base == "archer":
-                    if d_base == "cavalry": return 1
-                    if d_base == "infantry": return -1
-                elif a_base == "cavalry":
-                    if d_base == "infantry": return 1
-                    if d_base == "archer": return -1
-                
-                return 0
-
             has_adv = False
             has_dis = False
             
             for d_type in defender_types:
-                rel = get_relationship(unit_state.unit_type, d_type)
+                rel = self._get_unit_relationship(unit_state.unit_type, d_type)
                 if rel == 1: has_adv = True
                 if rel == -1: has_dis = True
             
-            if has_adv: bonus += 0.5
-            if has_dis: bonus -= 0.5
+            if has_adv: bonus += COUNTER_BONUS
+            if has_dis: bonus -= COUNTER_BONUS
             
             total_attack += (atk + bonus)
             participating_attackers.append((province, unit_state))
@@ -939,10 +924,67 @@ class GameApp:
         self.combat_result_timer = 0
         
         self.combat_ratio_val = ratio_val
-        self.combat_callback = lambda: self._resolve_combat(col_index, participating_attackers, target)
+        # 使用lambda包装，确保每次点击投鞒子时重新计算攻防比
+        self.combat_callback = lambda: self._execute_combat(participating_attackers, target)
         
         # 面板只显示详情
         self.info_panel.show_combat_details(attacker_info, defender_info)
+    
+    def _execute_combat(self, attackers: List, target_province: object) -> None:
+        """执行战斗，每次点击投鞒子时重新计算攻防比"""
+        # 重新计算攻击力
+        total_attack = 0.0
+        for _, u_state in attackers:
+            atk, _ = self._calculate_unit_powers(u_state)
+            
+            # 重新计算克制加成
+            bonus = 0.0
+            has_adv = False
+            has_dis = False
+            
+            defender_types = [u.unit_type for u in target_province.units]
+            for d_type in defender_types:
+                rel = self._get_unit_relationship(u_state.unit_type, d_type)
+                if rel == 1: has_adv = True
+                if rel == -1: has_dis = True
+            
+            if has_adv: bonus += COUNTER_BONUS
+            if has_dis: bonus -= COUNTER_BONUS
+            
+            total_attack += (atk + bonus)
+        
+        # 重新计算防御力
+        total_defense = 0.0
+        for u in target_province.units:
+            _, dfs = self._calculate_unit_powers(u)
+            total_defense += dfs
+        
+        if total_defense <= 0.1:
+            total_defense = 0.1
+        
+        # 重新计算夹击
+        unit_stride = SQRT3 * self.hex_side
+        attacker_provinces = {p.province_id for p, _ in attackers}
+        neighbor_count = 0
+        target_center = target_province.center_cache if target_province.center_cache else target_province.compute_center(self.hex_side)
+        neighbor_threshold = unit_stride * 1.1
+        
+        for p_id in attacker_provinces:
+            prov = self.map_manager.get_by_id(p_id)
+            if not prov: continue 
+            
+            p_center = prov.center_cache if prov.center_cache else prov.compute_center(self.hex_side)
+            d = dist(p_center, target_center)
+            if d < neighbor_threshold:
+                neighbor_count += 1
+        
+        is_flanked = (neighbor_count >= 2)
+        
+        # 计算最新的攻防比列索引
+        col_index = get_ratio_column(total_attack, total_defense, is_flanked)
+        
+        # 调用原有的战斗解决逻辑
+        self._resolve_combat(col_index, attackers, target_province)
 
     def _resolve_combat(self, col_index: int, attackers: List, target_province: object) -> None:
         """投骰子后的回调"""
@@ -1065,18 +1107,10 @@ class GameApp:
         
         for _ in range(amount):
             # 每一轮伤害都重新寻找最佳目标 (因为上一轮伤害可能改变了状态，比如从未伤变成了伤)
-            # 过滤掉死人
             living_units = [u for u in units if u.hp > 0]
             if not living_units: break
             
-            def sort_key(u):
-                # (是否受伤(0/1), 防御力)
-                # False(0) 排在 True(1) 前面 -> 优先打未受伤
-                is_inj = 1 if u.is_injured else 0
-                defense = self.unit_repository.get_definition(u.unit_type).defense
-                return (is_inj, defense)
-            
-            candidates = sorted(living_units, key=sort_key)
+            candidates = sorted(living_units, key=self._get_target_selection_key)
             target = candidates[0]
             target.hp -= 1
             
@@ -1089,13 +1123,7 @@ class GameApp:
             living_units = [u for u in units if u.hp > 0]
             if not living_units: break
             
-            def sort_key(u):
-                # 优先选 未受伤 -> 低防御
-                is_inj = 1 if u.is_injured else 0
-                defense = self.unit_repository.get_definition(u.unit_type).defense
-                return (is_inj, defense)
-            
-            candidates = sorted(living_units, key=sort_key)
+            candidates = sorted(living_units, key=self._get_target_selection_key)
             target = candidates[0]
             
             if target.is_confused:
@@ -1135,7 +1163,7 @@ class GameApp:
                 continue
             
             # 堆叠限制
-            if len(dest_prov.units) + len(province.units) > 3:
+            if len(dest_prov.units) + len(province.units) > MAX_UNIT_STACK:
                 continue
             
             # 检查是否能到达 (Cost check)
@@ -1151,8 +1179,8 @@ class GameApp:
                 valid_destinations.append(dest_prov)
         
         if valid_destinations:
-            # 随机选一个撤
-            dest = valid_destinations[0] # 或 random.choice
+            # 随机选一个撤退目的地
+            dest = random.choice(valid_destinations)
             dest.units.extend(province.units)
             province.units.clear()
             logger.info(f"Defenders retreated to {dest.name}")
