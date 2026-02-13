@@ -23,9 +23,12 @@ class SelectionOverlay:
     当玩家选中某个兵时，这个类负责在那个兵的头上画个框框，表示“我被选中了”。
     """
     
-    def __init__(self, *, color: str = "yellow", border_width: int = 3) -> None:
+    def __init__(self, *, color: str = "#FFD700", border_width: int = 4) -> None:
+        # 使用更显眼的金色 (Gold) 替代纯黄
         self._color = pg.Color(color)
         self._border_width = border_width
+        # Arial 比较难看，改为使用 Verdana，它在屏幕显示上清晰且数字居中效果较好
+        self._font = pg.font.SysFont("Verdana", 24, bold=True)
 
     def draw(
         self,
@@ -42,14 +45,15 @@ class SelectionOverlay:
         if not selections:
             return
 
-        for province_id, slot_index in selections:
+        badges = [] # 暂存标号信息，最后统一绘制，防止被遮挡
+
+        for order_idx, (province_id, slot_index) in enumerate(selections):
             # 找到被选中的格子
             province = province_lookup(province_id)
             if province is None:
                 continue
 
             # 找到格子的屏幕位置
-            # 优先使用缓存的中心点
             center = province.center_cache if province.center_cache else province.compute_center(hex_side)
             
             # 找到该格子里那个兵的具体矩形位置
@@ -57,5 +61,30 @@ class SelectionOverlay:
             if slot_index < len(rects):
                 target_rect = rects[slot_index]
                 
-                # 画一个黄色的矩形框，宽度为 3 像素
-                pg.draw.rect(surface, self._color, target_rect, self._border_width)
+                # 1. 绘制主体框 (Gold)
+                pg.draw.rect(surface, self._color, target_rect, width=self._border_width, border_radius=3)
+                
+                # 2. 绘制内部阴影 (Inner Shadow)
+                # 使用一个比主体框稍微小一点的框，画深色边线，营造内陷感
+                inner_rect = target_rect.inflate(-self._border_width, -self._border_width)
+                pg.draw.rect(surface, pg.Color(139, 101, 8), inner_rect, width=1, border_radius=2)
+                
+                # 收集标号信息
+                badges.append((order_idx + 1, target_rect))
+
+        # 3. 统一绘制所有标号 (Ensure Z-Index Top)
+        for num, rect in badges:
+            label_num = str(num)
+            text_surf = self._font.render(label_num, True, pg.Color("white"))
+            
+            # 标号圆圈位置
+            circle_radius = 16 # 加大圆圈 (原本12)
+            cx = rect.right
+            cy = rect.top
+            
+            pg.draw.circle(surface, pg.Color("black"), (cx, cy), circle_radius)
+            pg.draw.circle(surface, pg.Color("white"), (cx, cy), circle_radius, 1) # 白色边框
+            
+            # 文字居中
+            text_rect = text_surf.get_rect(center=(cx, cy))
+            surface.blit(text_surf, text_rect)

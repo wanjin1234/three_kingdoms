@@ -166,6 +166,7 @@ class GameApp:
         )
         self.unit_renderer.on_hex_side_changed(self.hex_side)
 
+        # 改回使用默认的 Arial 字体，因为中文字体 (msyh) 的垂直基线会导致数字无法垂直居中
         self.selection_overlay = SelectionOverlay()
         self.selected_units: List[SelectionEntry] = []
 
@@ -323,6 +324,13 @@ class GameApp:
         self.selected_units.append(new_entry)
         self._update_selection_info() # 更新面板信息
 
+    def remove_selection(self, province_id: int, slot_index: int) -> None:
+        """移除一个选中单位"""
+        entry = (province_id, slot_index)
+        if entry in self.selected_units:
+            self.selected_units.remove(entry)
+            self._update_selection_info()
+
     def _get_unit_abbr(self, unit_type: str) -> str:
         """获取单位类型的单字简称"""
         if unit_type == "HUBAO_cavalry": return "虎豹"
@@ -374,15 +382,19 @@ class GameApp:
     def _update_selection_info(self) -> None:
         """更新信息面板显示的选中单位属性"""
         if not self.selected_units:
+            # 如果清空了，要重置面板
+            if self.info_panel:
+                self.info_panel.show_properties("")
             return
 
         lines = []
-        for pid, idx in self.selected_units:
+        for i, (pid, idx) in enumerate(self.selected_units):
             prov = self.map_manager.get_by_id(pid)
             if not prov: continue
             u_state = prov.units[idx]
-            lines.append(self._format_unit_info(u_state))
-            # lines.append("-" * 15) # 不需要分割线了
+            # 还原为无序号显示
+            info_str = self._format_unit_info(u_state)
+            lines.append(info_str)
             
         if self.info_panel:
             self.info_panel.show_properties("\n".join(lines))
@@ -452,12 +464,53 @@ class GameApp:
                 # 优先处理 UI 面板点击
                 if self.info_panel and self.info_panel.handle_click(event.pos):
                     return
-                # Shift + 左键：选择单位
-                if pg.key.get_mods() & pg.KMOD_SHIFT:
-                    self._handle_selection_click(event.pos)
+                # 左键点击：尝试选择单位 (Toggle逻辑)
+                # 之前是Shift+Click，现在改为直接左键点击
+                # 但是要注意，如果点击的是空白处或者非单位，是否要取消选择？
+                # 按照通常RTS逻辑，点击空地会取消选择。
+                # 但这里我们希望是 Toggle 选择，如果点了空地可能不操作，或者移动视角？
+                # 按照用户描述：“单击选中后，再次单击时，取消选中”，这通常指点在兵上。
+                # 那如果点空地呢？用户没说。为了体验好，暂时不处理点空地，只处理点兵。
+                
+                # Check if clicked on a unit
+                target_unit = self._get_unit_slot_at(event.pos)
+                if target_unit:
+                    prov_id, slot_idx = target_unit
+                    # 检查是否已选中
+                    if (prov_id, slot_idx) in self.selected_units:
+                        self.remove_selection(prov_id, slot_idx)
+                    else:
+                        self.add_selection(prov_id, slot_idx)
+                    return
+                else:
+                    # 如果点了空地，是否取消所有选择？
+                    # 考虑到移动端/简化操作习惯，点空地取消通常是合理的。
+                    # 但为了避免误触，如果用户只是想取消一个，点空地全没了会很烦。
+                    # 用户没要求点空地取消，只要求Toggle。保持不动。
+                    pass
+                    
             elif event.button == 3:
                 # 右键点击：移动或攻击
                 self._handle_game_right_click(event.pos)
+
+    def _get_unit_slot_at(self, pos: Tuple[int, int]) -> Tuple[int, int] | None:
+        """根据鼠标点击位置获取被点击的单位"""
+        # 遍历所有格子，检查点击点是否在某个单位的图标 rect 内
+        for p in self.map_manager.provinces:
+            if not p.units:
+                continue
+            
+            # 简单的性能优化：如果离格子中心太远，就不检查这个格子里的单位
+            # 图标一般在格子中心附近
+            center = p.center_cache if p.center_cache else p.compute_center(self.hex_side)
+            if dist(pos, center) > self.hex_side: 
+                continue
+
+            rects = self.unit_renderer.selection_rects(center, len(p.units))
+            for i, r in enumerate(rects):
+                if r.collidepoint(pos):
+                    return (p.province_id, i)
+        return None
 
     def _get_province_at(self, pos: Tuple[int, int]) -> object | None: # object -> Province
         """简单的点击拾取检测"""
