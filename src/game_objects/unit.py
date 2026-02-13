@@ -74,8 +74,28 @@ class UnitRepository:
                 icon_path=asset_root / entry["icon"], # 拼出图标的完整路径
             )
             self._definitions[unit_type] = definition
+            
             # 这里直接读取图片并缓存起来，避免每次画图都读硬盘
-            self._raw_icons[unit_type] = pg.image.load(definition.icon_path).convert_alpha()
+            # 增加自动后缀检测：如果指定的 icon 不存在，尝试找 .png 或 .jpg
+            icon_path = definition.icon_path
+            if not icon_path.exists():
+                # 如果找不到文件，尝试其它后缀
+                stem = icon_path.stem
+                parent = icon_path.parent
+                for ext in [".png", ".jpg", ".jpeg"]:
+                    alt_path = parent / (stem + ext)
+                    if alt_path.exists():
+                        icon_path = alt_path
+                        break
+            
+            try:
+                self._raw_icons[unit_type] = pg.image.load(icon_path).convert_alpha()
+            except Exception as e:
+                # print(f"Error loading unit icon for {unit_type}: {e}")
+                # 使用一个洋红色方块作为占位符，避免崩溃
+                fallback = pg.Surface((64, 64))
+                fallback.fill(pg.Color("magenta"))
+                self._raw_icons[unit_type] = fallback
 
     def get_definition(self, unit_type: str) -> UnitDefinition:
         """查阅兵种属性手册"""

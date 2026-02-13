@@ -189,13 +189,12 @@ class MapManager:
         if not terrain: return
         
         # 2x2 网格布局: 左上角留给地形
-        # 计算偏移量，大约是边长的一半
-        offset = self._hex_side * 0.5
+        # 统一使用 0.6 倍边长作为图标大小，与兵种图标保持一致
+        icon_size = self._hex_side * 0.6
         
         # 计算左上角的坐标
-        # Vector2 可以直接减去标量吗？不行。
-        # pos = center - (offset, offset)
-        pos = (center.x - offset, center.y - offset)
+        # pos = center - (icon_size, icon_size)
+        pos = (center.x - icon_size, center.y - icon_size)
         
         icon = self._get_terrain_icon(terrain)
         if icon:
@@ -212,19 +211,42 @@ class MapManager:
         
         if key not in self._terrain_cache:
             # 映射表：地形名称 -> 文件名
-            filename = {
-                "city": "city_icon.jpg",
-                "hill": "hill_icon.jpg",
-            }.get(key)
+            # 优先尝试 png（支持透明），然后 jpg
+            filename_map = {
+                "city": ["city_icon.png", "city_icon.jpg"],
+                "hill": ["hill_icon.png", "hill_icon.jpg"],
+            }
             
-            if filename is None:
-                # 如果没有定义图片，缓存 None，下次别再找了
+            candidates = filename_map.get(key)
+            if not candidates:
                 self._terrain_cache[key] = None
                 return None
             
-            # 加载并缩放图片
-            surface = pg.image.load(self._terrain_graphics_dir / filename).convert_alpha()
-            scale = int(0.5 * self._hex_side) # 图标大小设为格子边长的一半
-            self._terrain_cache[key] = pg.transform.smoothscale(surface, (scale, scale))
+            loaded_surface = None
+            for fname in candidates:
+                fpath = self._terrain_graphics_dir / fname
+                if fpath.exists():
+                    try:
+                        # 增加异常捕获的详细程度，并做一下防御性编程
+                        surf = pg.image.load(fpath).convert_alpha()
+                        
+                        target_size = int(0.6 * self._hex_side)
+                        if target_size <= 0:
+                            # 防止尺寸过小导致崩溃
+                            target_size = 1
+                            
+                        # 先尝试 smoothscale，如果报错则退化为 scale
+                        try:
+                            loaded_surface = pg.transform.smoothscale(surf, (target_size, target_size))
+                        except Exception as e:
+                            print(f"smoothscale failed for {fname}, falling back to scale: {e}")
+                            loaded_surface = pg.transform.scale(surf, (target_size, target_size))
+                            
+                        break
+                    except Exception as e:
+                        print(f"Failed to load {fname}: {e}")
+                        continue
+            
+            self._terrain_cache[key] = loaded_surface
             
         return self._terrain_cache[key]

@@ -190,8 +190,9 @@ class GameApp:
         
         # 初始化 InfoPanel (在 build_play_assets 加载了字体之后)
         font_size = int(self.screen_height * 0.025) # 字体大小约占屏幕高度的 2.5%
-        info_font = self._font("msyh.ttc", font_size) 
-        self.info_panel = InfoPanel(panel_rect, info_font)
+        info_font = self._font("msyh.ttc", font_size)
+        font_path = str(self.settings.fonts_dir / "msyh.ttc")
+        self.info_panel = InfoPanel(panel_rect, info_font, font_path=font_path, base_font_size=font_size)
         
         # 保存字体给战斗UI使用
         self.combat_ui_font = info_font
@@ -271,6 +272,10 @@ class GameApp:
 
     def _get_unit_abbr(self, unit_type: str) -> str:
         """获取单位类型的单字简称"""
+        if unit_type == "HUBAO_cavalry": return "虎豹"
+        if unit_type == "WUDANG_archer": return "无当"
+        if unit_type == "JIEFAN_infantry": return "解烦"
+        
         if "infantry" in unit_type: return "步"
         if "cavalry" in unit_type: return "骑"
         if "archer" in unit_type: return "弓"
@@ -287,7 +292,21 @@ class GameApp:
         status_str = f"({''.join(status)})" if status else ""
         
         # [Prefix步(伤)]
-        label = f"[{prefix}{u_abbr}{status_str}]"
+        # 为了实现彩色，我们构建富文本字符串
+        # 格式： 文本|#HexColor|彩色文本|#000000|文本
+        # 注意默认文字颜色通常是黑色 #000000
+        
+        country = u_def.country
+        color_hex = "#000000"
+        if country:
+            # 获取对应国家的颜色
+            c = self.kingdom_repository.get_color(country) # pg.Color
+            # 转为 hex
+            color_hex = f"#{c.r:02x}{c.g:02x}{c.b:02x}"
+        
+        # 构建富文本行: "[" + "|#COLOR|" + ABBR + "|#000000|" + status + "]"
+        abbr_part = f"|{color_hex}|{u_abbr}|#000000|"
+        label = f"[{prefix}{abbr_part}{status_str}]"
         
         attrs = [
             f"血{u_state.hp}",
@@ -450,8 +469,16 @@ class GameApp:
             unit_state = source.units[idx]
             definition = self.unit_repository.get_definition(unit_state.unit_type)
             
+            # 特殊兵种逻辑：无当飞军在山地行动力为 3
+            move_points = definition.move
+            if unit_state.unit_type == "WUDANG_archer":
+                # 检查源地是否为山地 (假设 hill 是山地的一种)
+                # 注意：这里需要确认地形字符串是 "hill" 还是其他
+                if source.terrain and source.terrain.lower() in ("hill", "mountain"):
+                    move_points = 3
+            
             # 允许的像素距离 = Move * stride * 1.1 (宽松系数)
-            max_pixel_dist = definition.move * unit_stride * 1.1
+            max_pixel_dist = move_points * unit_stride * 1.1
             
             if pixel_dist > max_pixel_dist:
                 self.info_panel.show_message("距离过远")
@@ -1249,9 +1276,25 @@ class GameApp:
         return scaled
 
     def _load_ui_image(self, filename: str, size: Tuple[int, int]) -> pg.Surface:
-        """加载图片并直接缩放到指定大小"""
-        surface = pg.image.load(self.settings.ui_graphics_dir / filename).convert_alpha()
-        return pg.transform.smoothscale(surface, size)
+        """
+        加载图片并缩放到指定大小。
+        如果是 SVG，尽量按需加载；如果失败，回退到普通加载。
+        """
+        filepath = self.settings.ui_graphics_dir / filename
+        
+        # 尝试直接加载 (Pygame 2.0+ 的 SDL_image 对 SVG 支持较好，直接 load 往往比魔改稳)
+        try:
+            surface = pg.image.load(filepath).convert_alpha()
+            # 如果是 SVG，加载出来的尺寸可能是原始尺寸，我们需要缩放
+            if surface.get_width() != size[0] or surface.get_height() != size[1]:
+                return pg.transform.smoothscale(surface, size)
+            return surface
+        except Exception as e:
+            logger.error(f"Error loading image {filename}: {e}")
+            # 返回一个洋红色的方块作为错误占位符
+            err_surf = pg.Surface(size)
+            err_surf.fill(pg.Color("magenta"))
+            return err_surf
 
     def _font(self, filename: str, size: int) -> pg.font.Font:
         """加载字体"""
