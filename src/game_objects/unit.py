@@ -24,6 +24,7 @@ class UnitState:
     unit_type: str
     hp: int = 2
     is_confused: bool = False
+    confusion_count: int = 0  # 连续混乱次数
     attack_count: int = 0
     mp: int = 0  # Action Points / Movement Points
     

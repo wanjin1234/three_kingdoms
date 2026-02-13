@@ -41,27 +41,37 @@ def get_ratio_column(attack_power: float, defense_power: float, is_flanked: bool
     3: 3:1
     4: 4:1
     5: 5:1
+    
+    计算比值时，先约分后抹去小数。
+    例如：6:3 = 2:1, 7:3 = 2.33:1 约为 2:1
     """
     if defense_power <= 0:
         return 5 # Instant win basically
     
+    # 计算攻防比值
     ratio = attack_power / defense_power
     
-    # "约分后抹去小数" -> floor check?
-    # Simple bracketing
-    if ratio < 1.0: # Less than 1:1, assume 1:2 is the floor
-        col = 0
-    elif ratio < 2.0: # 1:x
-        col = 1
-    elif ratio < 3.0: # 2:x
-        col = 2
-    elif ratio < 4.0:
-        col = 3
-    elif ratio < 5.0:
-        col = 4
+    # 约分后向下取整：比值的整数部分决定列
+    # ratio < 0.5: 1:2 (col=0)
+    # 0.5 <= ratio < 1.5: 1:1 (col=1)
+    # 1.5 <= ratio < 2.5: 2:1 (col=2)
+    # 2.5 <= ratio < 3.5: 3:1 (col=3)
+    # 3.5 <= ratio < 4.5: 4:1 (col=4)
+    # ratio >= 4.5: 5:1 (col=5)
+    if ratio < 0.5:
+        col = 0  # 1:2
+    elif ratio < 1.5:
+        col = 1  # 1:1
+    elif ratio < 2.5:
+        col = 2  # 2:1
+    elif ratio < 3.5:
+        col = 3  # 3:1
+    elif ratio < 4.5:
+        col = 4  # 4:1
     else:
-        col = 5
+        col = 5  # 5:1及以上
         
+    # 夹击：判定向不利于防守方的方向移动一列（有利于进攻方）
     if is_flanked:
         col = min(5, col + 1)
         

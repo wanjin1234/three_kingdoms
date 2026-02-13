@@ -265,6 +265,11 @@ class GameApp:
                 # defs里已经是4了.
                 
                 unit.mp = max_mp
+                
+                # 回合开始时重置混乱状态和攻击计数
+                unit.is_confused = False
+                unit.confusion_count = 0
+                unit.attack_count = 0
 
     def _manual_end_turn(self) -> None:
         """手动结束回合：恢复行动力"""
@@ -288,14 +293,17 @@ class GameApp:
         )
         self.map_manager.set_hex_side(self.hex_side)
         
-        # 2. 清理选择和UI
+        # 2. 初始化单位的行动力和状态
+        self._replenish_action_points()
+        
+        # 3. 清理选择和UI
         self.clear_selection()
         self.show_combat_ui = False
         self.combat_result_title = None
         if self.info_panel: 
              self.info_panel.show_properties("")
              
-        # 3. 切换状态
+        # 4. 切换状态
         self.player_country = None
         self.state = GameState.CHOOSING
         logger.info("Game restarted.")
@@ -477,6 +485,8 @@ class GameApp:
                     self.player_country = country
                     self.state = GameState.PLAYING
                     self.clear_selection()
+                    # 开始新对局时初始化行动力
+                    self._replenish_action_points()
                     return
 
     def _handle_playing_event(self, event: pg.event.Event) -> None:
@@ -1089,10 +1099,15 @@ class GameApp:
             target = candidates[0]
             
             if target.is_confused:
-                # 如果连续两次进入混乱状态，则减少一点血量，但仍处于混乱状态。
+                # 已经处于混乱状态，连续混乱则减少一点血量，但仍保持混乱状态
+                target.confusion_count += 1
                 target.hp -= 1
-            else:
+                # 保持混乱状态
                 target.is_confused = True
+            else:
+                # 首次进入混乱状态
+                target.is_confused = True
+                target.confusion_count = 1
 
     def _handle_retreat(self, province: object) -> None:
         """处理撤退"""
