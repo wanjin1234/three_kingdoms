@@ -25,6 +25,7 @@ class UnitState:
     hp: int = 2
     is_confused: bool = False
     attack_count: int = 0
+    mp: int = 0  # Action Points / Movement Points
     
     @property
     def is_injured(self) -> bool:

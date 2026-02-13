@@ -6,7 +6,7 @@
     "defense": 3,
     "range": 1,
     "country": null,
-    "icon": "graphics/units/infantry_icon.jpg"
+    "icon": "graphics/units/infantry_icon.png"
   },
   {
     "type": "cavalry",
@@ -15,7 +15,7 @@
     "defense": 2,
     "range": 1,
     "country": null,
-    "icon": "graphics/units/cavalry_icon.jpg"
+    "icon": "graphics/units/cavalry_icon.png"
   },
   {
     "type": "archer",
@@ -24,7 +24,7 @@
     "defense": 2,
     "range": 2,
     "country": null,
-    "icon": "graphics/units/archer_icon.jpg"
+    "icon": "graphics/units/archer_icon.png"
   },
   {
     "type": "JIEFAN_infantry",
@@ -33,7 +33,7 @@
     "defense": 4,
     "range": 1,
     "country": "WU",
-    "icon": "graphics/units/JIEFAN_infantry_icon.jpg"
+    "icon": "graphics/units/JIEFAN_infantry_icon.png"
   },
   {
     "type": "HUBAO_cavalry",
@@ -42,7 +42,7 @@
     "defense": 3,
     "range": 1,
     "country": "WEI",
-    "icon": "graphics/units/HUBAO_cavalry_icon.jpg"
+    "icon": "graphics/units/HUBAO_cavalry_icon.png"
   },
   {
     "type": "WUDANG_archer",
@@ -51,6 +51,6 @@
     "defense": 3,
     "range": 2,
     "country": "SHU",
-    "icon": "graphics/units/WUDANG_archer_icon.jpg"
+    "icon": "graphics/units/WUDANG_archer_icon.png"
   }
 ]

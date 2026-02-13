@@ -85,6 +85,84 @@ class MapManager:
             # 我们将其转换为 List[pg.math.Vector2] 方便后续数学计算
             raw_verts = hex_vertices((cx, cy), side_length)
             p.vertices_cache = [pg.math.Vector2(v) for v in raw_verts]
+            
+        # 3. 构建邻接图
+        self._build_adjacency_graph()
+
+    def _build_adjacency_graph(self) -> None:
+        """
+        基于几何距离构建格子的邻接关系图。
+        用于寻路算法。
+        """
+        self._adjacency: Dict[int, List[int]] = {}
+        # 两个正六边形邻居的中心距离约为 sqrt(3) * side
+        # 我们给定一个稍微大一点的阈值 (1.1倍) 来容错
+        threshold = (self._hex_side * (3**0.5)) * 1.1
+        
+        for p1 in self._provinces:
+            self._adjacency[p1.province_id] = []
+            for p2 in self._provinces:
+                if p1.province_id == p2.province_id:
+                    continue
+                # 计算距离
+                if p1.center_cache and p2.center_cache:
+                    dist = p1.center_cache.distance_to(p2.center_cache)
+                    if dist < threshold:
+                        self._adjacency[p1.province_id].append(p2.province_id)
+
+    def find_path_cost(self, start_id: int, target_id: int) -> int:
+        """
+        使用 Dijkstra 算法计算从起点到终点的移动消耗。
+        返回消耗点数 (cost)。如果无法到达，返回 9999。
+        
+        消耗规则：
+        - 基础消耗 1
+        - 进入 山地(hill/mountain) 额外消耗 1 (共2)
+        - // TODO: 跨河逻辑
+        """
+        # 如果起点和终点重合
+        if start_id == target_id:
+            return 0
+            
+        import heapq
+        
+        # Priority Queue: (current_cost, province_id)
+        queue = [(0, start_id)]
+        costs = {start_id: 0}
+        
+        while queue:
+            current_cost, current_id = heapq.heappop(queue)
+            
+            # 如果找到终点 (注意: 我们可能发现更短路径，但Dijkstra保证第一次pop就是最短)
+            if current_id == target_id:
+                return current_cost
+            
+            # 如果当前路径比已知的长，跳过
+            if current_cost > costs.get(current_id, float('inf')):
+                continue
+                
+            # 遍历邻居
+            neighbors = self._adjacency.get(current_id, [])
+            for next_id in neighbors:
+                next_prov = self.get_by_id(next_id)
+                if not next_prov: continue
+                
+                # 计算移动到 next_id 的代价
+                # 基础代价 1
+                step_cost = 1
+                
+                # 地形判定: 如果目标地是山地，消耗+1
+                terrain = next_prov.terrain.lower() if next_prov.terrain else ""
+                if terrain in ("hill", "mountain", "hills", "mountains"):
+                    step_cost += 1
+                
+                new_cost = current_cost + step_cost
+                
+                if new_cost < costs.get(next_id, float('inf')):
+                    costs[next_id] = new_cost
+                    heapq.heappush(queue, (new_cost, next_id))
+                    
+        return 9999
 
     @property
     def provinces(self) -> Sequence[Province]:

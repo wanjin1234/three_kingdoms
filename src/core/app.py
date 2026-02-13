@@ -217,6 +217,31 @@ class GameApp:
         self.combat_result_title: str | None = None # e.g. "1:1 · 骰6 · A1"
         self.combat_result_timer: float = 0.0       # 显示倒计时
 
+        # 初始填充行动力
+        self._replenish_action_points()
+
+    def _replenish_action_points(self) -> None:
+        """
+        重置所有单位的行动力 (MP)。
+        应该在回合开始时调用。
+        """
+        for prov in self.map_manager.provinces:
+            for unit in prov.units:
+                defn = self.unit_repository.get_definition(unit.unit_type)
+                max_mp = defn.move
+                
+                # 特殊逻辑：无当飞军在山地行动力为3
+                if unit.unit_type == "WUDANG_archer":
+                    # 检查当前所在地形
+                    t_terrain = prov.terrain.lower() if prov.terrain else ""
+                    if t_terrain in ("hill", "mountain", "hills", "mountains"):
+                        max_mp = 3
+                
+                # 特殊逻辑：虎豹骑固定为4 (defs里应该是4，如果不是，这里强制设定也可以，但defs优先)
+                # defs里已经是4了.
+                
+                unit.mp = max_mp
+
     def run(self) -> None:
         """
         启动游戏主循环。
@@ -312,7 +337,7 @@ class GameApp:
             f"血{u_state.hp}",
             f"攻{u_def.attack}",
             f"防{u_def.defense}",
-            f"移{u_def.move}",
+            f"动{u_state.mp}/{u_def.move}",
             f"射{u_def.range}",
             f"疲{u_state.attack_count}"
         ]
@@ -456,34 +481,40 @@ class GameApp:
         selected_indices = sorted([idx for pid, idx in self.selected_units if pid == source_id])
         if not selected_indices: return
         
-        # 计算物理距离 (优先使用缓存)
-        start_pos = source.center_cache if source.center_cache else source.compute_center(self.hex_side)
-        end_pos = target.center_cache if target.center_cache else target.compute_center(self.hex_side)
-        pixel_dist = dist(start_pos, end_pos)
+        # 使用路径寻路计算 Cost
+        # 如果 source == target，不需要移动
+        if source.province_id == target.province_id:
+            self.clear_selection()
+            return
+
+        # 调用 map_manager 的寻路算法
+        # 注意：这里计算的是从 Source 到 Target 的最短路径 Cost
+        # 假设所有选中单位走同一条路
+        path_cost = self.map_manager.find_path_cost(source.province_id, target.province_id)
         
-        # 单位移动步长 (一格圆心距)
-        unit_stride = SQRT3 * self.hex_side
-        
+        # 寻路失败（比如不可达，虽然目前全图连通）
+        if path_cost > 100: 
+            self.info_panel.show_message("无法到达")
+            return
+
         moving_units = []
+        unit_costs = [] # 记录扣除的行动力
+        
         for idx in selected_indices:
             unit_state = source.units[idx]
-            definition = self.unit_repository.get_definition(unit_state.unit_type)
             
-            # 特殊兵种逻辑：无当飞军在山地行动力为 3
-            move_points = definition.move
-            if unit_state.unit_type == "WUDANG_archer":
-                # 检查源地是否为山地 (假设 hill 是山地的一种)
-                # 注意：这里需要确认地形字符串是 "hill" 还是其他
-                if source.terrain and source.terrain.lower() in ("hill", "mountain"):
-                    move_points = 3
-            
-            # 允许的像素距离 = Move * stride * 1.1 (宽松系数)
-            max_pixel_dist = move_points * unit_stride * 1.1
-            
-            if pixel_dist > max_pixel_dist:
-                self.info_panel.show_message("距离过远")
+            # 1. 检查行动力是否为0
+            if unit_state.mp <= 0:
+                self.info_panel.show_message("行动力为0")
                 return
+
+            # 2. 检查行动力是否足够
+            if unit_state.mp < path_cost:
+                self.info_panel.show_message(f"行动力不足(需{path_cost})")
+                return
+
             moving_units.append(unit_state)
+            unit_costs.append(path_cost)
             
         # 3. 堆叠检查
         # 目标格子已有兵 + 即将移动过去的兵 > 3
@@ -493,13 +524,19 @@ class GameApp:
             
         # 4. 执行移动
         new_source_list = []
+        # 将未移动的单位保留在原地
+        moved_indices = set(selected_indices)
         for i, u in enumerate(source.units):
-            if i not in selected_indices:
+            if i not in moved_indices:
                 new_source_list.append(u)
         source.units = new_source_list
         
-        # 添加到目标格子
-        target.units.extend(moving_units)
+        # 扣除行动力并移动
+        for u, c in zip(moving_units, unit_costs):
+            u.mp -= c
+            target.units.append(u)
+        
+        # 如果移动成功且有单位进入，占领该地
         
         # 如果移动成功且有单位进入，占领该地
         if moving_units:
@@ -529,6 +566,43 @@ class GameApp:
             
         return atk, dfs
 
+    def _get_counter_modifier(self, attacker_type: str, defender_type: str) -> float:
+        """
+        判断兵种克制关系，返回攻击力加成系数。
+        克制规则：
+        - 步兵 (infantry) 克制 弓兵 (archer)
+        - 弓兵 (archer) 克制 骑兵 (cavalry)
+        - 骑兵 (cavalry) 克制 步兵 (infantry)
+        
+        如果克制，攻击力 +1 (或者 +25%? 为了简单且数值显著，暂定+1.5)
+        用户没说具体数值，但考虑到 base attack 是 3~4，+1 是个合理的 buff。
+        我们这里保守点，给 +1 攻击力。
+        """
+        atk_type = attacker_type.lower()
+        def_type = defender_type.lower()
+        
+        # 提取基础兵种类型 (可能有前缀，如 HUBAO_cavalry)
+        def _base_type(t: str) -> str:
+            if "infantry" in t: return "infantry"
+            if "cavalry" in t: return "cavalry"
+            if "archer" in t: return "archer"
+            return ""
+
+        a_base = _base_type(atk_type)
+        d_base = _base_type(def_type)
+        
+        if not a_base or not d_base:
+            return 0.0
+
+        if a_base == "infantry" and d_base == "archer":
+            return 1.0
+        if a_base == "archer" and d_base == "cavalry":
+            return 1.0
+        if a_base == "cavalry" and d_base == "infantry":
+            return 1.0
+            
+        return 0.0
+
     def _handle_combat(self, target: object) -> None: # target: Province
         """处理战斗逻辑"""
         unit_stride = SQRT3 * self.hex_side
@@ -536,6 +610,9 @@ class GameApp:
         
         participating_attackers = [] # List[(province, unit_state)]
         
+        # 为了计算方便，预先获取防御方的类型列表
+        defender_types = [u.unit_type for u in target.units]
+
         # 1. 检查所有攻击者的射程并计算攻击力
         for pid, idx in self.selected_units:
             province = self.map_manager.get_by_id(pid)
@@ -554,9 +631,62 @@ class GameApp:
                 self.info_panel.show_message(f"距离不足:{definition.range}", duration=2.0)
                 self.clear_selection(clear_ui=False)
                 return
+            
+            # 行动力检查
+            if unit_state.mp < 1:
+                self.info_panel.show_message("行动力不足")
+                self.clear_selection(clear_ui=False)
+                return
 
             atk, _ = self._calculate_unit_powers(unit_state)
-            total_attack += atk
+            
+            # --- 兵种克制计算 ---
+            # 规则：步兵克弓兵，弓兵克骑兵，骑兵克步兵
+            # 加成：克制+0.5，被克制-0.5
+            bonus = 0.0
+            
+            def get_relationship(attacker_type: str, defender_type: str) -> int:
+                # return 1 for advantage, -1 for disadvantage, 0 for neutral
+                a_type = attacker_type.lower()
+                d_type = defender_type.lower()
+                
+                a_base = ""
+                if "infantry" in a_type: a_base = "infantry"
+                elif "cavalry" in a_type: a_base = "cavalry"
+                elif "archer" in a_type: a_base = "archer"
+                
+                d_base = ""
+                if "infantry" in d_type: d_base = "infantry"
+                elif "cavalry" in d_type: d_base = "cavalry"
+                elif "archer" in d_type: d_base = "archer"
+                
+                if not a_base or not d_base: return 0
+                
+                # 步(infantry) > 弓(archer) > 骑(cavalry) > 步(infantry)
+                if a_base == "infantry":
+                    if d_base == "archer": return 1
+                    if d_base == "cavalry": return -1
+                elif a_base == "archer":
+                    if d_base == "cavalry": return 1
+                    if d_base == "infantry": return -1
+                elif a_base == "cavalry":
+                    if d_base == "infantry": return 1
+                    if d_base == "archer": return -1
+                
+                return 0
+
+            has_adv = False
+            has_dis = False
+            
+            for d_type in defender_types:
+                rel = get_relationship(unit_state.unit_type, d_type)
+                if rel == 1: has_adv = True
+                if rel == -1: has_dis = True
+            
+            if has_adv: bonus += 0.5
+            if has_dis: bonus -= 0.5
+            
+            total_attack += (atk + bonus)
             participating_attackers.append((province, unit_state))
 
         if total_attack <= 0:
@@ -680,8 +810,9 @@ class GameApp:
         if retreat_defender:
             self._handle_retreat(target_province)
             
-        # 疲劳判定
+        # 疲劳判定 & 消耗行动力
         for _, u in attackers:
+            u.mp -= 1 # 消耗1点行动力 (必须先于疲劳判定?)
             u.attack_count += 1
             if u.attack_count >= 2:
                 u.is_confused = True
@@ -744,57 +875,103 @@ class GameApp:
         # 不再让 Panel 显示标题
         self.info_panel.show_combat_result(None, None, "\n".join(logs))
             
-    def _apply_damage(self, units: List, amount: int) -> None:
+    def _apply_damage(self, units: List[UnitState], amount: int) -> None:
         """分配伤害"""
-        # 排序：未受伤(False) < 已受伤(True). 防御力低 < 防御力高.
-        # Key: (is_injured, defense)
-        # 我们希望打 未受伤且防御低 的。
-        # (False, 3), (False, 5), (True, 3)
-        # Sort Ascending works perfectly.
+        # 机制：
+        # 1. 数字表示受到伤害的单位数 (即造成amount次单体伤害)
+        # 2. 受到一次伤害就少一点血量
+        # 3. 优先级：优先选取未受过伤的 -> 如果都未受过伤，按照防御值由低到高 -> 如果都一样，随便选
         
-        # 为了能 modifying state, we create a list of candidates
-        candidates = sorted(units, key=lambda u: (u.is_injured, self.unit_repository.get_definition(u.unit_type).defense))
-        
-        hits_left = amount
-        for u in candidates:
-            if hits_left <= 0: break
-            # 扣血
-            u.hp -= 1
-            hits_left -= 1
+        for _ in range(amount):
+            # 每一轮伤害都重新寻找最佳目标 (因为上一轮伤害可能改变了状态，比如从未伤变成了伤)
+            # 过滤掉死人
+            living_units = [u for u in units if u.hp > 0]
+            if not living_units: break
             
-    def _apply_confusion(self, unit_tuples: List) -> None:
-        """应用混乱，传入 (prov, unit) 列表"""
-        # 这里的排序逻辑同伤害
+            def sort_key(u):
+                # (是否受伤(0/1), 防御力)
+                # False(0) 排在 True(1) 前面 -> 优先打未受伤
+                is_inj = 1 if u.is_injured else 0
+                defense = self.unit_repository.get_definition(u.unit_type).defense
+                return (is_inj, defense)
+            
+            candidates = sorted(living_units, key=sort_key)
+            target = candidates[0]
+            target.hp -= 1
+            
+    def _apply_confusion(self, unit_tuples: List, amount: int = 1) -> None:
+        """应用混乱"""
+        # 机制与伤害相同 (选取规则)
         units = [u for _, u in unit_tuples]
-        candidates = sorted(units, key=lambda u: (u.is_injured, self.unit_repository.get_definition(u.unit_type).defense))
         
-        if candidates:
-            target = candidates[0] # 只混乱一个？"DG" usually entire stack or 1? 
-            # Rule: "选取混乱单位的机制与伤害相同" implies singular target or distributed? 
-            # Usually status effects apply to the stack or top unit. 
-            # "DG" likely means "Defender Disordered/Grim".
-            # Given "机制与伤害相同", and damage has a number (1,2), maybe confusion is 1 unit?
-            # Let's assume 1 unit for now.
+        for _ in range(amount):
+            living_units = [u for u in units if u.hp > 0]
+            if not living_units: break
+            
+            def sort_key(u):
+                # 优先选 未受伤 -> 低防御
+                is_inj = 1 if u.is_injured else 0
+                defense = self.unit_repository.get_definition(u.unit_type).defense
+                return (is_inj, defense)
+            
+            candidates = sorted(living_units, key=sort_key)
+            target = candidates[0]
             
             if target.is_confused:
-                target.hp -= 1 # 连续混乱 -> 扣血
+                # 如果连续两次进入混乱状态，则减少一点血量，但仍处于混乱状态。
+                target.hp -= 1
             else:
                 target.is_confused = True
 
     def _handle_retreat(self, province: object) -> None:
         """处理撤退"""
-        # 尝试找一个友方或空的格子
-        neighbors = self._get_neighbors(province)
-        valid_retreats = [n for n in neighbors if n.country == province.country or not n.units]
+        # 撤退有1点行动力，可以自由选择撤退到1点行动力能到的地方。
+        # 这里自动选择一个合法格子撤退 (简化为自动，非玩家手动操作撤退，因为战斗是瞬间结算的)
         
-        if valid_retreats:
+        # 1. 获取所有邻居
+        # 2. 过滤：行动力为1能到的地方 (在网格寻路下，如果是山地且Cost=2，则1MP到不了)
+        # 3. 同时也必须是友方或空格子
+        
+        if not province.units: return
+        
+        start_id = province.province_id
+        valid_destinations = []
+        
+        # 获取逻辑邻居 (通过Graph)
+        neighbor_ids = self.map_manager._adjacency.get(start_id, [])
+        
+        for nid in neighbor_ids:
+            dest_prov = self.map_manager.get_by_id(nid)
+            if not dest_prov: continue
+            
+            # 检查归属: 友方或无人地
+            if dest_prov.country and dest_prov.country != province.country:
+                continue
+            
+            # 堆叠限制
+            if len(dest_prov.units) + len(province.units) > 3:
+                continue
+            
+            # 检查是否能到达 (Cost check)
+            # 基础 Cost=1。如果是山地，Cost=2。
+            # 只有当 Cost <= 1 时才能撤退。
+            # 计算移动消耗:
+            step_cost = 1
+            t_terrain = dest_prov.terrain.lower() if dest_prov.terrain else ""
+            if t_terrain in ("hill", "mountain", "hills", "mountains"):
+                step_cost += 1
+                
+            if step_cost <= 1:
+                valid_destinations.append(dest_prov)
+        
+        if valid_destinations:
             # 随机选一个撤
-            dest = valid_retreats[0]
+            dest = valid_destinations[0] # 或 random.choice
             dest.units.extend(province.units)
             province.units.clear()
             logger.info(f"Defenders retreated to {dest.name}")
         else:
-            # 没地方跑 -> 受到 1 点额外伤害
+            # 如果没有地方可以撤退，则受到1点伤害
             self._apply_damage(province.units, 1)
 
     def _cleanup_dead_units(self, attackers: List, target: object) -> None:
