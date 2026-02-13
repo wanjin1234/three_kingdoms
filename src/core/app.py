@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import ctypes
 from enum import Enum, auto
 from math import sqrt, dist
 import random
@@ -154,6 +155,12 @@ class GameApp:
             definition_file=settings.map_definition_file,
             terrain_graphics_dir=settings.map_graphics_dir,
             color_resolver=self.kingdom_repository.get_color,
+            river_polylines=(
+                YANGTZE_POINTS_1,
+                YANGTZE_POINTS_2,
+                YELLOW_RIVER_POINTS,
+            ),
+            ban_polylines=( BAN_LINE_POINTS, ),
         )
         self.map_manager.set_hex_side(self.hex_side)
 
@@ -198,6 +205,11 @@ class GameApp:
         
         # 保存字体给战斗UI使用
         self.combat_ui_font = info_font
+        
+        # 初始化悬停提示字体 (比标准字体小一圈)
+        tooltip_size = max(12, int(self.screen_height * 0.018))
+        self.tooltip_font = self._font("msyh.ttc", tooltip_size)
+        self.tooltip_bold_font = self._font("msyhbd.ttc", tooltip_size)
         
         # 初始化 CardPanel
         # 垂直位置 60% - 85%，水平同 InfoPanel
@@ -261,6 +273,12 @@ class GameApp:
             definition_file=self.settings.map_definition_file,
             terrain_graphics_dir=self.settings.map_graphics_dir,
             color_resolver=self.kingdom_repository.get_color,
+            river_polylines=(
+                YANGTZE_POINTS_1,
+                YANGTZE_POINTS_2,
+                YELLOW_RIVER_POINTS,
+            ),
+            ban_polylines=( BAN_LINE_POINTS, ),
         )
         self.map_manager.set_hex_side(self.hex_side)
         
@@ -1319,8 +1337,13 @@ class GameApp:
                 
                 self.combat_btn_rect = pg.Rect(btn_x, btn_y, btn_w, btn_h)
                 
+                # 悬停变色逻辑
+                btn_color = pg.Color("blue")
+                if self.combat_btn_rect.collidepoint(pg.mouse.get_pos()):
+                    btn_color = pg.Color("#4169E1") # RoyalBlue (Lighter than Blue)
+
                 # 画按钮背景
-                pg.draw.rect(self.window, pg.Color("blue"), self.combat_btn_rect, border_radius=5)
+                pg.draw.rect(self.window, btn_color, self.combat_btn_rect, border_radius=5)
                 # 画文字
                 text_rect = btn_surf.get_rect(center=self.combat_btn_rect.center)
                 self.window.blit(btn_surf, text_rect)
@@ -1365,8 +1388,13 @@ class GameApp:
                     
                     self.recover_btn_rect = pg.Rect(btn_x, btn_y, btn_w, btn_h)
                     
+                    # 悬停变色逻辑
+                    btn_color = pg.Color("purple")
+                    if self.recover_btn_rect.collidepoint(pg.mouse.get_pos()):
+                        btn_color = pg.Color("#BA55D3") # MediumOrchid (Lighter Purple)
+
                     # 按照要求，按钮颜色为紫色
-                    pg.draw.rect(self.window, pg.Color("purple"), self.recover_btn_rect, border_radius=5)
+                    pg.draw.rect(self.window, btn_color, self.recover_btn_rect, border_radius=5)
                     
                     text_rect = btn_surf.get_rect(center=self.recover_btn_rect.center)
                     self.window.blit(btn_surf, text_rect)
@@ -1446,6 +1474,194 @@ class GameApp:
         # 8. 画卡牌面板
         if self.card_panel:
             self.card_panel.draw(self.window)
+
+        # 9. 画鼠标悬停提示 (Tooltip)
+        self._draw_hover_tooltip()
+
+    def _draw_hover_tooltip(self) -> None:
+        """Draw tooltip for hovered element"""
+        # 只在游戏进行中显示
+        if self.state != GameState.PLAYING:
+            return
+
+        mouse_pos = pg.mouse.get_pos()
+        # 确保鼠标在窗口内
+        if not self.window.get_rect().collidepoint(mouse_pos):
+            return
+
+        # tooltip_parts: List of (text, color, is_bold, has_shadow)
+        tooltip_parts: List[Tuple[str, pg.Color, bool, bool]] = []
+        
+        # 1. 优先检查单位 (Unit)
+        hovered_unit = self._get_unit_slot_at(mouse_pos)
+        if hovered_unit:
+            pid, slot = hovered_unit
+            prov = self.map_manager.get_by_id(pid)
+            if prov and slot < len(prov.units):
+                u_type = prov.units[slot].unit_type
+                t_name = self._get_display_name(u_type)
+                if t_name:
+                    tooltip_parts.append((t_name, pg.Color("black"), False, False))
+
+        # 2. 如果没悬停单位，先检查是否有河流或禁行区域
+        if not tooltip_parts:
+            if self._is_hovering_ban_line(mouse_pos):
+                tooltip_parts.append(("禁行", pg.Color("black"), False, False))
+            elif self._is_hovering_river(mouse_pos):
+                tooltip_parts.append(("河流", pg.Color("black"), False, False))
+
+        # 3. 如果没悬停单位也没河流，检查格子/地形 (Terrain/City)
+        if not tooltip_parts:
+            hovered_prov = self._get_province_at(mouse_pos)
+            if hovered_prov:
+                # 检查是否有特殊名称 (非 TileXX, BorderXX)
+                p_name = hovered_prov.name
+                
+                # 城市名称映射表
+                city_name_map = {
+                    "Liangzhou": "凉州",
+                    "Chengdu": "成都",
+                    "Hanzhong": "汉中",
+                    "Changan": "长安",
+                    "Jingzhou": "荆州",
+                    "Xiangyang": "襄阳",
+                    "Luoyang": "洛阳",
+                    "Wuchang": "武昌",
+                    "Changsha": "长沙",
+                    "Youzhou": "幽州",
+                    "Hefei": "合肥",
+                    "Jianye": "建业"
+                }
+
+                if p_name and not p_name.startswith("Tile") and not p_name.startswith("Border"):
+                    # 如果在映射表中，显示中文；否则显示原名
+                    base_name = city_name_map.get(p_name, p_name)
+                else:
+                    # 显示地形中文名
+                    t_key = hovered_prov.terrain.lower() if hovered_prov.terrain else "plain"
+                    base_name = self._get_display_name(t_key)
+                
+                if base_name:
+                     # 城市名加粗变成深金色，并带阴影；其他地形默认黑色无阴影
+                     is_city = (hovered_prov.terrain or "").lower() == "city"
+                     if is_city:
+                         # 使用更深的金色 (DarkGoldenrod #B8860B 或者是自定义)
+                         # 用户觉得 gold (#FFD700) 太浅。尝试 #D4AF37 (Metallic Gold) 或 #C5A000
+                         tooltip_parts.append((base_name, pg.Color("#D4AF37"), True, True)) 
+                     else:
+                         tooltip_parts.append((base_name, pg.Color("black"), False, False))
+
+                # 附加国家信息
+                if hovered_prov.country:
+                    country_cn = self.country_labels.get(hovered_prov.country, hovered_prov.country)
+                    # 尝试从 kingdom_repository 获取最准确的颜色
+                    c_color = self.kingdom_repository.get_color(hovered_prov.country)
+                    if not c_color:
+                        # 兜底
+                        c_color = self.country_button_colors.get(hovered_prov.country, pg.Color("black"))
+                    
+                    # 国家名加粗，用对应颜色
+                    tooltip_parts.append((f"({country_cn})", c_color, True, True)) # 国家名也给个阴影会让颜色更突出
+
+        if tooltip_parts:
+             # 计算总宽度和高度
+             font_regular = self.tooltip_font
+             font_bold = self.tooltip_bold_font 
+             
+             # 渲染每个部分
+             rendered_surfaces = []
+             total_w = 0
+             max_h = 0
+             
+             shadow_offset = (1, 1)
+             shadow_color = pg.Color("black") # 或者深灰
+
+             for text, color, is_bold, has_shadow in tooltip_parts:
+                 font = font_bold if is_bold else font_regular
+                 
+                 # 渲染文字
+                 fg_surf = font.render(text, True, color)
+                 
+                 if has_shadow:
+                     # 渲染阴影 (渲染黑色并轻微模糊/偏移)
+                     shadow_surf = font.render(text, True, shadow_color)
+                     # 创建一个够大的容器容纳影子和正文
+                     w = fg_surf.get_width() + abs(shadow_offset[0])
+                     h = fg_surf.get_height() + abs(shadow_offset[1])
+                     container = pg.Surface((w, h), pg.SRCALPHA)
+                     
+                     # 先画影子
+                     container.blit(shadow_surf, shadow_offset)
+                     # 再画正文
+                     container.blit(fg_surf, (0, 0))
+                     s = container
+                 else:
+                     s = fg_surf
+
+                 rendered_surfaces.append(s)
+                 total_w += s.get_width()
+                 max_h = max(max_h, s.get_height())
+             
+             # 创建合成Surface
+             
+             # 创建合成Surface
+             final_surf = pg.Surface((total_w, max_h), pg.SRCALPHA)
+             current_x = 0
+             for s in rendered_surfaces:
+                 # 垂直居中
+                 y_offset = (max_h - s.get_height()) // 2
+                 final_surf.blit(s, (current_x, y_offset))
+                 current_x += s.get_width()
+
+             # 计算位置：鼠标右下方 15px
+             x, y = mouse_pos
+             x += 15
+             y += 15
+             
+             rect = final_surf.get_rect(topleft=(x, y))
+             
+             # 边界检查
+             if rect.right > self.screen_width:
+                 rect.right = mouse_pos[0] - 5
+             if rect.bottom > self.screen_height:
+                 rect.bottom = mouse_pos[1] - 5
+                 
+             # 绘制背景框
+             bg_rect = rect.inflate(10, 6) # 稍微紧凑一点 padding
+             pg.draw.rect(self.window, pg.Color("white"), bg_rect, border_radius=3) # 白底
+             pg.draw.rect(self.window, pg.Color("black"), bg_rect, 1, border_radius=3) # 黑框
+             
+             self.window.blit(final_surf, rect)
+
+    def _get_display_name(self, key: str) -> str | None:
+        """获取显示名称"""
+        mapping = {
+            "city": "城市",
+            "hill": "山地",
+            "mountain": "山地",
+            "mountains": "山地",
+            "hills": "山地",
+            "plain": "平原",
+            
+            "infantry": "步兵",
+            "cavalry": "骑兵",
+            "archer": "弓兵",
+            
+            "HUBAO_cavalry": "虎豹骑",
+            "WUDANG_archer": "无当飞军",
+            "JIEFAN_infantry": "解烦兵"
+        }
+        
+        if key in mapping: 
+            return mapping[key]
+            
+        # 尝试后缀匹配 (针对通用兵种变体)
+        key_lower = key.lower()
+        if "infantry" in key_lower: return "步兵"
+        if "cavalry" in key_lower: return "骑兵"
+        if "archer" in key_lower: return "弓兵"
+        
+        return None # 其他普通地形如 plain 不显示，以免屏幕太乱
 
     def _draw_smooth_polyline(self, color: pg.Color, points: Sequence[pg.math.Vector2], width: int) -> None:
         """
@@ -1679,6 +1895,53 @@ class GameApp:
         self.yellow_river_polyline = tuple(self._scale_points(YELLOW_RIVER_POINTS))
         self.ban_line_polyline = tuple(self._scale_points(BAN_LINE_POINTS))
 
+    def _is_hovering_ban_line(self, mouse_pos: Tuple[int, int]) -> bool:
+        """检查鼠标是否悬停在黑线上"""
+        return self._is_hovering_polyline(mouse_pos, [self.ban_line_polyline])
+
+    def _is_hovering_river(self, mouse_pos: Tuple[int, int]) -> bool:
+        """检查鼠标是否悬停在河流上"""
+        polylines = []
+        polylines.extend(self.yangtze_polylines)
+        polylines.append(self.yellow_river_polyline)
+        return self._is_hovering_polyline(mouse_pos, polylines)
+
+    def _is_hovering_polyline(self, mouse_pos: Tuple[int, int], polylines_list) -> bool:
+        """通用检查鼠标是否悬停在某组Polyline上"""
+        threshold = 10.0 # 像素距离阈值
+        m_vec = pg.math.Vector2(mouse_pos)
+        
+        for polyne in polylines_list:
+            # polyne is a sequence of points
+            if len(polyne) < 2: continue
+            
+            for i in range(len(polyne) - 1):
+                p1 = polyne[i]
+                p2 = polyne[i+1]
+                
+                # 计算点到线段距离
+                # Vector P1->P2
+                line_vec = p2 - p1
+                # Vector P1->Mouse
+                p1_m_vec = m_vec - p1
+                
+                line_len_sq = line_vec.length_squared()
+                if line_len_sq == 0: continue
+                
+                # Project p1_m onto line_vec
+                # t = dot(p1_m, line) / len_sq
+                t = p1_m_vec.dot(line_vec) / line_len_sq
+                
+                # Clamp t to segment
+                t = max(0.0, min(1.0, t))
+                
+                closest_point = p1 + line_vec * t
+                dist_sq = m_vec.distance_squared_to(closest_point)
+                
+                if dist_sq < threshold * threshold:
+                    return True
+        return False
+        
     # --- 辅助工具方法 (Helpers) --------------------------------------------------------
     
     def _scale_points(self, normalized_points: Sequence[Tuple[float, float]]) -> List[pg.math.Vector2]:

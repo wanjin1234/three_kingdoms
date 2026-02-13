@@ -28,10 +28,14 @@ class MapManager:
         definition_file: Path,      # 地图定义文件 (CSV) 的路径
         terrain_graphics_dir: Path, # 地形图片文件夹的路径
         color_resolver: ColorResolver, # 用来获取国家颜色的函数
+        river_polylines: Sequence[Sequence[Tuple[float, float]]] = (), # 河流数据
+        ban_polylines: Sequence[Sequence[Tuple[float, float]]] = (),   # 禁行线数据
     ) -> None:
         self._definition_file = definition_file
         self._terrain_graphics_dir = terrain_graphics_dir
         self._color_resolver = color_resolver
+        self._river_polylines = river_polylines
+        self._ban_polylines = ban_polylines
         
         # 加载所有格子数据
         self._provinces = self._load_provinces(definition_file)
@@ -92,75 +96,131 @@ class MapManager:
     def _build_adjacency_graph(self) -> None:
         """
         基于几何距离构建格子的邻接关系图。
-        用于寻路算法。
+        同时计算是否跨越河流。
         """
         self._adjacency: Dict[int, List[int]] = {}
-        # 两个正六边形邻居的中心距离约为 sqrt(3) * side
-        # 我们给定一个稍微大一点的阈值 (1.1倍) 来容错
-        threshold = (self._hex_side * (3**0.5)) * 1.1
+        # 存储跨河的边 (id1, id2) -> True
+        self._river_crossing_edges: Dict[Tuple[int, int], bool] = {}
         
+        threshold = (self._hex_side * (3**0.5)) * 1.5
+        
+        # 预先处理河流段，避免由每个格子去重复遍历
+        # river_segments: list of ((x1, y1), (x2, y2)) logic coords
+        river_segments = []
+        for polyline in self._river_polylines:
+            for i in range(len(polyline) - 1):
+                river_segments.append((polyline[i], polyline[i+1]))
+        
+        # 预先处理禁行线段 (Ban lines)
+        ban_segments = []
+        for polyline in self._ban_polylines:
+             for i in range(len(polyline) - 1):
+                 ban_segments.append((polyline[i], polyline[i+1]))
+
         for p1 in self._provinces:
             self._adjacency[p1.province_id] = []
             for p2 in self._provinces:
                 if p1.province_id == p2.province_id:
                     continue
-                # 计算距离
+                
+                # 1. 距离判定是否相邻
                 if p1.center_cache and p2.center_cache:
                     dist = p1.center_cache.distance_to(p2.center_cache)
                     if dist < threshold:
-                        self._adjacency[p1.province_id].append(p2.province_id)
+                        
+                        # 检测是否被禁行线阻断
+                        is_blocked = False
+                        A = (p1.x_factor, p1.y_factor)
+                        B = (p2.x_factor, p2.y_factor)
+                        
+                        for (C, D) in ban_segments:
+                             if self._segments_intersect(A, B, C, D):
+                                 is_blocked = True
+                                 break
+                        
+                        # 如果没有被黑线阻断，才视为邻居
+                        if not is_blocked:
+                            self._adjacency[p1.province_id].append(p2.province_id)
+                            
+                            # 2. 判定是否跨河
+                            is_crossing = False
+                            for (C, D) in river_segments:
+                                if self._segments_intersect(A, B, C, D):
+                                    is_crossing = True
+                                    break
+                            
+                            if is_crossing:
+                                self._river_crossing_edges[(p1.province_id, p2.province_id)] = True
+
+    def _segments_intersect(self, A, B, C, D) -> bool:
+        """检测线段 AB 和 CD 是否相交"""
+        def ccw(p1, p2, p3):
+            return (p3[1]-p1[1]) * (p2[0]-p1[0]) > (p2[1]-p1[1]) * (p3[0]-p1[0])
+        return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
 
     def find_path_cost(self, start_id: int, target_id: int) -> int:
         """
-        使用 Dijkstra 算法计算从起点到终点的移动消耗。
-        返回消耗点数 (cost)。如果无法到达，返回 9999。
+        计算移动消耗 (Dijkstra 变体)。
+        规则：
+        1. 基础每步消耗为 1。
+        2. 每经过一个山地（Start, Waypoint, End），该点都会贡献 +1 消耗。
+           (如果起点就是山地，初始消耗就已经 +1)
+        3. 每跨越一次河流，该步消耗额外 +1。
         
-        消耗规则：
-        - 基础消耗 1
-        - 进入 山地(hill/mountain) 额外消耗 1 (共2)
-        - // TODO: 跨河逻辑
+        Cost = 路径长度 + sum(1 for node in path if is_mountain(node)) + sum(1 for edge in path if is_river_crossing(edge))
         """
-        # 如果起点和终点重合
         if start_id == target_id:
             return 0
-            
+        
+        start_prov = self.get_by_id(start_id)
+        if not start_prov: return 9999
+        
+        # 检查起点山地惩罚
+        start_t = start_prov.terrain.lower() if start_prov.terrain else ""
+        start_is_mtn = start_t in ("hill", "mountain", "hills", "mountains")
+        
+        # 初始 Cost = 0 (位移) + (1 if 起点是山 else 0)
+        initial_cost = 1 if start_is_mtn else 0
+        
         import heapq
         
-        # Priority Queue: (current_cost, province_id)
-        queue = [(0, start_id)]
-        costs = {start_id: 0}
+        # Priority Queue: (current_accumulated_cost, current_id)
+        queue = [(initial_cost, start_id)]
+        min_costs = {start_id: initial_cost}
         
         while queue:
-            current_cost, current_id = heapq.heappop(queue)
+            curr_total, curr_id = heapq.heappop(queue)
             
-            # 如果找到终点 (注意: 我们可能发现更短路径，但Dijkstra保证第一次pop就是最短)
-            if current_id == target_id:
-                return current_cost
-            
-            # 如果当前路径比已知的长，跳过
-            if current_cost > costs.get(current_id, float('inf')):
+            if curr_total > min_costs.get(curr_id, float('inf')):
                 continue
-                
-            # 遍历邻居
-            neighbors = self._adjacency.get(current_id, [])
+            
+            if curr_id == target_id:
+                return curr_total
+            
+            neighbors = self._adjacency.get(curr_id, [])
             for next_id in neighbors:
                 next_prov = self.get_by_id(next_id)
                 if not next_prov: continue
                 
-                # 计算移动到 next_id 的代价
-                # 基础代价 1
-                step_cost = 1
+                # 计算这一步 (curr -> next) 的增量消耗
+                step_cost = 1  # 基础移动消耗
                 
-                # 地形判定: 如果目标地是山地，消耗+1
-                terrain = next_prov.terrain.lower() if next_prov.terrain else ""
-                if terrain in ("hill", "mountain", "hills", "mountains"):
+                # 1. 目标点是否为山地? (如果是，移动进该点需额外 +1)
+                nxt_t = next_prov.terrain.lower() if next_prov.terrain else ""
+                is_nxt_mtn = nxt_t in ("hill", "mountain", "hills", "mountains")
+                if is_nxt_mtn:
                     step_cost += 1
                 
-                new_cost = current_cost + step_cost
+                # 2. 是否跨河?
+                is_crossing = self._river_crossing_edges.get((curr_id, next_id), False)
+                if is_crossing:
+                    step_cost += 1
                 
-                if new_cost < costs.get(next_id, float('inf')):
-                    costs[next_id] = new_cost
-                    heapq.heappush(queue, (new_cost, next_id))
+                new_total = curr_total + step_cost
+                
+                if new_total < min_costs.get(next_id, float('inf')):
+                    min_costs[next_id] = new_total
+                    heapq.heappush(queue, (new_total, next_id))
                     
         return 9999
 
