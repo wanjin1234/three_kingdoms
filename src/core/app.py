@@ -216,6 +216,9 @@ class GameApp:
         self.combat_callback: Callable[[], None] | None = None
         self.combat_btn_rect: pg.Rect | None = None  # 在 render 时计算
         
+        # 解除混乱按钮区域
+        self.recover_btn_rect: pg.Rect | None = None
+
         # 战斗结果显示 (Top UI area)
         self.combat_result_title: str | None = None # e.g. "1:1 · 骰6 · A1"
         self.combat_result_timer: float = 0.0       # 显示倒计时
@@ -325,6 +328,10 @@ class GameApp:
 
     def add_selection(self, province_id: int, slot_index: int) -> None:
         """添加一个选中单位"""
+        # 只要发生了新的选择操作，肯定要清空上一轮战斗的残留结果
+        self.combat_result_title = None
+        self.combat_result_timer = 0
+        
         # 防止重复添加
         new_entry = (province_id, slot_index)
         if new_entry in self.selected_units:
@@ -335,6 +342,10 @@ class GameApp:
 
     def remove_selection(self, province_id: int, slot_index: int) -> None:
         """移除一个选中单位"""
+        # 移除也是变动，同样清空旧的战斗结果
+        self.combat_result_title = None
+        self.combat_result_timer = 0
+        
         entry = (province_id, slot_index)
         if entry in self.selected_units:
             self.selected_units.remove(entry)
@@ -470,6 +481,24 @@ class GameApp:
                     # 这里 return 防止点穿到下面地图
                     return
 
+                # 0.1 检查“解除混乱”按钮
+                if self.recover_btn_rect and self.recover_btn_rect.collidepoint(event.pos):
+                    # 执行解除混乱逻辑
+                    # 再次确认条件 (虽然 UI 只在满足条件时显示，但 safe check 好习惯)
+                    confused_list = []
+                    for pid, slot in self.selected_units:
+                        prov = self.map_manager.get_by_id(pid)
+                        if prov and slot < len(prov.units):
+                            u = prov.units[slot]
+                            if u.is_confused:
+                                confused_list.append(u)
+                    
+                    if len(confused_list) == 1:
+                        confused_list[0].is_confused = False
+                        self.info_panel.show_message("混乱状态已解除")
+                        self._update_selection_info()
+                    return
+
                 # 优先处理 UI 面板点击
                 if self.info_panel and self.info_panel.handle_click(event.pos):
                     return
@@ -485,6 +514,15 @@ class GameApp:
                 target_unit = self._get_unit_slot_at(event.pos)
                 if target_unit:
                     prov_id, slot_idx = target_unit
+                    
+                    # --- 1. 检查是否选择了敌方单位 ---
+                    prov = self.map_manager.get_by_id(prov_id)
+                    if prov and prov.country and prov.country != self.player_country:
+                        # 如果点击了敌方单位，不作为"选择"处理
+                        # 但可以给个提示
+                        self.info_panel.show_message("不能操作敌方单位")
+                        return
+
                     # 检查是否已选中
                     if (prov_id, slot_idx) in self.selected_units:
                         self.remove_selection(prov_id, slot_idx)
@@ -735,14 +773,14 @@ class GameApp:
             allowed_range_px = definition.range * unit_stride * 1.1 
             
             if current_distance > allowed_range_px:
-                self.info_panel.show_message(f"距离不足:{definition.range}", duration=2.0)
                 self.clear_selection(clear_ui=False)
+                self.info_panel.show_message(f"距离不足:{definition.range}", duration=2.0)
                 return
             
             # 行动力检查
             if unit_state.mp < 1:
-                self.info_panel.show_message("行动力不足")
                 self.clear_selection(clear_ui=False)
+                self.info_panel.show_message("行动力不足")
                 return
 
             atk, _ = self._calculate_unit_powers(unit_state)
@@ -1295,6 +1333,43 @@ class GameApp:
                 ratio_y = btn_y + (btn_h - ratio_surf.get_height()) // 2
                 
                 self.window.blit(ratio_surf, (ratio_x, ratio_y))
+            
+            # --- 检查是否需要显示“解除混乱”按钮 ---
+            # 条件：1. 没有进入战斗准备 (show_combat_ui is False)
+            #      2. 选中的单位中，【恰好】只有一个单位处于混乱状态
+            #      3. (隐含) combat_target 为 None (show_combat_ui False 已经涵盖了大部分情况，双重保险)
+            else:
+                self.recover_btn_rect = None # Reset
+                confused_list = []
+                for pid, slot in self.selected_units:
+                    prov = self.map_manager.get_by_id(pid)
+                    if prov and slot < len(prov.units):
+                        u = prov.units[slot]
+                        if u.is_confused:
+                             confused_list.append(u)
+                
+                if len(confused_list) == 1:
+                    # 绘制解除混乱按钮
+                    font = self.combat_ui_font
+                    btn_text = "解除混乱"
+                    btn_surf = font.render(btn_text, True, pg.Color("white"))
+                    
+                    btn_w = btn_surf.get_width() + 20
+                    btn_h = btn_surf.get_height() + 10
+                    
+                    top_area_height = int(self.screen_height * 0.15)
+                    tag_x = self.country_tag_pos[0]
+                    # 和 combat button 相同的位置逻辑：Tag 左侧 30px
+                    btn_x = tag_x - btn_w - 30
+                    btn_y = (top_area_height - btn_h) // 2 
+                    
+                    self.recover_btn_rect = pg.Rect(btn_x, btn_y, btn_w, btn_h)
+                    
+                    # 按照要求，按钮颜色为紫色
+                    pg.draw.rect(self.window, pg.Color("purple"), self.recover_btn_rect, border_radius=5)
+                    
+                    text_rect = btn_surf.get_rect(center=self.recover_btn_rect.center)
+                    self.window.blit(btn_surf, text_rect)
                 
             # --- 画战斗结果 (Top UI) ---
             # 如果 timer != 0，则显示 (timer<0 为永久，timer>0 为倒计时)
