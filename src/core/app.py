@@ -18,6 +18,7 @@ from src.core.events import EventManager
 from src.core.combat import get_ratio_column, resolve_combat, COMBAT_TABLE, CombatPreview
 from src.game_objects.kingdom import KingdomRepository
 from src.game_objects.unit import UnitRenderer, UnitRepository
+from src.map.geometry import hex_vertices
 from src.map.map_manager import MapManager
 from src.ui.panels import SelectionOverlay
 from src.ui.info_panel import InfoPanel, CardPanel
@@ -210,6 +211,7 @@ class GameApp:
         
         # 战斗UI状态 (位于顶部栏)
         self.show_combat_ui = False
+        self.combat_target: object | None = None # 当前选中的攻击目标 (Province)
         self.combat_ratio_val: float = 0.0
         self.combat_callback: Callable[[], None] | None = None
         self.combat_btn_rect: pg.Rect | None = None  # 在 render 时计算
@@ -304,15 +306,22 @@ class GameApp:
         """清空当前选中的单位"""
         self.selected_units.clear()
         
-        # 无论如何，只要取消选择，战斗请求UI（按钮）就应该消失
-        self.show_combat_ui = False 
-        
+        self._cancel_combat_preview() # 清空战斗预览
+
         # 只要点击了地图上的其他东西（或者清空选择），就应该清空上一次的战果(Top UI)
         if clear_ui:
             self.combat_result_title = None
             self.combat_result_timer = 0
             if self.info_panel: 
                  self.info_panel.show_properties("") # 清空面板
+
+    def _cancel_combat_preview(self) -> None:
+        """取消战斗预览状态"""
+        self.show_combat_ui = False
+        self.combat_target = None
+        self.combat_callback = None
+        # 如果还有选中单位，恢复显示选中单位的信息
+        self._update_selection_info()
 
     def add_selection(self, province_id: int, slot_index: int) -> None:
         """添加一个选中单位"""
@@ -549,7 +558,12 @@ class GameApp:
         has_enemy_units = (len(target_province.units) > 0)
         
         if is_enemy and has_enemy_units:
-            self._handle_combat(target_province)
+            # 切换/取消 战斗目标逻辑
+            # 如果再次点击已选目标 -> 取消选中
+            if self.combat_target and self.combat_target == target_province:
+                self._cancel_combat_preview()
+            else:
+                self._handle_combat(target_province)
         else:
             # 移动或占领空地
             self._handle_movement(target_province)
@@ -845,6 +859,7 @@ class GameApp:
 
         # 设置战斗 UI 状态
         self.show_combat_ui = True
+        self.combat_target = target # 设置当前目标 (Province对象)
         
         # 既然开始了新的战斗准备，就清空上一轮的战果显示
         self.combat_result_title = None
@@ -1199,6 +1214,18 @@ class GameApp:
         for province in self.map_manager.provinces:
             center = province.center_cache if province.center_cache else province.compute_center(self.hex_side)
             self.unit_renderer.draw_units(self.window, center, province.units)
+            
+        # 2.5 画当前战斗目标的金色描边 Hex Outline
+        if self.combat_target:
+             # 安全获取 Province 对象
+            target_prov = self.combat_target
+            # 计算中心点
+            c = target_prov.center_cache if target_prov.center_cache else target_prov.compute_center(self.hex_side)
+            # 计算六边形顶点
+            vertices = hex_vertices(c, self.hex_side)
+            
+            # 使用金色画笔画线，宽度为4
+            pg.draw.lines(self.window, pg.Color("gold"), True, vertices, 4)
 
         # 3. 画河流和阻挡线
         for polyline in self.yangtze_polylines:
