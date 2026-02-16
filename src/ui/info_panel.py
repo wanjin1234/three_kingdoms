@@ -108,40 +108,101 @@ class BasePanel:
         """
         渲染包含简易颜色标记的一行文字。
         标记格式： "|#RRGGBB|文本"
-        例如: "[|#FF0000|红色文字|#000000|]黑色文字"  (需修正 Split 逻辑)
+        支持制表符\t对齐：遇到\t时跳转到固定X坐标
+        例如: "[|#FF0000|红色文字|#000000|]\t黑色文字"
         """
-        # 注意: split('|') 会把 "|#fff|text" 分成 ["", "#fff", "text"]
-        parts = line.split('|')
-        segments = []
-        current_color = default_color
-        
-        total_width = 0
-        
-        for part in parts:
-            if not part: continue
+        # 检查是否包含制表符
+        if '\t' in line:
+            # 按制表符分割
+            tab_parts = line.split('\t')
             
-            # 检测是否是颜色代码
-            if part.startswith('#') and len(part) == 7:
+            # 定义制表位：标签从10px开始，属性从150px开始
+            label_x = self.rect.left + 10
+            attr_x = self.rect.left + 150
+            
+            # 渲染第一部分（制表符之前）- 标签，从左边固定位置开始
+            if tab_parts:
+                first_part = tab_parts[0]
+                parts = first_part.split('|')
+                current_color = default_color
+                
+                x = label_x
+                
+                for part in parts:
+                    if not part: continue
+                    
+                    # 检测是否是颜色代码
+                    if part.startswith('#') and len(part) == 7:
+                        try:
+                            current_color = pg.Color(part)
+                            continue
+                        except:
+                            pass
+                    
+                    # 普通文本，渲染之
+                    try:
+                        surf = font.render(part, True, current_color)
+                        surface.blit(surf, (x, y))
+                        x += surf.get_width()
+                    except Exception as e:
+                        print(f"Render error: {e}")
+            
+            # 渲染制表符后的部分（如果有），从固定位置开始
+            if len(tab_parts) > 1:
+                for tab_idx, tab_part in enumerate(tab_parts[1:], 1):
+                    parts = tab_part.split('|')
+                    current_color = default_color
+                    
+                    x = attr_x
+                    
+                    for part in parts:
+                        if not part: continue
+                        
+                        if part.startswith('#') and len(part) == 7:
+                            try:
+                                current_color = pg.Color(part)
+                                continue
+                            except:
+                                pass
+                        
+                        try:
+                            surf = font.render(part, True, current_color)
+                            surface.blit(surf, (x, y))
+                            x += surf.get_width()
+                        except Exception as e:
+                            print(f"Render error: {e}")
+        else:
+            # 没有制表符，使用原来的居中渲染逻辑
+            parts = line.split('|')
+            segments = []
+            current_color = default_color
+            
+            total_width = 0
+            
+            for part in parts:
+                if not part: continue
+                
+                # 检测是否是颜色代码
+                if part.startswith('#') and len(part) == 7:
+                    try:
+                        current_color = pg.Color(part)
+                        continue
+                    except:
+                        pass
+                
+                # 普通文本，渲染之
                 try:
-                    current_color = pg.Color(part)
-                    continue
-                except:
-                    pass
+                    surf = font.render(part, True, current_color)
+                    segments.append(surf)
+                    total_width += surf.get_width()
+                except Exception as e:
+                    print(f"Render error: {e}")
             
-            # 普通文本，渲染之
-            try:
-                surf = font.render(part, True, current_color)
-                segments.append(surf)
-                total_width += surf.get_width()
-            except Exception as e:
-                print(f"Render error: {e}")
-            
-        # 居中绘制
-        x = self.rect.centerx - total_width // 2
-        for surf in segments:
-            # 垂直居中对齐稍微调整可以忽略
-            surface.blit(surf, (x, y))
-            x += surf.get_width()
+            # 居中绘制
+            x = self.rect.centerx - total_width // 2
+            for surf in segments:
+                surface.blit(surf, (x, y))
+                x += surf.get_width()
 
     def draw_text_wrapped(self, surface: pg.Surface, text: str, color: pg.Color, start_y: int, max_height: int | None = None) -> int:
         """
