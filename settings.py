@@ -28,6 +28,7 @@ class Settings:
     map_definition_file: Path  # 地图定义的 CSV 文件路径
     kingdoms_file: Path  # 国家定义的 JSON 文件路径
     units_file: Path  # 兵种定义的 JSON 文件路径
+    cards_file: Path  # 卡牌定义的 JSON 文件路径
     fonts_dir: Path  # 字体文件夹
     graphics_dir: Path  # 图片文件夹
     window_title: str = "三足鼎立"  # 游戏窗口的标题
@@ -57,6 +58,7 @@ SETTINGS = Settings(
     map_definition_file=ASSET_ROOT / "map" / "definitions.csv",
     kingdoms_file=ASSET_ROOT / "data" / "kingdoms.json",
     units_file=ASSET_ROOT / "data" / "units.json",
+    cards_file=ASSET_ROOT / "data" / "cards.json",
     fonts_dir=ASSET_ROOT / "fonts",
     graphics_dir=ASSET_ROOT / "graphics",
 )

@@ -1,0 +1,65 @@
+[
+  {
+    "id": "card_zhenjing_huaxia_shu",
+    "name": "威震华夏",
+    "country": "SHU",
+    "description": "当敌方部队处于河岸边时，使用此技能卡，进攻该部队时战斗判定向利于其的方向移动一列",
+    "category": "offensive"
+  },
+  {
+    "id": "card_qilin_qishu",
+    "name": "七擒七纵",
+    "country": "SHU",
+    "description": "使用此技能卡额外获得一个任意部署在蜀国地盘的无当飞军单位",
+    "category": "summon"
+  },
+  {
+    "id": "card_kongcheng_mouce",
+    "name": "空城妙计",
+    "country": "SHU",
+    "description": "使用此技能卡可指定一个格子在此大回合内不能被敌方进攻",
+    "category": "defensive"
+  },
+  {
+    "id": "card_huoshao_lianying",
+    "name": "火烧连营",
+    "country": "WU",
+    "description": "当敌方在某地块堆叠部队数量超过1时，使用此技能卡，进攻该地块上的部队时战斗判定向利于其的方向移动一列",
+    "category": "offensive"
+  },
+  {
+    "id": "card_baiyue_dujiang",
+    "name": "白衣渡江",
+    "country": "WU",
+    "description": "指定某格上所有部队，本大回合该部队不受跨河惩罚，且roll点点数+1",
+    "category": "buff"
+  },
+  {
+    "id": "card_guanmu_xiangkan",
+    "name": "刮目相看",
+    "country": "WU",
+    "description": "使用此技能卡额外获得一个任意部署在吴国地盘的解烦兵单位",
+    "category": "summon"
+  },
+  {
+    "id": "card_touduo_yinping",
+    "name": "偷渡阴平",
+    "country": "WEI",
+    "description": "指定某格上所有部队，本大回合其行动力+2且无视山地地形影响（移动和战斗）",
+    "category": "buff"
+  },
+  {
+    "id": "card_gexu_qibao",
+    "name": "割须弃袍",
+    "country": "WEI",
+    "description": "指定某格上所有部队，本大回合受伤部队战斗力+2",
+    "category": "buff"
+  },
+  {
+    "id": "card_jiangdong_zhiti",
+    "name": "江东止啼",
+    "country": "WEI",
+    "description": "指定某格上所有部队，本大回合roll点+2（最高6点）",
+    "category": "buff"
+  }
+]

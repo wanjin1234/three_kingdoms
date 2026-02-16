@@ -136,9 +136,22 @@ class UnitRenderer:
         
         # 重新生成所有缩放后的图片
         for unit_type, surface in self._repository.iter_icon_surfaces():
-            self._scaled_icons[unit_type] = pg.transform.smoothscale(
-                surface, (self._icon_size, self._icon_size)
-            )
+            scaled = pg.transform.smoothscale(surface, (self._icon_size, self._icon_size))
+
+            # 特殊处理: 将 解烦兵 (JIEFAN_infantry) 的图标变为黑色轮廓（实心黑色），以便在浅色地图上具有更好对比
+            if unit_type == "JIEFAN_infantry":
+                try:
+                    mask = pg.mask.from_surface(scaled)
+                    bw = mask.to_surface(setcolor=(0, 0, 0, 255), unsetcolor=(0, 0, 0, 0))
+                    bw = bw.convert_alpha()
+                    self._scaled_icons[unit_type] = bw
+                except Exception:
+                    # 如果 mask 方法在某些环境失败，退回到简单填充黑色的方法
+                    fallback = pg.Surface((self._icon_size, self._icon_size), pg.SRCALPHA)
+                    fallback.fill((0, 0, 0, 255))
+                    self._scaled_icons[unit_type] = fallback
+            else:
+                self._scaled_icons[unit_type] = scaled
 
     def draw_units(self, surface: pg.Surface, center: Tuple[int, int], units: Sequence[UnitState]) -> None:
         """

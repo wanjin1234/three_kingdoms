@@ -18,7 +18,9 @@ from src.core.camera import Camera
 from src.core.events import EventManager
 from src.core.combat import get_ratio_column, resolve_combat, COMBAT_TABLE, CombatPreview
 from src.game_objects.kingdom import KingdomRepository
-from src.game_objects.unit import UnitRenderer, UnitRepository
+from src.game_objects.unit import UnitRenderer, UnitRepository, UnitState
+from src.game_objects.card import CardRepository, CardManager
+from src.game_objects.card_effects import CardEffectManager
 from src.map.geometry import hex_vertices
 from src.map.map_manager import MapManager
 from src.ui.panels import SelectionOverlay
@@ -179,6 +181,15 @@ class GameApp:
             slot_factor=settings.icon_slot_size_factor,
         )
         self.unit_renderer.on_hex_side_changed(self.hex_side)
+        
+        # 初始化卡牌仓库
+        self.card_repository = CardRepository(settings.cards_file)
+        self.card_manager: CardManager | None = None
+        self.card_effect_manager = CardEffectManager()  # 卡牌效果管理器
+        
+        # 卡牌目标选择状态
+        self.selecting_card_target = False  # 是否正在选择卡牌目标
+        self.selected_card_for_effect: str | None = None  # 待应用的卡牌ID
 
         # 改回使用默认的 Arial 字体，因为中文字体 (msyh) 的垂直基线会导致数字无法垂直居中
         self.selection_overlay = SelectionOverlay()
@@ -231,7 +242,7 @@ class GameApp:
             panel_w,
             int(self.screen_height * 0.25) # 85% - 60%
         )
-        self.card_panel = CardPanel(card_rect, info_font)
+        self.card_panel = CardPanel(card_rect, info_font, font_path=font_path, base_font_size=font_size)
         
         # 战斗UI状态 (位于顶部栏)
         self.show_combat_ui = False
@@ -275,11 +286,202 @@ class GameApp:
                 # 注意：回合结杞时不清除混乱状态，只重置攻击计数
                 unit.attack_count = 0
 
+    def _update_card_panel(self) -> None:
+        """更新卡牌面板显示"""
+        if self.card_panel and self.card_manager:
+            available_cards = self.card_manager.get_available_cards()
+            self.card_panel.set_available_cards(available_cards)
+
+    def _play_selected_card(self) -> None:
+        """打出选中的卡牌"""
+        if not self.card_panel or not self.card_manager:
+            return
+        
+        selected_card_id = self.card_panel.get_selected_card()
+        if not selected_card_id:
+            self.info_panel.show_message("请先选择一张卡牌")
+            return
+        
+        # 检查卡牌是否已被使用
+        if self.card_manager.is_card_used(selected_card_id):
+            self.info_panel.show_message("该卡牌已被使用")
+            return
+        
+        card_def = self.card_repository.get_definition(selected_card_id)
+        if not card_def:
+            return
+        
+        # 根据卡牌类型应用不同的处理方式
+        if card_def.category == "offensive":
+            # 威震华夏和火烧连营都直接激活，不需要目标选择
+            if selected_card_id in ["card_zhenjing_huaxia_shu", "card_huoshao_lianying"]:
+                if self.card_effect_manager.activate_offensive_card(selected_card_id):
+                    # 标记卡牌为已使用
+                    self.card_manager.use_card(selected_card_id)
+                    self.info_panel.show_message(f"已激活锦囊卡: {card_def.name}", duration=2.0)
+                    self._update_card_panel()
+                    logger.info(f"Offensive card activated: {card_def.name} (ID: {selected_card_id})")
+                return
+        
+        # buff、defensive、summon卡牌需要选择目标
+        needs_target = card_def.category in ["buff", "defensive", "summon"]
+        
+        if needs_target:
+            # 进入目标选择模式
+            self.selecting_card_target = True
+            self.selected_card_for_effect = selected_card_id
+            self.info_panel.show_message(f"请点击目标格子来应用{card_def.name}", duration=-1)
+        else:
+            # 直接应用（当前暂无不需要目标的卡牌）
+            self._apply_card_effect(selected_card_id, card_def)
+
+    def _apply_card_effect(self, card_id: str, card_def: object) -> None:
+        """
+        应用卡牌效果到指定的目标格子。
+        需要在目标格子选定后调用。
+        """
+        # 标记卡牌为已使用
+        self.card_manager.use_card(card_id)
+        
+        # 显示卡牌使用提示
+        self.info_panel.show_message(f"已使用锦囊卡: {card_def.name}", duration=2.0)
+        
+        # 更新卡牌面板（去掉已使用的卡牌）
+        self._update_card_panel()
+        
+        logger.info(f"Card played: {card_def.name} (ID: {card_id})")
+    
+    def _apply_card_to_province(self, card_id: str, province_id: str) -> bool:
+        """
+        将卡牌效果应用到指定的格子。
+        
+        Args:
+            card_id: 卡牌ID
+            province_id: 目标格子ID
+            
+        Returns:
+            是否成功应用
+        """
+        card_def = self.card_repository.get_definition(card_id)
+        if not card_def:
+            return False
+        
+        # 检查目标格子是否有效
+        target_prov = self.map_manager.get_by_id(province_id)
+        if not target_prov:
+            self.info_panel.show_message("无效的目标格子")
+            return False
+        
+        # 检查卡牌是否已被使用
+        if self.card_manager.is_card_used(card_id):
+            self.info_panel.show_message("该卡牌已被使用")
+            return False
+        
+        # 不再允许将 威震华夏 作为格子效果应用。该卡应当通过 Enter 全局激活。
+        if card_id == "card_zhenjing_huaxia_shu":
+            self.info_panel.show_message("威震华夏只能按 Enter 全局激活")
+            return False
+
+        # 江东止啼 只能用于魏国格子
+        if card_id == "card_jiangdong_zhiti":
+            if target_prov.country != "WEI":
+                self.info_panel.show_message("江东止啼只能对魏国部队使用")
+                return False
+
+        # 召唤类卡牌：如果目标格子已有最大堆叠数，拒绝并提示（不消耗卡牌）
+        if card_id in ("card_qilin_qishu", "card_guanmu_xiangkan"):
+            if len(target_prov.units) >= MAX_UNIT_STACK:
+                self.info_panel.show_message("超过堆叠数量，请重新选择格子")
+                return False
+        
+        # 如果是召唤卡，要求只能部署在对应国家的格子
+        if card_id == "card_qilin_qishu" and target_prov.country != "SHU":
+            self.info_panel.show_message("七擒七纵只能部署在蜀国格子")
+            return False
+        if card_id == "card_guanmu_xiangkan" and target_prov.country != "WU":
+            self.info_panel.show_message("刮目相看只能部署在吴国格子")
+            return False
+
+        # 应用卡牌效果（记录效果/标记格子）
+        success = self.card_effect_manager.apply_card_effect(
+            card_id,
+            card_def.name,
+            province_id,
+            self.player_country,
+        )
+
+        if success:
+            # 处理召唤类卡牌的实际单位生成
+            if card_id == "card_qilin_qishu":
+                # 召唤 无当飞军 -> 对应单位类型 WUDANG_archer
+                try:
+                    unit_def = self.unit_repository.get_definition("WUDANG_archer")
+                    new_unit = UnitState("WUDANG_archer")
+                    new_unit.mp = unit_def.move
+                    target_prov.units.append(new_unit)
+                    self.map_manager.invalidate_cache()
+                    self.info_panel.show_message(f"在{target_prov.name}召唤了无当飞军", duration=2.0)
+                except Exception:
+                    logger.exception("召唤 无当飞军 失败")
+
+            if card_id == "card_guanmu_xiangkan":
+                # 召唤 解烦兵 -> 对应单位类型 JIEFAN_infantry
+                try:
+                    unit_def = self.unit_repository.get_definition("JIEFAN_infantry")
+                    new_unit = UnitState("JIEFAN_infantry")
+                    new_unit.mp = unit_def.move
+                    target_prov.units.append(new_unit)
+                    self.map_manager.invalidate_cache()
+                    self.info_panel.show_message(f"在{target_prov.name}召唤了解烦兵", duration=2.0)
+                except Exception:
+                    logger.exception("召唤 解烦兵 失败")
+
+            # 标记卡牌为已使用并更新界面
+            self._apply_card_effect(card_id, card_def)
+            return True
+
+        self.info_panel.show_message("无法应用卡牌效果")
+        return False
+
+    def _cancel_card_target_selection(self) -> None:
+        """取消卡牌目标选择"""
+        self.selecting_card_target = False
+        self.selected_card_for_effect = None
+        self.info_panel.show_message("已取消卡牌选择")
+    
+    def _province_has_river_neighbor(self, province_id: str) -> bool:
+        """
+        检查指定的格子是否有河流相邻。
+        
+        Args:
+            province_id: 格子ID
+            
+        Returns:
+            是否有河流在相邻边上
+        """
+        target_prov = self.map_manager.get_by_id(province_id)
+        if not target_prov:
+            return False
+        
+        # 遍历所有格子，检查与目标格子相邻的边是否有河流
+        for prov in self.map_manager.provinces:
+            # 检查两个方向的边
+            if self.map_manager._river_crossing_edges.get((province_id, prov.province_id), False):
+                return True
+            if self.map_manager._river_crossing_edges.get((prov.province_id, province_id), False):
+                return True
+        
+        return False
+
     def _manual_end_turn(self) -> None:
-        """手动结束回合：恢复行动力"""
+        """手动结束回合：恢复行动力并清除卡牌效果"""
+        # 清除所有卡牌效果（大回合结束）
+        self.card_effect_manager.clear_all_effects()
+        
+        # 恢复行动力
         self._replenish_action_points()
         if self.info_panel:
-            self.info_panel.show_message("回合结束，行动力已恢复")
+            self.info_panel.show_message("回合结束，行动力已恢复、卡牌效果已清除")
             
     def _restart_game(self) -> None:
         """重置游戏状态并返回选人界面"""
@@ -306,6 +508,14 @@ class GameApp:
         self.combat_result_title = None
         if self.info_panel: 
              self.info_panel.show_properties("")
+        
+        # 3.5 重置卡牌系统
+        self.card_manager = None
+        self.card_effect_manager.clear_all_effects()  # 清除卡牌效果
+        self.selecting_card_target = False  # 退出卡牌目标选择模式
+        self.selected_card_for_effect = None
+        if self.card_panel:
+            self.card_panel.set_available_cards([])
              
         # 4. 切换状态
         self.player_country = None
@@ -398,7 +608,7 @@ class GameApp:
         if "archer" in unit_type: return "弓"
         return unit_type[0].upper()
 
-    def _format_unit_info(self, u_state, prefix: str = "") -> str:
+    def _format_unit_info(self, u_state, prefix: str = "", province_id: str | None = None) -> str:
         """通用单位信息格式化"""
         u_def = self.unit_repository.get_definition(u_state.unit_type)
         u_abbr = self._get_unit_abbr(u_state.unit_type)
@@ -425,8 +635,8 @@ class GameApp:
         abbr_part = f"|{color_hex}|{u_abbr}|#000000|"
         label = f"[{prefix}{abbr_part}{status_str}]"
         
-        # 计算实际攻防值（考虑受伤和混乱）
-        actual_atk, actual_dfs = self._calculate_unit_powers(u_state)
+        # 计算实际攻防值（考虑受伤、混乱与格子上可能的卡牌效果）
+        actual_atk, actual_dfs = self._calculate_unit_powers(u_state, province_id)
         
         attrs = [
             f"血{u_state.hp}",
@@ -451,8 +661,8 @@ class GameApp:
             prov = self.map_manager.get_by_id(pid)
             if not prov: continue
             u_state = prov.units[idx]
-            # 还原为无序号显示
-            info_str = self._format_unit_info(u_state)
+            # 还原为无序号显示，传入所在格子ID以便卡牌效果能生效
+            info_str = self._format_unit_info(u_state, province_id=prov.province_id)
             lines.append(info_str)
             
         if self.info_panel:
@@ -492,14 +702,26 @@ class GameApp:
                     self.player_country = country
                     self.state = GameState.PLAYING
                     self.clear_selection()
+                    # 初始化该国的卡牌管理器
+                    self.card_manager = CardManager(self.card_repository, country)
+                    self._update_card_panel()
                     # 开始新对局时初始化行动力
                     self._replenish_action_points()
                     return
 
     def _handle_playing_event(self, event: pg.event.Event) -> None:
         """处理游戏中的事件"""
-        if event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE:
-            self.clear_selection() # 按ESC取消选择
+        if event.type == pg.KEYDOWN:
+            if event.key == pg.K_ESCAPE:
+                # 如果正在选择卡牌目标，取消目标选择
+                if self.selecting_card_target:
+                    self._cancel_card_target_selection()
+                else:
+                    # 否则取消单位选择
+                    self.clear_selection()
+            elif event.key == pg.K_RETURN:
+                # 按Enter打出选中的卡牌
+                self._play_selected_card()
         elif event.type == pg.MOUSEBUTTONDOWN:
             if event.button == 1:
                 # 0.0 检查功能按钮
@@ -540,9 +762,37 @@ class GameApp:
                         self._update_selection_info()
                     return
 
+                # 0.2 检查卡牌面板点击
+                if self.card_panel and self.card_panel.rect.collidepoint(event.pos):
+                    card_id = self.card_panel.get_card_at(event.pos)
+                    if card_id:
+                        # 选中卡牌
+                        self.card_panel.select_card(card_id)
+                        # 显示卡牌描述
+                        card_def = self.card_repository.get_definition(card_id)
+                        if card_def:
+                            self.info_panel.show_message(f"已选中: {card_def.name}")
+                    return
+
                 # 优先处理 UI 面板点击
                 if self.info_panel and self.info_panel.handle_click(event.pos):
                     return
+                
+                # 如果正在选择卡牌目标，检查是否点击了一个格子
+                if self.selecting_card_target and self.selected_card_for_effect:
+                    target_prov = self._get_province_at(event.pos)
+                    if target_prov:
+                        # 尝试应用卡牌效果到目标格子
+                        if self._apply_card_to_province(self.selected_card_for_effect, target_prov.province_id):
+                            # 成功应用，退出目标选择模式
+                            self.selecting_card_target = False
+                            self.selected_card_for_effect = None
+                        return
+                    else:
+                        # 点击到了空地或法无效区域，提示并继续等待选择
+                        self.info_panel.show_message("请点击地图上的一个格子", duration=1.0)
+                        return
+                
                 # 左键点击：尝试选择单位 (Toggle逻辑)
                 # 之前是Shift+Click，现在改为直接左键点击
                 # 但是要注意，如果点击的是空白处或者非单位，是否要取消选择？
@@ -580,6 +830,10 @@ class GameApp:
             elif event.button == 3:
                 # 右键点击：移动或攻击
                 self._handle_game_right_click(event.pos)
+        elif event.type == pg.MOUSEMOTION:
+            # 处理鼠标移动以显示卡牌描述提示
+            if self.card_panel:
+                self.card_panel.handle_mouse_motion(event.pos)
 
     def _get_unit_slot_at(self, pos: Tuple[int, int]) -> Tuple[int, int] | None:
         """根据鼠标点击位置获取被点击的单位"""
@@ -735,22 +989,33 @@ class GameApp:
         # 简单反馈
         logger.info(f"Moved {len(moving_units)} units from {source.name} to {target.name}")
 
-    def _calculate_unit_powers(self, unit_state) -> Tuple[float, float]:
-        """计算单位当前的攻击力和防御力 (考虑受伤和混乱)"""
+    def _calculate_unit_powers(self, unit_state, province_id: str | None = None) -> Tuple[float, float]:
+        """计算单位当前的攻击力和防御力 (考虑受伤、混乱及格子上卡牌效果)
+
+        Args:
+            unit_state: 单位状态对象
+            province_id: 可选，单位所在格子的ID，用于查询格子上的卡牌效果
+        """
         definition = self.unit_repository.get_definition(unit_state.unit_type)
         atk = float(definition.attack)
         dfs = float(definition.defense)
-        
+
         # 受伤减半
         if unit_state.is_injured:
             atk *= INJURY_PENALTY
             dfs *= INJURY_PENALTY
-            
+
         # 混乱 -1
         if unit_state.is_confused:
             atk = max(0, atk - CONFUSION_PENALTY)
             dfs = max(0, dfs - CONFUSION_PENALTY)
-            
+
+        # 割须弃袍：受伤单位的攻击+X（格子上有该效果）
+        if province_id is not None:
+            effect = self.card_effect_manager.get_effect(str(province_id))
+            if unit_state.is_injured and effect and effect.wounded_attack_bonus > 0:
+                atk += effect.wounded_attack_bonus
+
         return atk, dfs
     
     def _get_base_unit_type(self, unit_type: str) -> str:
@@ -834,7 +1099,7 @@ class GameApp:
                 self.info_panel.show_message("行动力不足")
                 return
 
-            atk, _ = self._calculate_unit_powers(unit_state)
+            atk, _ = self._calculate_unit_powers(unit_state, province.province_id)
             
             # --- 兵种克制计算 ---
             # 规则：步兵克弓兵，弓兵克骑兵，骑兵克步兵
@@ -865,7 +1130,7 @@ class GameApp:
         # 用户说："计算防御时按照它们防御力的总和"。严格按字面意思。
         total_defense = 0.0
         for u in target.units:
-            _, dfs = self._calculate_unit_powers(u)
+            _, dfs = self._calculate_unit_powers(u, target.province_id)
             total_defense += dfs
             
         if total_defense <= 0.1:
@@ -900,19 +1165,31 @@ class GameApp:
 
         # 4. 计算 CRT 列
         col_index = get_ratio_column(total_attack, total_defense, is_flanked)
+        
+        # 应用卡牌效果修饰
+        # 威震华夏：如果已激活且目标格子旁有河流，判定列向利于进攻方移动一列
+        if self.card_effect_manager.is_offensive_card_active("card_zhenjing_huaxia_shu"):
+            if self._province_has_river_neighbor(target.province_id):
+                col_index = min(5, col_index + 1)
+        
+        # 火烧连营：如果激活且敌方有多个部队堆叠，判定列向利于进攻方移动一列
+        if self.card_effect_manager.is_offensive_card_active("card_huoshao_lianying"):
+            if len(target.units) > 1:
+                col_index = min(5, col_index + 1)
+        
         ratio_val = total_attack / total_defense
         
         # 5. 准备投骰子
         # 生成进攻方预览信息
         atk_lines = []
-        for _, u_state in participating_attackers:
-             atk_lines.append(self._format_unit_info(u_state, prefix="攻"))
+        for prov, u_state in participating_attackers:
+            atk_lines.append(self._format_unit_info(u_state, prefix="攻", province_id=prov.province_id))
         attacker_info = "\n".join(atk_lines)
 
         # 生成防守方预览信息
         def_lines = []
         for u in target.units:
-             def_lines.append(self._format_unit_info(u, prefix="防"))
+            def_lines.append(self._format_unit_info(u, prefix="防", province_id=target.province_id))
         defender_info = "\n".join(def_lines)
 
         # 设置战斗 UI 状态
@@ -934,8 +1211,8 @@ class GameApp:
         """执行战斗，每次点击投鞒子时重新计算攻防比"""
         # 重新计算攻击力
         total_attack = 0.0
-        for _, u_state in attackers:
-            atk, _ = self._calculate_unit_powers(u_state)
+        for prov, u_state in attackers:
+            atk, _ = self._calculate_unit_powers(u_state, prov.province_id)
             
             # 重新计算克制加成
             bonus = 0.0
@@ -956,7 +1233,7 @@ class GameApp:
         # 重新计算防御力
         total_defense = 0.0
         for u in target_province.units:
-            _, dfs = self._calculate_unit_powers(u)
+            _, dfs = self._calculate_unit_powers(u, target_province.province_id)
             total_defense += dfs
         
         if total_defense <= 0.1:
@@ -982,6 +1259,11 @@ class GameApp:
         
         # 计算最新的攻防比列索引
         col_index = get_ratio_column(total_attack, total_defense, is_flanked)
+
+        # 威震华夏（在战斗发起前可能已全局激活）：若已激活且目标格子旁有河流，判定向进攻方有利移动一列
+        if self.card_effect_manager.is_offensive_card_active("card_zhenjing_huaxia_shu"):
+            if self._province_has_river_neighbor(target_province.province_id):
+                col_index = min(5, col_index + 1)
         
         # 调用原有的战斗解决逻辑
         self._resolve_combat(col_index, attackers, target_province)
@@ -995,7 +1277,15 @@ class GameApp:
         # target_province.units 之后会被清理移除死亡单位，所以由于我们要显示战损，需要先存一份
         defenders_snapshot = list(target_province.units)
 
+        # 投掷骰子
         dice = random.randint(1, 6)
+        
+        # 检查目标格子是否有卡牌效果（骰点加成）
+        target_effect = self.card_effect_manager.get_effect(str(target_province.province_id))
+        if target_effect and target_effect.dice_bonus > 0:
+            # 应用骰点加成，但最高不超过6
+            dice = min(6, dice + target_effect.dice_bonus)
+        
         result_code = resolve_combat(dice, col_index)
         
         # 解析结果并应用伤害
@@ -1079,15 +1369,15 @@ class GameApp:
         
         # 2. 进攻方战后状态
         logs.append("--- 进攻方 ---")
-        for _, u_state in attackers:
-            logs.append(self._format_unit_info(u_state, prefix="攻"))
+        for prov, u_state in attackers:
+            logs.append(self._format_unit_info(u_state, prefix="攻", province_id=prov.province_id))
                 
         # 3. 防守方战后状态
         # 使用 defenders_snapshot 确保显示所有参与战斗的单位（包括死亡的）
         if defenders_snapshot:
             logs.append("--- 防守方 ---")
             for u_state in defenders_snapshot:
-                logs.append(self._format_unit_info(u_state, prefix="防"))
+                logs.append(self._format_unit_info(u_state, prefix="防", province_id=target_province.province_id))
         else:
              logs.append("防守方全灭或撤离")
         
@@ -1329,7 +1619,8 @@ class GameApp:
         for polyline in self.yangtze_polylines:
             self._draw_smooth_polyline(pg.Color(173, 216, 230), polyline, 20)
         self._draw_smooth_polyline(pg.Color(173, 216, 230), self.yellow_river_polyline, 20)
-        self._draw_smooth_polyline(pg.Color("black"), self.ban_line_polyline, 20)
+        # 禁止通行线使用紫色（用户要求）
+        self._draw_smooth_polyline(pg.Color("purple"), self.ban_line_polyline, 20)
 
         # 3.5 画功能按钮
         for btn in getattr(self, "control_btns", []):

@@ -3,15 +3,15 @@
 就像房子的前门，或者导演喊 "Action" 的地方。
 它的主要任务是：配置日志、读取命令行参数，然后启动游戏的核心引擎 GameApp。
 """
+
 from __future__ import annotations
 
-import argparse # 用来读指令
-import logging # 用来写日志
-from typing import Final # 用来声明变量的最终版本
+import argparse  # 用来读指令
+import logging  # 用来写日志
+from typing import Final  # 用来声明变量的最终版本
 
-from settings import SETTINGS # 导入settings.py里的全局设置
-from src.core.app import GameApp # 导入游戏核心
-
+from settings import SETTINGS  # 导入settings.py里的全局设置
+from src.core.app import GameApp  # 导入游戏核心
 
 # 日志的格式：时间 | 级别(INFO/DEBUG) | 模块名 | 消息内容
 # Final 表示这是一个常量，程序运行过程中不应该被改变
@@ -47,7 +47,7 @@ def configure_logging(debug: bool) -> None:
     # 否则只记录 INFO 级别及以上（比如 "游戏开始" 这种重要的事）
     log_level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(level=log_level, format=LOG_FORMAT)
-    
+
     # pygame 这个库比较啰嗦，我们强制它只在发生严重警告（WARNING）时才说话，平时闭嘴。
     logging.getLogger("pygame").setLevel(logging.WARNING)
 
@@ -65,10 +65,10 @@ def main() -> None:
 
     # 记录一条日志，告诉大家我们要开始加载游戏了
     logging.getLogger(__name__).info("正在启动游戏应用 (debug模式=%s)", args.debug)
-    
+
     # 创建游戏应用实例，就像把导演请到片场
     app = GameApp(settings=SETTINGS, debug=args.debug)
-    
+
     # 让游戏跑起来！这行代码会进入一个死循环，直到游戏关闭才会结束。
     app.run()
 

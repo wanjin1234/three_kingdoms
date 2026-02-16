@@ -274,10 +274,10 @@ class MapManager:
                 # 3. 使用缓存的顶点 (List[Vector2])
                 vertices = province.vertices_cache
                 
-                # 4. 画白色的底色（填充）
-                pg.draw.polygon(self._cached_background, pg.Color("white"), vertices)
-                # 5. 画彩色的边框
-                self._draw_hex_border(self._cached_background, color, vertices, self._border_width)
+                # 4. 画填充（使用所属国家的颜色，实心）
+                pg.draw.polygon(self._cached_background, color, vertices)
+                # 5. 画黑色描边（实心格子外用黑色描边）
+                self._draw_hex_border(self._cached_background, pg.Color("black"), vertices, self._border_width)
                 # 6. 画地形图标 (山、城等)
                 self._draw_terrain_icon(self._cached_background, province.terrain, center)
         

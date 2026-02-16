@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import time
-from typing import Callable, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import pygame as pg
 
@@ -215,10 +215,232 @@ class BasePanel:
 
 class CardPanel(BasePanel):
     """卡牌面板"""
+    
+    def __init__(self, rect: pg.Rect, font: pg.font.Font, font_path: str | None = None, base_font_size: int = 20) -> None:
+        super().__init__(rect, font, font_path, base_font_size)
+        self.available_cards = []  # 可用卡牌列表
+        self.selected_card_id: str | None = None  # 当前选中的卡牌ID
+        self.card_rects: Dict[str, pg.Rect] = {}  # 卡牌ID -> 矩形区域映射
+        self.card_id_at_mouse: str | None = None  # 鼠标所在的卡牌ID
+        self.mouse_pos: Tuple[int, int] = (0, 0)  # 当前鼠标位置
+        self._card_font_size = base_font_size  # 卡牌名称与选中部队字体保持一致
+        self.tooltip_font = None
+        
+    def set_available_cards(self, cards: List) -> None:
+        """设置可用卡牌列表"""
+        self.available_cards = cards
+        self.selected_card_id = None  # 重置选择
+    
+    def select_card(self, card_id: str) -> None:
+        """选中一张卡牌"""
+        # 检查卡牌是否存在于可用卡牌列表中
+        for card in self.available_cards:
+            if card.id == card_id:
+                self.selected_card_id = card_id
+                return
+        # 如果卡牌还未绘制，也允许选择（用于交互）
+        if card_id in self.card_rects or any(card.id == card_id for card in self.available_cards):
+            self.selected_card_id = card_id
+    
+    def deselect_card(self) -> None:
+        """取消选中"""
+        self.selected_card_id = None
+    
+    def get_card_at(self, pos: Tuple[int, int]) -> str | None:
+        """获取在指定位置的卡牌ID"""
+        for card_id, rect in self.card_rects.items():
+            if rect.collidepoint(pos):
+                return card_id
+        return None
+    
+    def get_selected_card(self) -> str | None:
+        """获取当前选中的卡牌ID"""
+        return self.selected_card_id
+    
+    def handle_mouse_motion(self, pos: Tuple[int, int]) -> None:
+        """处理鼠标移动"""
+        self.mouse_pos = pos
+        self.card_id_at_mouse = self.get_card_at(pos)
+    
+    def _draw_tooltip(self, surface: pg.Surface) -> None:
+        """绘制鼠标悬停的卡牌描述浮窗"""
+        if not self.card_id_at_mouse:
+            return
+        
+        # 找到鼠标所在的卡牌
+        card_def = None
+        for card in self.available_cards:
+            if card.id == self.card_id_at_mouse:
+                card_def = card
+                break
+        
+        if not card_def:
+            return
+        
+        # 初始化 tooltip 字体（仅一次）
+        if self.tooltip_font is None:
+            tooltip_size = int(self.base_font_size * 0.8)  # 浮窗字体为base_font_size的80%
+            if self.font_path:
+                try:
+                    self.tooltip_font = pg.font.Font(self.font_path, tooltip_size)
+                except:
+                    self.tooltip_font = pg.font.SysFont("arial", tooltip_size)
+            else:
+                self.tooltip_font = pg.font.SysFont("arial", tooltip_size)
+        
+        # 准备 tooltip 内容
+        description = card_def.description
+        
+        # 将长文本换行到合适宽度
+        lines = []
+        current_line = ""
+        max_line_width = 220  # 增加最大宽度
+        for char in description:
+            test_line = current_line + char
+            line_width = self.tooltip_font.size(test_line)[0]
+            if line_width > max_line_width:
+                if current_line:
+                    lines.append(current_line)
+                current_line = char
+            else:
+                current_line = test_line
+        if current_line:
+            lines.append(current_line)
+        
+        # 计算浮窗大小
+        padding = 10  # 增加内间距
+        line_height = self.tooltip_font.get_height() + 3  # 增加行间距
+        # 加入卡牌名称和分隔线的高度
+        tooltip_height = self.tooltip_font.get_height() + 4 + len(lines) * line_height + padding * 2 + 4
+        
+        max_line_width = max(self.tooltip_font.size(line)[0] for line in lines) if lines else 100
+        # 确保足够宽度显示卡牌名称
+        name_width = self.tooltip_font.size(card_def.name)[0]
+        tooltip_width = max(max_line_width, name_width) + padding * 2
+        
+        # 确保浮窗在屏幕内
+        tooltip_x = self.mouse_pos[0] + 10
+        tooltip_y = self.mouse_pos[1] + 10
+        
+        # 防止浮窗超出屏幕右边
+        if tooltip_x + tooltip_width > surface.get_width():
+            tooltip_x = self.mouse_pos[0] - tooltip_width - 10
+        
+        # 防止浮窗超出屏幕下边
+        if tooltip_y + tooltip_height > surface.get_height():
+            tooltip_y = self.mouse_pos[1] - tooltip_height - 10
+        
+        tooltip_rect = pg.Rect(tooltip_x, tooltip_y, tooltip_width, tooltip_height)
+        
+        # 绘制浮窗背景和边框
+        pg.draw.rect(surface, pg.Color("lightyellow"), tooltip_rect)
+        pg.draw.rect(surface, pg.Color("black"), tooltip_rect, width=1)
+        
+        # 绘制卡牌名称（加粗）
+        name_surf = self.tooltip_font.render(card_def.name, True, pg.Color("darkred"))
+        surface.blit(name_surf, (tooltip_x + padding, tooltip_y + padding))
+        
+        # 绘制分隔线
+        sep_y = tooltip_y + padding + self.tooltip_font.get_height() + 2
+        pg.draw.line(surface, pg.Color("black"), 
+                    (tooltip_x + padding, sep_y), 
+                    (tooltip_x + tooltip_width - padding, sep_y), 1)
+        
+        # 绘制描述文本
+        text_y = sep_y + 4
+        for line in lines:
+            line_surf = self.tooltip_font.render(line, True, pg.Color("black"))
+            surface.blit(line_surf, (tooltip_x + padding, text_y))
+            text_y += line_height
+    
     def draw(self, surface: pg.Surface) -> None:
         # 去掉顶部边框，避免与上方 InfoPanel 的底部边框重叠变粗
         content_y = self.draw_background_and_border(surface, draw_top_border=False)
-        self.draw_text_wrapped(surface, "卡牌面板", pg.Color("black"), content_y)
+        
+        # 绘制卡牌标题
+        title_font = self._get_font(self.base_font_size)  # 与卡牌名称字体保持一致
+        title_surf = title_font.render("锦囊卡", True, pg.Color("black"))
+        title_rect = title_surf.get_rect(topleft=(self.rect.left + 10, content_y))
+        surface.blit(title_surf, title_rect)
+        content_y = title_rect.bottom + 8
+        
+        # 清空卡牌矩形缓存
+        self.card_rects.clear()
+        
+        if not self.available_cards:
+            # 没有可用卡牌
+            no_card_font = self._get_font(12)
+            no_card_surf = no_card_font.render("暂无可用锦囊卡", True, pg.Color("gray"))
+            no_card_rect = no_card_surf.get_rect(center=(self.rect.centerx, content_y + 20))
+            surface.blit(no_card_surf, no_card_rect)
+        else:
+            # 绘制卡牌
+            card_font = self._get_font(self._card_font_size)
+            card_height = int(self._card_font_size * 1.5)  # 卡牌高度为字体大小的1.5倍，保证充足空间
+            card_x = self.rect.left + 10
+            card_width = self.rect.width - 20
+            
+            for i, card in enumerate(self.available_cards):
+                card_y = content_y + i * (card_height + 6)  # 适度间距
+                
+                # 检查是否超出面板范围
+                if card_y + card_height > self.rect.bottom - 10:
+                    break
+                
+                card_rect = pg.Rect(card_x, card_y, card_width, card_height)
+                self.card_rects[card.id] = card_rect
+                
+                # 判断是否选中
+                is_selected = card.id == self.selected_card_id
+                
+                # 绘制卡牌背景
+                if is_selected:
+                    # 选中时：金色边框
+                    bg_color = pg.Color("lightyellow")
+                    border_color = pg.Color("gold")
+                    border_width = 2
+                else:
+                    # 未选中：白色背景，黑色边框
+                    bg_color = pg.Color("white")
+                    border_color = pg.Color("black")
+                    border_width = 1
+                
+                pg.draw.rect(surface, bg_color, card_rect)
+                pg.draw.rect(surface, border_color, card_rect, width=border_width)
+                
+                # 绘制卡牌名称，确保完全框内
+                card_name_surf = card_font.render(card.name, True, pg.Color("black"))
+                name_width = card_name_surf.get_width()
+                name_height = card_name_surf.get_height()
+                
+                # 留边距预留（两侧各留4像素）
+                margin = 4
+                container_width = card_width - margin * 2
+                
+                # 如果文字超出框外，使用省略号
+                if name_width > container_width:
+                    # 截断名称直到能够显示
+                    display_name = card.name
+                    dot_num = 1
+                    while card_font.size(display_name + "•" * dot_num)[0] > container_width and len(display_name) > 1:
+                        display_name = display_name[:-1]
+                    card_name_surf = card_font.render(display_name + "•" * dot_num, True, pg.Color("black"))
+                    name_width = card_name_surf.get_width()
+                
+                # 水平居中、垂直居中
+                name_x = card_rect.left + (card_width - name_width) // 2
+                name_y = card_rect.top + (card_height - name_height) // 2
+                
+                # 确保文字完全在框内（额外边距3像素）
+                name_x = max(card_rect.left + margin, name_x)
+                name_x = min(card_rect.right - name_width - margin, name_x)
+                name_y = max(card_rect.top + 3, name_y)  # 上方留3像素
+                name_y = min(card_rect.bottom - name_height - 3, name_y)  # 下方留3像素
+                
+                surface.blit(card_name_surf, (name_x, name_y))
+        
+        # 最后绘制 tooltip 浮窗（确保在最上层）
+        self._draw_tooltip(surface)
 
 
 class InfoPanel(BasePanel):
