@@ -36,6 +36,7 @@ class ProvinceEffect:
     river_edge_bonus: bool = False  # 河岸进攻奖励
     stacked_bonus: bool = False  # 堆叠进攻奖励
     wounded_attack_bonus: int = 0  # 受伤部队战斗力奖励 (割须弃袍)
+    gexu_guard: bool = False  # 割须弃袍：免除防御最高单位一次所受伤害
 
 
 @dataclass
@@ -122,7 +123,7 @@ class CardEffectManager:
             return True
         
         elif card_id == "card_gexu_qibao":  # 割须弃袍 (魏国)
-            effect.wounded_attack_bonus = 2
+            effect.gexu_guard = True
             self.add_effect(province_id, card_id, card_name, effect)
             return True
         
@@ -146,14 +147,12 @@ class CardEffectManager:
             return True
         
         elif card_id == "card_qilin_qishu":  # 七擒七纵 (蜀国) - summon
-            # summon类卡牌：标记该格子为动员地点（需要在游戏逻辑中处理部队召唤）
-            effect.protected = True  # 暂用protected字段标记
+            # summon类卡牌：不设置格子保护，仅用于触发召唤
             self.add_effect(province_id, card_id, card_name, effect)
             return True
         
         elif card_id == "card_guanmu_xiangkan":  # 刮目相看 (吴国) - summon
-            # summon类卡牌：标记该格子为动员地点
-            effect.protected = True  # 暂用protected字段标记
+            # summon类卡牌：不设置格子保护，仅用于触发召唤
             self.add_effect(province_id, card_id, card_name, effect)
             return True
         

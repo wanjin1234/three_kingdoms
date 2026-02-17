@@ -10,7 +10,7 @@ import logging
 import random
 from enum import Enum, auto
 from math import dist, sqrt
-from typing import Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import pygame as pg
 from settings import Settings
@@ -166,6 +166,15 @@ class GameApp:
             "WEI": pg.Color("blue"),
         }
 
+        # 回合制顺序：蜀 -> 吴 -> 魏
+        self.turn_order: List[str] = ["SHU", "WU", "WEI"]
+        self.turn_index: int = 0
+        self.round_count: int = 1
+
+        # 移动后可追加一次“仅该单位”的攻击（可选）
+        self.pending_post_move_attack: bool = False
+        self.pending_attacker: SelectionEntry | None = None
+
         # 初始化各个子系统管理器
         self.kingdom_repository = KingdomRepository(settings.kingdoms_file)
 
@@ -194,6 +203,10 @@ class GameApp:
 
         # 初始化卡牌仓库
         self.card_repository = CardRepository(settings.cards_file)
+        self.card_managers: Dict[str, CardManager] = {
+            country: CardManager(self.card_repository, country)
+            for country in self.turn_order
+        }
         self.card_manager: CardManager | None = None
         self.card_effect_manager = CardEffectManager()  # 卡牌效果管理器
 
@@ -266,6 +279,19 @@ class GameApp:
         self.combat_ratio_val: float = 0.0
         self.combat_callback: Callable[[], None] | None = None
         self.combat_btn_rect: pg.Rect | None = None  # 在 render 时计算
+        self.defense_jiangdong_btn_rect: pg.Rect | None = None
+        self.defense_jiangdong_skip_btn_rect: pg.Rect | None = None
+        self.defense_hold_btn_rect: pg.Rect | None = None
+        self.defense_hold_skip_btn_rect: pg.Rect | None = None
+
+        # 防守方可选决策（在战斗预览阶段切换）
+        self.defender_can_use_jiangdong: bool = False
+        self.defender_jiangdong_decided: bool = True
+        self.defender_use_jiangdong: bool = False
+        self.defender_can_hold_position: bool = False
+        self.defender_hold_decided: bool = True
+        self.defender_use_hold_position: bool = False
+        self.waiting_defender_response: bool = False
 
         # 解除混乱按钮区域
         self.recover_btn_rect: pg.Rect | None = None
@@ -301,6 +327,9 @@ class GameApp:
                 unit.mp = max_mp
                 # 注意：回合结杞时不清除混乱状态，只重置攻击计数
                 unit.attack_count = 0
+                unit.temp_river_immunity = False
+                unit.temp_terrain_immunity = False
+                unit.temp_dice_bonus = 0
 
     def _update_card_panel(self) -> None:
         """更新卡牌面板显示"""
@@ -325,6 +354,11 @@ class GameApp:
 
         card_def = self.card_repository.get_definition(selected_card_id)
         if not card_def:
+            return
+
+        # 江东止啼：防守反应卡，不需要提前指定目标；遭受进攻时自动触发
+        if selected_card_id == "card_jiangdong_zhiti":
+            self.info_panel.show_message("江东止啼为防守反应卡，遭受进攻时自动触发")
             return
 
         # 根据卡牌类型应用不同的处理方式
@@ -402,16 +436,20 @@ class GameApp:
             self.info_panel.show_message("该卡牌已被使用")
             return False
 
+        # 仅允许对己方格子施放目标型卡牌
+        if target_prov.country != self.player_country:
+            self.info_panel.show_message("目标必须是己方格子")
+            return False
+
         # 不再允许将 威震华夏 作为格子效果应用。该卡应当通过 Enter 全局激活。
         if card_id == "card_zhenjing_huaxia_shu":
             self.info_panel.show_message("威震华夏只能按 Enter 全局激活")
             return False
 
-        # 江东止啼 只能用于魏国格子
+        # 江东止啼为反应卡，不接受手动指定格子
         if card_id == "card_jiangdong_zhiti":
-            if target_prov.country != "WEI":
-                self.info_panel.show_message("江东止啼只能对魏国部队使用")
-                return False
+            self.info_panel.show_message("江东止啼无需指定格子，敌方进攻魏国时自动触发")
+            return False
 
         # 召唤类卡牌：如果目标格子已有最大堆叠数，拒绝并提示（不消耗卡牌）
         if card_id in ("card_qilin_qishu", "card_guanmu_xiangkan"):
@@ -436,6 +474,18 @@ class GameApp:
         )
 
         if success:
+            if card_id == "card_baiyue_dujiang":
+                # 白衣渡江：目标格上现有单位本大回合跨河免疫，且骰点+1
+                for u in target_prov.units:
+                    u.temp_river_immunity = True
+                    u.temp_dice_bonus = max(u.temp_dice_bonus, 1)
+
+            if card_id == "card_touduo_yinping":
+                # 偷渡阴平：目标格上现有单位本大回合行动力+2
+                for u in target_prov.units:
+                    u.mp += 2
+                    u.temp_terrain_immunity = True
+
             # 处理召唤类卡牌的实际单位生成
             if card_id == "card_qilin_qishu":
                 # 召唤 无当飞军 -> 对应单位类型 WUDANG_archer
@@ -506,15 +556,77 @@ class GameApp:
 
         return False
 
-    def _manual_end_turn(self) -> None:
-        """手动结束回合：恢复行动力并清除卡牌效果"""
-        # 清除所有卡牌效果（大回合结束）
-        self.card_effect_manager.clear_all_effects()
+    def _start_turn_based_game(self) -> None:
+        """开始回合制对局（首手固定蜀）。"""
+        self.turn_index = 0
+        self.round_count = 1
+        self.player_country = self.turn_order[self.turn_index]
 
-        # 恢复行动力
+        # 新对局重置卡牌使用状态
+        self.card_managers = {
+            country: CardManager(self.card_repository, country)
+            for country in self.turn_order
+        }
+        self.card_manager = self.card_managers[self.player_country]
+
+        self.card_effect_manager.clear_all_effects()
         self._replenish_action_points()
-        if self.info_panel:
-            self.info_panel.show_message("回合结束，行动力已恢复、卡牌效果已清除")
+        self.clear_selection()
+        self._update_card_panel()
+        self.state = GameState.PLAYING
+
+    def _end_full_round(self) -> None:
+        """三个国家都行动完后触发：清理回合效果并复位行动力。"""
+        self.card_effect_manager.clear_all_effects()
+        self._replenish_action_points()
+
+    def _clear_for_turn_switch(self, keep_info_message: bool = False) -> None:
+        """切换国家前清理交互状态，可选保留信息面板内容（用于保留战果）。"""
+        self.selected_units.clear()
+        self.show_combat_ui = False
+        self.combat_target = None
+        self.combat_callback = None
+        self.defense_jiangdong_btn_rect = None
+        self.defense_jiangdong_skip_btn_rect = None
+        self.defense_hold_btn_rect = None
+        self.defense_hold_skip_btn_rect = None
+        self.defender_can_use_jiangdong = False
+        self.defender_jiangdong_decided = True
+        self.defender_use_jiangdong = False
+        self.defender_can_hold_position = False
+        self.defender_hold_decided = True
+        self.defender_use_hold_position = False
+        self.waiting_defender_response = False
+
+        if not keep_info_message:
+            self.combat_result_title = None
+            self.combat_result_timer = 0
+            if self.info_panel:
+                self.info_panel.show_properties("")
+
+    def _advance_country_turn(self, keep_info_message: bool = False) -> None:
+        """切换到下一个国家。"""
+        self.pending_post_move_attack = False
+        self.pending_attacker = None
+        self.selecting_card_target = False
+        self.selected_card_for_effect = None
+        self._clear_for_turn_switch(keep_info_message=keep_info_message)
+
+        self.turn_index += 1
+        if self.turn_index >= len(self.turn_order):
+            self.turn_index = 0
+            self.round_count += 1
+            self._end_full_round()
+
+        self.player_country = self.turn_order[self.turn_index]
+        self.card_manager = self.card_managers[self.player_country]
+        self._update_card_panel()
+
+    def _finish_country_action(
+        self, action_name: str, keep_info_message: bool = False
+    ) -> None:
+        """当前国家执行完一个动作后，自动轮换到下一国家。"""
+        self._advance_country_turn(keep_info_message=keep_info_message)
 
     def _restart_game(self) -> None:
         """重置游戏状态并返回选人界面"""
@@ -543,6 +655,10 @@ class GameApp:
             self.info_panel.show_properties("")
 
         # 3.5 重置卡牌系统
+        self.card_managers = {
+            country: CardManager(self.card_repository, country)
+            for country in self.turn_order
+        }
         self.card_manager = None
         self.card_effect_manager.clear_all_effects()  # 清除卡牌效果
         self.selecting_card_target = False  # 退出卡牌目标选择模式
@@ -550,9 +666,14 @@ class GameApp:
         if self.card_panel:
             self.card_panel.set_available_cards([])
 
+        self.pending_post_move_attack = False
+        self.pending_attacker = None
+
         # 4. 切换状态
         self.player_country = None
-        self.state = GameState.CHOOSING
+        self.turn_index = 0
+        self.round_count = 1
+        self.state = GameState.LOADING
         logger.info("Game restarted.")
 
     def run(self) -> None:
@@ -602,6 +723,17 @@ class GameApp:
         self.show_combat_ui = False
         self.combat_target = None
         self.combat_callback = None
+        self.defense_jiangdong_btn_rect = None
+        self.defense_jiangdong_skip_btn_rect = None
+        self.defense_hold_btn_rect = None
+        self.defense_hold_skip_btn_rect = None
+        self.defender_can_use_jiangdong = False
+        self.defender_jiangdong_decided = True
+        self.defender_use_jiangdong = False
+        self.defender_can_hold_position = False
+        self.defender_hold_decided = True
+        self.defender_use_hold_position = False
+        self.waiting_defender_response = False
         # 如果还有选中单位，恢复显示选中单位的信息
         self._update_selection_info()
 
@@ -732,26 +864,11 @@ class GameApp:
         """处理加载界面的事件（比如点击开始按钮）"""
         if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
             if self.start_button_rect.collidepoint(event.pos):
-                self.state = GameState.CHOOSING
+                self._start_turn_based_game()
 
     def _handle_choosing_event(self, event: pg.event.Event) -> None:
-        """处理选人界面的事件（点击三个国家的圆球）"""
-        if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
-            for country, button in self.faction_buttons.items():
-                cx, cy = button["center"]
-                dx = event.pos[0] - cx
-                dy = event.pos[1] - cy
-                # 判断点击点是否在圆形按钮内：距离平方 <= 半径平方
-                if dx * dx + dy * dy <= self.faction_button_radius**2:
-                    self.player_country = country
-                    self.state = GameState.PLAYING
-                    self.clear_selection()
-                    # 初始化该国的卡牌管理器
-                    self.card_manager = CardManager(self.card_repository, country)
-                    self._update_card_panel()
-                    # 开始新对局时初始化行动力
-                    self._replenish_action_points()
-                    return
+        """回合制版本不再使用选国界面。"""
+        return
 
     def _handle_playing_event(self, event: pg.event.Event) -> None:
         """处理游戏中的事件"""
@@ -764,7 +881,7 @@ class GameApp:
                     # 否则取消单位选择
                     self.clear_selection()
             elif event.key == pg.K_RETURN:
-                # 按Enter打出选中的卡牌
+                # 按 Enter 打出选中的卡牌（不占用本国回合动作次数）
                 self._play_selected_card()
         elif event.type == pg.MOUSEBUTTONDOWN:
             if event.button == 1:
@@ -776,8 +893,6 @@ class GameApp:
                             self.stop()
                         elif action == "RESTART":
                             self._restart_game()
-                        elif action == "END_TURN":
-                            self._manual_end_turn()
                         return
 
                 # 0. 优先处理顶部的战斗按钮
@@ -786,10 +901,106 @@ class GameApp:
                     and self.combat_btn_rect
                     and self.combat_btn_rect.collidepoint(event.pos)
                 ):
+                    if (
+                        (self.defender_can_use_jiangdong and not self.defender_jiangdong_decided)
+                        or (self.defender_can_hold_position and not self.defender_hold_decided)
+                    ):
+                        self.waiting_defender_response = True
+                        self.info_panel.show_message("进攻方已投骰，等待防守方即时决策")
+                        return
                     if self.combat_callback:
                         self.combat_callback()
                     # 点击按钮后，UI会在 clear_selection 关闭，或者在 callback 里处理
                     # 这里 return 防止点穿到下面地图
+                    return
+
+                # 0.05 防守方决策按钮
+                if (
+                    self.show_combat_ui
+                    and self.defense_jiangdong_btn_rect
+                    and self.defense_jiangdong_btn_rect.collidepoint(event.pos)
+                ):
+                    if (
+                        self.waiting_defender_response
+                        and self.defender_can_use_jiangdong
+                        and not self.defender_jiangdong_decided
+                    ):
+                        self.defender_use_jiangdong = True
+                        self.defender_jiangdong_decided = True
+                        self.info_panel.show_message("已选择：本次发动江东止啼", duration=1.2)
+                        if (
+                            self.defender_jiangdong_decided
+                            and self.defender_hold_decided
+                            and self.combat_callback
+                        ):
+                            self.waiting_defender_response = False
+                            self.combat_callback()
+                    return
+
+                if (
+                    self.show_combat_ui
+                    and self.defense_jiangdong_skip_btn_rect
+                    and self.defense_jiangdong_skip_btn_rect.collidepoint(event.pos)
+                ):
+                    if (
+                        self.waiting_defender_response
+                        and self.defender_can_use_jiangdong
+                        and not self.defender_jiangdong_decided
+                    ):
+                        self.defender_use_jiangdong = False
+                        self.defender_jiangdong_decided = True
+                        self.info_panel.show_message("已选择：本次不发动江东止啼", duration=1.2)
+                        if (
+                            self.defender_jiangdong_decided
+                            and self.defender_hold_decided
+                            and self.combat_callback
+                        ):
+                            self.waiting_defender_response = False
+                            self.combat_callback()
+                    return
+
+                if (
+                    self.show_combat_ui
+                    and self.defense_hold_btn_rect
+                    and self.defense_hold_btn_rect.collidepoint(event.pos)
+                ):
+                    if (
+                        self.waiting_defender_response
+                        and self.defender_can_hold_position
+                        and not self.defender_hold_decided
+                    ):
+                        self.defender_use_hold_position = True
+                        self.defender_hold_decided = True
+                        self.info_panel.show_message("已选择：防守方选择：DR改D1DG", duration=1.2)
+                        if (
+                            self.defender_jiangdong_decided
+                            and self.defender_hold_decided
+                            and self.combat_callback
+                        ):
+                            self.waiting_defender_response = False
+                            self.combat_callback()
+                    return
+
+                if (
+                    self.show_combat_ui
+                    and self.defense_hold_skip_btn_rect
+                    and self.defense_hold_skip_btn_rect.collidepoint(event.pos)
+                ):
+                    if (
+                        self.waiting_defender_response
+                        and self.defender_can_hold_position
+                        and not self.defender_hold_decided
+                    ):
+                        self.defender_use_hold_position = False
+                        self.defender_hold_decided = True
+                        self.info_panel.show_message("已选择：保持正常DR", duration=1.2)
+                        if (
+                            self.defender_jiangdong_decided
+                            and self.defender_hold_decided
+                            and self.combat_callback
+                        ):
+                            self.waiting_defender_response = False
+                            self.combat_callback()
                     return
 
                 # 0.1 检查“解除混乱”按钮
@@ -810,6 +1021,7 @@ class GameApp:
                         confused_list[0].is_confused = False
                         self.info_panel.show_message("混乱状态已解除")
                         self._update_selection_info()
+                        self._finish_country_action("解除混乱")
                     return
 
                 # 0.2 检查卡牌面板点击
@@ -867,6 +1079,12 @@ class GameApp:
                         # 但可以给个提示
                         self.info_panel.show_message("不能操作敌方单位")
                         return
+
+                    # 移动后追加攻击窗口中，只允许该单位继续操作
+                    if self.pending_post_move_attack and self.pending_attacker:
+                        if (prov_id, slot_idx) != self.pending_attacker:
+                            self.info_panel.show_message("请继续使用刚移动的单位，或右键结束该动作")
+                            return
 
                     # 检查是否已选中
                     if (prov_id, slot_idx) in self.selected_units:
@@ -944,15 +1162,22 @@ class GameApp:
         if not target_province:
             return
 
-        # 3. 如果目标地是敌方且有兵 -> 战斗
-        # 4. 如果目标地是敌方但无兵 -> 移动（占领）
-        # 5. 如果目标地是己方 -> 移动（调动）
-
         # 检查是否是敌方
         is_enemy = target_province.country != self.player_country
-        has_enemy_units = len(target_province.units) > 0
 
-        if is_enemy and has_enemy_units:
+        if is_enemy:
+            target_effect = self.card_effect_manager.get_effect(
+                str(target_province.province_id)
+            )
+            if target_effect and target_effect.protected:
+                self.info_panel.show_message("该格处于空城妙计保护中，本大回合不可被进攻")
+                return
+
+        can_attack = is_enemy and (
+            len(target_province.units) > 0 or self._is_fort_or_city(target_province)
+        )
+
+        if can_attack:
             # 切换/取消 战斗目标逻辑
             # 如果再次点击已选目标 -> 取消选中
             if self.combat_target and self.combat_target == target_province:
@@ -961,10 +1186,19 @@ class GameApp:
                 self._handle_combat(target_province)
         else:
             # 移动或占领空地
+            if self.pending_post_move_attack:
+                # 移动后攻击是可选动作；若本次未攻击，右键其他目标即结束该动作
+                self._finish_country_action("移动")
+                return
             self._handle_movement(target_province)
 
     def _handle_movement(self, target: object) -> None:  # target: Province
         """处理移动逻辑"""
+        # 动作1：移动仅允许一个单位
+        if len(self.selected_units) != 1:
+            self.info_panel.show_message("移动行动只能选择1个单位")
+            return
+
         # 1. 检查选中单位的来源（只能来自同一个格子）
         source_ids = {pid for pid, _ in self.selected_units}
         if len(source_ids) > 1:
@@ -996,9 +1230,20 @@ class GameApp:
         # 调用 map_manager 的寻路算法
         # 注意：这里计算的是从 Source 到 Target 的最短路径 Cost
         # 假设所有选中单位走同一条路
-        path_cost = self.map_manager.find_path_cost(
-            source.province_id, target.province_id
-        )
+        selected_unit = source.units[selected_indices[0]]
+        source_effect = self.card_effect_manager.get_effect(str(source.province_id))
+        ignore_mountain = bool(getattr(selected_unit, "temp_terrain_immunity", False))
+        if source_effect and source_effect.terrain_immunity:
+            ignore_mountain = True
+
+        if ignore_mountain:
+            path_cost = self._find_path_cost_ignore_mountain(
+                source.province_id, target.province_id
+            )
+        else:
+            path_cost = self.map_manager.find_path_cost(
+                source.province_id, target.province_id
+            )
 
         # 寻路失败（比如不可达，虽然目前全图连通）
         if path_cost > 100:
@@ -1059,6 +1304,20 @@ class GameApp:
             f"Moved {len(moving_units)} units from {source.name} to {target.name}"
         )
 
+        moved_unit = moving_units[0] if moving_units else None
+        if moved_unit and moved_unit.mp > 0 and self._has_attackable_target_for_unit(
+            target, moved_unit
+        ):
+            # 允许追加一次仅该单位的攻击
+            moved_slot = target.units.index(moved_unit)
+            self.pending_post_move_attack = True
+            self.pending_attacker = (target.province_id, moved_slot)
+            self.add_selection(target.province_id, moved_slot)
+            self.info_panel.show_message("可继续攻击一次（仅该移动单位）")
+            return
+
+        self._finish_country_action("移动")
+
     def _calculate_unit_powers(
         self, unit_state, province_id: str | None = None
     ) -> Tuple[float, float]:
@@ -1082,13 +1341,121 @@ class GameApp:
             atk = max(0, atk - CONFUSION_PENALTY)
             dfs = max(0, dfs - CONFUSION_PENALTY)
 
-        # 割须弃袍：受伤单位的攻击+X（格子上有该效果）
-        if province_id is not None:
-            effect = self.card_effect_manager.get_effect(str(province_id))
-            if unit_state.is_injured and effect and effect.wounded_attack_bonus > 0:
-                atk += effect.wounded_attack_bonus
-
         return atk, dfs
+
+    def _is_mountain_terrain(self, province: object) -> bool:
+        terrain = (province.terrain or "").lower()
+        return terrain in ("hill", "mountain", "hills", "mountains")
+
+    def _is_fort_or_city(self, province: object) -> bool:
+        terrain = (province.terrain or "").lower()
+        # 本项目规则：关隘 = 城市
+        return terrain == "city"
+
+    def _is_river_crossing(self, from_id: int, to_id: int) -> bool:
+        return self.map_manager._river_crossing_edges.get((from_id, to_id), False) or \
+            self.map_manager._river_crossing_edges.get((to_id, from_id), False)
+
+    def _get_attack_terrain_penalty(
+        self, attacker_prov: object, target_prov: object, unit_state
+    ) -> int:
+        """跨河/攻山地惩罚：满足任一条件时攻击力-1（无当飞军除外）"""
+        unit_type_lower = (unit_state.unit_type or "").lower()
+        if "wudang" in unit_type_lower:
+            return 0
+
+        effect = self.card_effect_manager.get_effect(str(attacker_prov.province_id))
+        river_immune = bool(effect and effect.river_immunity) or bool(
+            getattr(unit_state, "temp_river_immunity", False)
+        )
+        terrain_immune = bool(effect and effect.terrain_immunity) or bool(
+            getattr(unit_state, "temp_terrain_immunity", False)
+        )
+
+        is_river = self._is_river_crossing(attacker_prov.province_id, target_prov.province_id)
+        is_mountain = self._is_mountain_terrain(target_prov)
+
+        if (is_river and not river_immune) or (is_mountain and not terrain_immune):
+            return -1
+        return 0
+
+    def _find_path_cost_ignore_mountain(self, start_id: int, target_id: int) -> int:
+        """计算移动消耗：忽略山地额外消耗，但保留基础步耗和跨河消耗。"""
+        if start_id == target_id:
+            return 0
+
+        import heapq
+
+        queue = [(0, start_id)]
+        min_costs = {start_id: 0}
+
+        while queue:
+            curr_total, curr_id = heapq.heappop(queue)
+
+            if curr_total > min_costs.get(curr_id, float("inf")):
+                continue
+
+            if curr_id == target_id:
+                return curr_total
+
+            for next_id in self.map_manager._adjacency.get(curr_id, []):
+                step_cost = 1
+                if self._is_river_crossing(curr_id, next_id):
+                    step_cost += 1
+
+                new_total = curr_total + step_cost
+                if new_total < min_costs.get(next_id, float("inf")):
+                    min_costs[next_id] = new_total
+                    heapq.heappush(queue, (new_total, next_id))
+
+        return 9999
+
+    def _try_apply_gexu_guard(
+        self, province: object, units: List[UnitState], pre_hp_map: Dict[int, int]
+    ) -> bool:
+        """割须弃袍：若防御最高单位在本次战斗受伤，则免除其1点伤害（一次性）。"""
+        effect = self.card_effect_manager.get_effect(str(province.province_id))
+        if not effect or not effect.gexu_guard or not units:
+            return False
+
+        highest_def_unit = max(
+            units,
+            key=lambda u: self._calculate_unit_powers(u, province.province_id)[1],
+        )
+
+        before_hp = pre_hp_map.get(id(highest_def_unit), highest_def_unit.hp)
+        if highest_def_unit.hp < before_hp:
+            highest_def_unit.hp += 1
+            self.card_effect_manager.remove_effect(str(province.province_id))
+            return True
+
+        return False
+
+    def _has_attackable_target_for_unit(self, province: object, unit_state) -> bool:
+        """判断某单位在当前位置是否存在可攻击目标。"""
+        definition = self.unit_repository.get_definition(unit_state.unit_type)
+        unit_stride = SQRT3 * self.hex_side
+        allowed_range_px = definition.range * unit_stride * 1.1
+
+        p_center = (
+            province.center_cache
+            if province.center_cache
+            else province.compute_center(self.hex_side)
+        )
+
+        for target in self.map_manager.provinces:
+            if target.country == self.player_country:
+                continue
+            if not target.units and not self._is_fort_or_city(target):
+                continue
+
+            t_center = (
+                target.center_cache if target.center_cache else target.compute_center(self.hex_side)
+            )
+            if dist(p_center, t_center) <= allowed_range_px:
+                return True
+
+        return False
 
     def _get_base_unit_type(self, unit_type: str) -> str:
         """提取兵种的基础类型 (infantry/cavalry/archer)"""
@@ -1147,6 +1514,11 @@ class GameApp:
 
     def _handle_combat(self, target: object) -> None:  # target: Province
         """处理战斗逻辑"""
+        if self.pending_post_move_attack and self.pending_attacker:
+            if len(self.selected_units) != 1 or self.selected_units[0] != self.pending_attacker:
+                self.info_panel.show_message("当前仅可由移动后的单位发起攻击")
+                return
+
         unit_stride = SQRT3 * self.hex_side
         total_attack = 0.0
 
@@ -1192,6 +1564,8 @@ class GameApp:
                 return
 
             atk, _ = self._calculate_unit_powers(unit_state, province.province_id)
+            atk += self._get_attack_terrain_penalty(province, target, unit_state)
+            atk = max(0, atk)
 
             # --- 兵种克制计算 ---
             # 规则：步兵克弓兵，弓兵克骑兵，骑兵克步兵
@@ -1225,9 +1599,13 @@ class GameApp:
         # 大部分游戏是 (UnitDef + Terrain) * Stack。还是 UnitDef * Stack + Terrain?
         # 用户说："计算防御时按照它们防御力的总和"。严格按字面意思。
         total_defense = 0.0
-        for u in target.units:
-            _, dfs = self._calculate_unit_powers(u, target.province_id)
-            total_defense += dfs
+        if target.units:
+            for u in target.units:
+                _, dfs = self._calculate_unit_powers(u, target.province_id)
+                total_defense += dfs
+        elif self._is_fort_or_city(target):
+            # 关隘/城市空城守备：默认有防御力2
+            total_defense = 2.0
 
         if total_defense <= 0.1:
             total_defense = 0.1  # 防止除零
@@ -1271,6 +1649,10 @@ class GameApp:
         # 4. 计算 CRT 列
         col_index = get_ratio_column(total_attack, total_defense, is_flanked)
 
+        # 关隘/城市受攻：判定向防守方有利方向移动一列
+        if self._is_fort_or_city(target):
+            col_index = max(0, col_index - 1)
+
         # 应用卡牌效果修饰
         # 威震华夏：如果已激活且目标格子旁有河流，判定列向利于进攻方移动一列
         if self.card_effect_manager.is_offensive_card_active(
@@ -1299,15 +1681,37 @@ class GameApp:
 
         # 生成防守方预览信息
         def_lines = []
-        for u in target.units:
-            def_lines.append(
-                self._format_unit_info(u, prefix="防", province_id=target.province_id)
-            )
+        if target.units:
+            for u in target.units:
+                def_lines.append(
+                    self._format_unit_info(
+                        u, prefix="防", province_id=target.province_id
+                    )
+                )
+        elif self._is_fort_or_city(target):
+            def_lines.append("守备：防御2（空城）")
         defender_info = "\n".join(def_lines)
 
         # 设置战斗 UI 状态
         self.show_combat_ui = True
         self.combat_target = target  # 设置当前目标 (Province对象)
+
+        # 防守方决策选项（在投骰前可切换）
+        wei_manager = self.card_managers.get("WEI")
+        self.defender_can_use_jiangdong = (
+            target.country == "WEI"
+            and wei_manager is not None
+            and not wei_manager.is_card_used("card_jiangdong_zhiti")
+        )
+        self.defender_use_jiangdong = False
+        self.defender_jiangdong_decided = not self.defender_can_use_jiangdong
+        self.waiting_defender_response = False
+
+        self.defender_can_hold_position = self._is_fort_or_city(target) and bool(
+            target.units
+        )
+        self.defender_hold_decided = not self.defender_can_hold_position
+        self.defender_use_hold_position = False
 
         # 既然开始了新的战斗准备，就清空上一轮的战果显示
         self.combat_result_title = None
@@ -1328,6 +1732,8 @@ class GameApp:
         total_attack = 0.0
         for prov, u_state in attackers:
             atk, _ = self._calculate_unit_powers(u_state, prov.province_id)
+            atk += self._get_attack_terrain_penalty(prov, target_province, u_state)
+            atk = max(0, atk)
 
             # 重新计算克制加成
             bonus = 0.0
@@ -1351,9 +1757,12 @@ class GameApp:
 
         # 重新计算防御力
         total_defense = 0.0
-        for u in target_province.units:
-            _, dfs = self._calculate_unit_powers(u, target_province.province_id)
-            total_defense += dfs
+        if target_province.units:
+            for u in target_province.units:
+                _, dfs = self._calculate_unit_powers(u, target_province.province_id)
+                total_defense += dfs
+        elif self._is_fort_or_city(target_province):
+            total_defense = 2.0
 
         if total_defense <= 0.1:
             total_defense = 0.1
@@ -1388,6 +1797,9 @@ class GameApp:
         # 计算最新的攻防比列索引
         col_index = get_ratio_column(total_attack, total_defense, is_flanked)
 
+        if self._is_fort_or_city(target_province):
+            col_index = max(0, col_index - 1)
+
         # 威震华夏（在战斗发起前可能已全局激活）：若已激活且目标格子旁有河流，判定向进攻方有利移动一列
         if self.card_effect_manager.is_offensive_card_active(
             "card_zhenjing_huaxia_shu"
@@ -1408,17 +1820,47 @@ class GameApp:
         # 记录战斗前的防守方列表（引用），以便战后统计（其中单位的属性会被修改）
         # target_province.units 之后会被清理移除死亡单位，所以由于我们要显示战损，需要先存一份
         defenders_snapshot = list(target_province.units)
+        has_garrison_only = (not target_province.units) and self._is_fort_or_city(
+            target_province
+        )
 
         # 投掷骰子
         dice = random.randint(1, 6)
 
-        # 检查目标格子是否有卡牌效果（骰点加成）
-        target_effect = self.card_effect_manager.get_effect(
-            str(target_province.province_id)
-        )
+        # 检查进攻/防守双方格子效果（骰点加成）
+        attacker_dice_bonus = 0
+        for prov, _ in attackers:
+            effect = self.card_effect_manager.get_effect(str(prov.province_id))
+            if effect and effect.dice_bonus > 0:
+                attacker_dice_bonus = max(attacker_dice_bonus, effect.dice_bonus)
+        for _, u in attackers:
+            attacker_dice_bonus = max(
+                attacker_dice_bonus, getattr(u, "temp_dice_bonus", 0)
+            )
+
+        defender_dice_bonus = 0
+        target_effect = self.card_effect_manager.get_effect(str(target_province.province_id))
         if target_effect and target_effect.dice_bonus > 0:
-            # 应用骰点加成，但最高不超过6
-            dice = min(6, dice + target_effect.dice_bonus)
+            defender_dice_bonus = target_effect.dice_bonus
+        for u in target_province.units:
+            defender_dice_bonus = max(
+                defender_dice_bonus, getattr(u, "temp_dice_bonus", 0)
+            )
+
+        # 江东止啼：防守方即时选择“使用”后生效（一次性）
+        if (
+            self.defender_jiangdong_decided
+            and self.defender_use_jiangdong
+            and target_province.country == "WEI"
+        ):
+            wei_manager = self.card_managers.get("WEI")
+            if wei_manager and not wei_manager.is_card_used("card_jiangdong_zhiti"):
+                defender_dice_bonus += 2
+                wei_manager.use_card("card_jiangdong_zhiti")
+                if self.player_country == "WEI":
+                    self._update_card_panel()
+
+        dice = min(6, dice + attacker_dice_bonus + defender_dice_bonus)
 
         result_code = resolve_combat(dice, col_index)
 
@@ -1443,7 +1885,8 @@ class GameApp:
             self._apply_confusion(attackers)
 
         if "DG" in result_code:
-            self._apply_confusion([(None, u) for u in target_province.units])
+            if target_province.units:
+                self._apply_confusion([(None, u) for u in target_province.units])
             confused_defender = True
 
         if (
@@ -1451,16 +1894,51 @@ class GameApp:
         ):  # D1R or DR
             retreat_defender = True
 
+        # 记录受伤前血量（用于割须弃袍免伤判定）
+        pre_def_hp = {id(u): u.hp for u in target_province.units}
+        attacker_groups: Dict[int, List[UnitState]] = {}
+        for prov, unit in attackers:
+            attacker_groups.setdefault(prov.province_id, []).append(unit)
+        pre_atk_hp_by_prov = {
+            pid: {id(u): u.hp for u in units} for pid, units in attacker_groups.items()
+        }
+
         # Apply Damage
         if dmg_attacker > 0:
             self._apply_damage([u for _, u in attackers], dmg_attacker)
 
-        if dmg_defender > 0:
+        if dmg_defender > 0 and target_province.units:
             self._apply_damage(target_province.units, dmg_defender)
+
+        # 割须弃袍：免除防御最高单位一次伤害（一次性）
+        self._try_apply_gexu_guard(target_province, target_province.units, pre_def_hp)
+        for pid, units in attacker_groups.items():
+            prov = self.map_manager.get_by_id(pid)
+            if prov:
+                self._try_apply_gexu_guard(
+                    prov, units, pre_atk_hp_by_prov.get(pid, {})
+                )
 
         # Retreat Logic
         if retreat_defender:
-            self._handle_retreat(target_province)
+            # 关隘/城市受攻时：防守方可选择 D1DG 代替 DR
+            if (
+                self._is_fort_or_city(target_province)
+                and target_province.units
+                and self.defender_use_hold_position
+            ):
+                for defender in target_province.units:
+                    defender.is_confused = True
+                    defender.confusion_count = max(1, defender.confusion_count)
+                    defender.hp -= 1
+                retreat_defender = False
+                confused_defender = True
+                result_code = result_code.replace("DR", "D1DG")
+            elif not has_garrison_only:
+                self._handle_retreat(target_province)
+            else:
+                # 空城守备没有可撤退实体
+                retreat_defender = False
 
         # 疲劳判定 & 消耗行动力
         for _, u in attackers:
@@ -1473,7 +1951,12 @@ class GameApp:
         self._cleanup_dead_units(attackers, target_province)
 
         # 进占逻辑
-        if not target_province.units:
+        can_occupy = not target_province.units
+        # 关隘/城市空城守备：只有打出 DR 或 DG 才视为成功占领
+        if has_garrison_only:
+            can_occupy = ("DR" in result_code) or ("DG" in result_code)
+
+        if can_occupy:
             self._advance_after_combat(attackers, target_province)
 
         # --- 生成详细战报 ---
@@ -1527,6 +2010,9 @@ class GameApp:
                         u_state, prefix="防", province_id=target_province.province_id
                     )
                 )
+        elif has_garrison_only:
+            logs.append("--- 防守方 ---")
+            logs.append("守备：防御2（空城）")
         else:
             logs.append("防守方全灭或撤离")
 
@@ -1536,6 +2022,10 @@ class GameApp:
 
         # 不再让 Panel 显示标题
         self.info_panel.show_combat_result(None, None, "\n".join(logs))
+
+        # 战斗动作完成后自动切换到下一国家
+        action_name = "移动后攻击" if self.pending_post_move_attack else "攻击"
+        self._finish_country_action(action_name, keep_info_message=True)
 
     def _apply_damage(self, units: List[UnitState], amount: int) -> None:
         """分配伤害"""
@@ -1822,15 +2312,32 @@ class GameApp:
             )
             self.window.blit(btn["surface"], btn["text_pos"])
 
-        # 4. 画回合结束按钮（右下角的圆圈）
-        pg.draw.circle(
-            self.window,
-            pg.Color("black"),
-            self.next_turn_center,
-            self.next_turn_radius,
-            10,
+        # 4. 右下角显示回合信息（避开功能按钮）
+        country_label = (
+            self.country_labels.get(self.player_country, "") if self.player_country else ""
         )
-        self.window.blit(self.arrow_image, self.arrow_pos)
+        round_text = (
+            f"回合{self.round_count}"
+            if not country_label
+            else f"回合{self.round_count} · {country_label}"
+        )
+        round_surf = self.round_counter_font.render(round_text, True, pg.Color("black"))
+
+        # 默认贴右下角
+        round_rect = round_surf.get_rect(
+            bottomright=(self.screen_width - 20, self.screen_height - 12)
+        )
+
+        # 若与右下角按钮重叠，则上移到按钮上方
+        control_rects = [btn["rect"] for btn in getattr(self, "control_btns", [])]
+        if control_rects and any(round_rect.colliderect(r) for r in control_rects):
+            top_y = min(r.top for r in control_rects)
+            round_rect.bottom = max(20, top_y - 8)
+
+        # 轻微底衬，提高可读性
+        bg_rect = round_rect.inflate(12, 6)
+        pg.draw.rect(self.window, pg.Color(255, 255, 255, 180), bg_rect, border_radius=6)
+        self.window.blit(round_surf, round_rect)
 
         # 5. 画当前玩家国家标签
         if self.player_country:
@@ -1841,6 +2348,12 @@ class GameApp:
             if self.show_combat_ui:
                 # 使用跟 InfoPanel 一样的字体
                 font = self.combat_ui_font
+
+                # 先清空防守按钮矩形，按可用性重建
+                self.defense_jiangdong_btn_rect = None
+                self.defense_jiangdong_skip_btn_rect = None
+                self.defense_hold_btn_rect = None
+                self.defense_hold_skip_btn_rect = None
 
                 # 1. 投骰子按钮
                 btn_text = "投骰子"
@@ -1880,6 +2393,94 @@ class GameApp:
                 ratio_y = btn_y + (btn_h - ratio_surf.get_height()) // 2
 
                 self.window.blit(ratio_surf, (ratio_x, ratio_y))
+
+                # 3. 防守方决策按钮（样式参考投骰子按钮）
+                option_right_x = ratio_x - 20
+                row_gap = 8
+                col_gap = 14
+
+                show_jiangdong = (
+                    self.waiting_defender_response
+                    and self.defender_can_use_jiangdong
+                    and not self.defender_jiangdong_decided
+                )
+                show_hold = (
+                    self.waiting_defender_response
+                    and self.defender_can_hold_position
+                    and not self.defender_hold_decided
+                )
+
+                if show_jiangdong or show_hold:
+                    title = "防守方即时决策"
+                    title_surf = font.render(title, True, pg.Color("black"))
+                    title_y = btn_y - title_surf.get_height() - 6
+                    self.window.blit(
+                        title_surf,
+                        (option_right_x - title_surf.get_width(), title_y),
+                    )
+
+                # 列1：江东止啼（上下两行、统一宽度）
+                next_col_right = option_right_x
+                if show_jiangdong:
+                    jd_yes_txt = "使用江东止啼"
+                    jd_no_txt = "不使用"
+                    jd_yes_surf = font.render(jd_yes_txt, True, pg.Color("white"))
+                    jd_no_surf = font.render(jd_no_txt, True, pg.Color("white"))
+                    jd_col_w = max(jd_yes_surf.get_width(), jd_no_surf.get_width()) + 20
+
+                    jd_yes_rect = pg.Rect(next_col_right - jd_col_w, btn_y, jd_col_w, btn_h)
+                    jd_no_rect = pg.Rect(
+                        next_col_right - jd_col_w,
+                        btn_y + btn_h + row_gap,
+                        jd_col_w,
+                        btn_h,
+                    )
+                    self.defense_jiangdong_btn_rect = jd_yes_rect
+                    self.defense_jiangdong_skip_btn_rect = jd_no_rect
+
+                    jd_yes_color = pg.Color("#8B0000")
+                    if jd_yes_rect.collidepoint(pg.mouse.get_pos()):
+                        jd_yes_color = pg.Color("#A52A2A")
+                    jd_no_color = pg.Color("#4B4B4B")
+                    if jd_no_rect.collidepoint(pg.mouse.get_pos()):
+                        jd_no_color = pg.Color("#666666")
+
+                    pg.draw.rect(self.window, jd_yes_color, jd_yes_rect, border_radius=5)
+                    pg.draw.rect(self.window, jd_no_color, jd_no_rect, border_radius=5)
+                    self.window.blit(jd_yes_surf, jd_yes_surf.get_rect(center=jd_yes_rect.center))
+                    self.window.blit(jd_no_surf, jd_no_surf.get_rect(center=jd_no_rect.center))
+
+                    next_col_right = jd_yes_rect.x - col_gap
+
+                # 列2：DR改D1DG（上下两行、统一宽度）
+                if show_hold:
+                    hold_yes_txt = "防守方选择：DR改D1DG"
+                    hold_no_txt = "保持正常DR"
+                    hold_yes_surf = font.render(hold_yes_txt, True, pg.Color("white"))
+                    hold_no_surf = font.render(hold_no_txt, True, pg.Color("white"))
+                    hold_col_w = max(hold_yes_surf.get_width(), hold_no_surf.get_width()) + 20
+
+                    hold_yes_rect = pg.Rect(next_col_right - hold_col_w, btn_y, hold_col_w, btn_h)
+                    hold_no_rect = pg.Rect(
+                        next_col_right - hold_col_w,
+                        btn_y + btn_h + row_gap,
+                        hold_col_w,
+                        btn_h,
+                    )
+                    self.defense_hold_btn_rect = hold_yes_rect
+                    self.defense_hold_skip_btn_rect = hold_no_rect
+
+                    hold_yes_color = pg.Color("#8B0000")
+                    if hold_yes_rect.collidepoint(pg.mouse.get_pos()):
+                        hold_yes_color = pg.Color("#A52A2A")
+                    hold_no_color = pg.Color("#4B4B4B")
+                    if hold_no_rect.collidepoint(pg.mouse.get_pos()):
+                        hold_no_color = pg.Color("#666666")
+
+                    pg.draw.rect(self.window, hold_yes_color, hold_yes_rect, border_radius=5)
+                    pg.draw.rect(self.window, hold_no_color, hold_no_rect, border_radius=5)
+                    self.window.blit(hold_yes_surf, hold_yes_surf.get_rect(center=hold_yes_rect.center))
+                    self.window.blit(hold_no_surf, hold_no_surf.get_rect(center=hold_no_rect.center))
 
             # --- 检查是否需要显示“解除混乱”按钮 ---
             # 条件：1. 没有进入战斗准备 (show_combat_ui is False)
@@ -2001,7 +2602,7 @@ class GameApp:
         if self.info_panel:
             self.info_panel.draw(self.window)
 
-        # 8. 画卡牌面板
+        # 8. 绘制卡牌面板（卡牌不占用回合动作次数）
         if self.card_panel:
             self.card_panel.draw(self.window)
 
@@ -2396,24 +2997,8 @@ class GameApp:
         height = self.screen_height
         width = self.screen_width
 
-        # 调整右下角回合结束按钮
-        # 仅占下方 12%，对齐右下角
-        # 半径 = 高度 * 12% / 2 = 6%
-        r = int(height * 0.06)
-        self.next_turn_radius = r
-        # 中心点：紧贴右下角 (留一点点缝隙比如 5px 可能会更好看，但用户说对齐右下角)
-        self.next_turn_center = (int(width - r), int(height - r))
-
-        # 箭头图片随之缩小
-        # 假设箭头是个正方形，边长稍微比直径小一点点
-        # 再次缩小，使其看起来更精致 (r * 1.4 -> r * 1.0)
-        arrow_size = int(r * 1.0)
-        self.arrow_image = self._load_ui_image("arrow.jpg", (arrow_size, arrow_size))
-        # 箭头居中于圆心
-        self.arrow_pos = (
-            self.next_turn_center[0] - arrow_size // 2,
-            self.next_turn_center[1] - arrow_size // 2,
-        )
+        # 底部回合计数字体
+        self.round_counter_font = self._font("msyhbd.ttc", int(height * 0.032))
 
         self.country_tag_font = self._font("STZHONGS.TTF", int(height * 0.1))
         self.country_tag_surfaces = {
@@ -2422,18 +3007,16 @@ class GameApp:
         }
 
         # --- 右下角功能按钮 ---
-        # 视觉顺序从左到右: [退出] [重开] [手动结束] [O]
-        # 我们从圆圈左侧开始往左排布
+        # 视觉顺序从左到右: [退出] [重开]
         btn_font = self._font("msyh.ttc", int(height * 0.025))
 
-        # 列表顺序：最靠近圆圈的是 "手动结束"，然后是 "重开"，最左是 "退出"
-        labels = ["手动结束回合", "重开一局", "退出游戏"]
-        actions = ["END_TURN", "RESTART", "EXIT"]
+        labels = ["重开一局", "退出游戏"]
+        actions = ["RESTART", "EXIT"]
 
         self.control_btns = []
 
-        # 起始X坐标：圆圈左边缘 (width - 2r) 再往左一点
-        current_x_right = int(width - 2 * r - 20)
+        # 起始X坐标：右侧内边距
+        current_x_right = int(width - 20)
 
         for label, action in zip(labels, actions):
             surf = btn_font.render(label, True, pg.Color("white"))
@@ -2441,8 +3024,8 @@ class GameApp:
             h = surf.get_height() + 10
 
             x = current_x_right - w
-            # 垂直居中于圆心 y = height - r
-            y = int(height - r - h / 2)
+            # 贴近底部
+            y = int(height - h - 12)
 
             rect = pg.Rect(x, y, w, h)
 

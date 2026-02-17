@@ -27,6 +27,9 @@ class UnitState:
     confusion_count: int = 0  # 连续混乱次数
     attack_count: int = 0
     mp: int = 0  # Action Points / Movement Points
+    temp_river_immunity: bool = False   # 本大回合跨河惩罚免疫
+    temp_terrain_immunity: bool = False # 本大回合山地惩罚免疫
+    temp_dice_bonus: int = 0            # 本大回合战斗骰点加成
     
     @property
     def is_injured(self) -> bool:
@@ -172,14 +175,14 @@ class UnitRenderer:
             pos = self._slot_position(center, idx)
             surface.blit(icon, pos)
             
-            # TODO: 如果受伤或混乱，可以在这里画状态图标
+            # 状态标记：统一画在图标正中心，并适当放大
+            cx, cy = pos[0] + self._icon_size // 2, pos[1] + self._icon_size // 2
+            status_radius = max(4, self._icon_size // 7)
+
             if unit_state.is_confused:
-                # 简单画个紫色圈表示混乱
-                cx, cy = pos[0] + self._icon_size // 2, pos[1] + self._icon_size // 2
-                pg.draw.circle(surface, pg.Color("purple"), (cx, cy), 5)
+                pg.draw.circle(surface, pg.Color("purple"), (cx, cy), status_radius)
             elif unit_state.is_injured:
-                # 简单画个红点表示受伤
-                pg.draw.circle(surface, pg.Color("red"), (pos[0] + 5, pos[1] + 5), 4)
+                pg.draw.circle(surface, pg.Color("red"), (cx, cy), status_radius)
 
     def selection_rects(self, center: Tuple[int, int], unit_count: int) -> List[pg.Rect]:
         """
