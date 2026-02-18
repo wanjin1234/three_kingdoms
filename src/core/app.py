@@ -1,4 +1,4 @@
-﻿"""
+"""
 这里包含了整个游戏应用的核心逻辑：GameApp。
 它是总导演，管理着游戏状态、循环、渲染和逻辑更新。
 """
@@ -156,7 +156,8 @@ class GameApp:
 
         # 初始状态设为 LOADING
         self.state = GameState.LOADING
-        self.player_country: str | None = None  # 玩家选择的国家
+        self.player_country: str | None = None  # 当前行动的国家
+        self.human_country: str | None = None   # 玩家选择控制的国家
 
         # 定义三个国家的标签和颜色
         self.country_labels: Dict[str, str] = {"SHU": "蜀", "WU": "吴", "WEI": "魏"}
@@ -189,6 +190,9 @@ class GameApp:
         # 移动后可追加一次“仅该单位”的攻击（可选）
         self.pending_post_move_attack: bool = False
         self.pending_attacker: SelectionEntry | None = None
+
+        # AI 行动定时器（None = 不需要触发）
+        self._ai_turn_timer: int | None = None
 
         # 初始化各个子系统管理器
         self.kingdom_repository = KingdomRepository(settings.kingdoms_file)
@@ -620,8 +624,9 @@ class GameApp:
 
         return False
 
-    def _start_turn_based_game(self) -> None:
-        """开始回合制对局（首手固定蜀）。"""
+    def _start_turn_based_game(self, human_country: str = "SHU") -> None:
+        """开始回合制对局。human_country 为玩家控制的国家。"""
+        self.human_country = human_country
         self.turn_index = 0
         self.major_round = 1
         self.minor_round = 1
@@ -642,11 +647,20 @@ class GameApp:
         self._update_card_panel()
         self.state = GameState.PLAYING
 
+        # 如果第一个行动国是 AI，安排延迟触发
+        if self.human_country is not None and self.player_country != self.human_country:
+            self._ai_turn_timer = pg.time.get_ticks() + 800
+
     def _start_major_round_choice_phase(self) -> None:
         """每个大回合开始：三国各自选择 +2 民心点数 或 +2 政治点数。"""
         self.major_round_choice_pending = True
         self.major_round_choice_done = {country: False for country in self.turn_order}
         self.country_stat_choice_btns = {}
+        # AI 国家立即自动完成加点（默认选 support）
+        if self.human_country is not None:
+            for _c in list(self.turn_order):
+                if _c != self.human_country:
+                    self._apply_major_round_choice(_c, "support")
 
     def _apply_major_round_choice(self, country: str, choice: str) -> None:
         """应用国家在大回合开始时的加点选择。"""
@@ -750,11 +764,185 @@ class GameApp:
         self.card_manager = self.card_managers[self.player_country]
         self._update_card_panel()
 
+        # 若当前轮到的是 AI 国家，延迟触发 AI 行动
+        if (
+            self.human_country is not None
+            and self.player_country != self.human_country
+            and not self.turn_game_finished
+        ):
+            self._ai_turn_timer = pg.time.get_ticks() + 600  # 600ms 后执行
+        else:
+            self._ai_turn_timer = None
+
     def _finish_country_action(
         self, action_name: str, keep_info_message: bool = False
     ) -> None:
         """当前国家执行完一个动作后，自动轮换到下一国家。"""
         self._advance_country_turn(keep_info_message=keep_info_message)
+
+    # ---------------------------------------------------------------
+    # AI TURN
+    # ---------------------------------------------------------------
+
+    def _run_ai_turn(self) -> None:
+        """AI 行动：自动完成大回合加点选择 + 移动/攻击，然后结束本国回合。"""
+        if self.turn_game_finished:
+            return
+        country = self.player_country
+        if country is None or country == self.human_country:
+            return
+
+        # --- 阶段1：大回合加点（如果还未选择） ---
+        if self.major_round_choice_pending:
+            for c in list(self.turn_order):
+                if not self.major_round_choice_done.get(c, False):
+                    self._apply_major_round_choice(c, "support")
+            # 加点后检查是否仍处于 pending，若仍然 pending 说明还有等待，
+            # 此时不能进行攻防，先返回；下一帧重新调度
+            if self.major_round_choice_pending:
+                self._ai_turn_timer = pg.time.get_ticks() + 300
+                return
+
+        # --- 阶段2：寻找可攻击的单位并攻击 ---
+        action_taken = False
+        for province in list(self.map_manager.provinces):
+            if province.country != country:
+                continue
+            for slot_idx, unit_state in enumerate(list(province.units)):
+                if unit_state.mp <= 0:
+                    continue
+                if self._has_attackable_target_for_unit(province, unit_state):
+                    target = self._ai_pick_attack_target(province, unit_state)
+                    if target is not None:
+                        # 模拟选中该单位并发起攻击
+                        self.selected_units = [(province.province_id, slot_idx)]
+                        self._handle_combat(target)
+                        # AI 直接执行战斗，不等待 UI 交互
+                        if self.combat_callback and self.show_combat_ui:
+                            self.defender_jiangdong_decided = True
+                            self.defender_use_jiangdong = False
+                            self.defender_hold_decided = True
+                            self.defender_use_hold_position = False
+                            cb = self.combat_callback
+                            self.combat_callback = None
+                            self.show_combat_ui = False
+                            cb()
+                        action_taken = True
+                        break
+            if action_taken:
+                break
+
+        if not action_taken:
+            # --- 阶段3：无法攻击，尝试移动靠近敌方 ---
+            for province in list(self.map_manager.provinces):
+                if province.country != country:
+                    continue
+                for slot_idx, unit_state in enumerate(list(province.units)):
+                    if unit_state.mp <= 0:
+                        continue
+                    dest = self._ai_pick_move_target(province, unit_state)
+                    if dest is not None:
+                        self.selected_units = [(province.province_id, slot_idx)]
+                        self._handle_movement(dest)
+                        action_taken = True
+                        break
+                if action_taken:
+                    break
+
+        # --- 阶段4：结束本国回合 ---
+        self._finish_country_action(f"AI({country})行动", keep_info_message=action_taken)
+
+    def _ai_pick_attack_target(self, province, unit_state):
+        """AI 选择攻击目标：优先选血量最少（单位数最少）的相邻敌省。"""
+        definition = self.unit_repository.get_definition(unit_state.unit_type)
+        unit_stride = SQRT3 * self.hex_side
+        allowed_range_px = definition.range * unit_stride * 1.1
+        p_center = (
+            province.center_cache
+            if province.center_cache
+            else province.compute_center(self.hex_side)
+        )
+        best = None
+        best_score = float("inf")
+        for target in self.map_manager.provinces:
+            if target.country == province.country:
+                continue
+            if not target.units and not self._is_fort_or_city(target):
+                continue
+            t_center = (
+                target.center_cache
+                if target.center_cache
+                else target.compute_center(self.hex_side)
+            )
+            if dist(p_center, t_center) <= allowed_range_px:
+                score = len(target.units)  # 越少越软
+                if score < best_score:
+                    best_score = score
+                    best = target
+        return best
+
+    def _ai_pick_move_target(self, province, unit_state):
+        """AI 选择移动目标：向最近的敌省移动一步（选相邻且步数最近的格子）。"""
+        from src.map.map_manager import dist as _dist_fn
+
+        p_center = (
+            province.center_cache
+            if province.center_cache
+            else province.compute_center(self.hex_side)
+        )
+        # 找最近的敌省
+        nearest_enemy = None
+        nearest_d = float("inf")
+        for target in self.map_manager.provinces:
+            if target.country == province.country or not target.country:
+                continue
+            t_center = (
+                target.center_cache
+                if target.center_cache
+                else target.compute_center(self.hex_side)
+            )
+            d = dist(p_center, t_center)
+            if d < nearest_d:
+                nearest_d = d
+                nearest_enemy = target
+
+        if nearest_enemy is None:
+            return None
+
+        # 在可达格子中选择距敌最近的（路径代价 <= 行动力）
+        ap = unit_state.mp
+        if ap <= 0:
+            return None
+
+        enemy_center = (
+            nearest_enemy.center_cache
+            if nearest_enemy.center_cache
+            else nearest_enemy.compute_center(self.hex_side)
+        )
+        best_dest = None
+        best_dist_to_enemy = float("inf")
+        for candidate in self.map_manager.provinces:
+            if candidate.province_id == province.province_id:
+                continue
+            # 只允许移动至己方或中立格子（不能直接移动进入敌方有单位格子）
+            if candidate.country not in (province.country, None, ""):
+                continue
+            path_cost = self.map_manager.find_path_cost(
+                province.province_id, candidate.province_id
+            )
+            if path_cost > ap or path_cost > 100:
+                continue
+            c_center = (
+                candidate.center_cache
+                if candidate.center_cache
+                else candidate.compute_center(self.hex_side)
+            )
+            d_to_enemy = dist(c_center, enemy_center)
+            if d_to_enemy < best_dist_to_enemy:
+                best_dist_to_enemy = d_to_enemy
+                best_dest = candidate
+
+        return best_dest
 
     def _restart_game(self) -> None:
         """重置游戏状态并返回选人界面"""
@@ -799,11 +987,12 @@ class GameApp:
 
         # 4. 切换状态
         self.player_country = None
+        self.human_country = None
         self.turn_index = 0
         self.major_round = 1
         self.minor_round = 1
         self.turn_game_finished = False
-        self.state = GameState.LOADING
+        self.state = GameState.CHOOSING
         logger.info("Game restarted.")
 
     def run(self) -> None:
@@ -1002,11 +1191,19 @@ class GameApp:
         """处理加载界面的事件（比如点击开始按钮）"""
         if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
             if self.start_button_rect.collidepoint(event.pos):
-                self._start_turn_based_game()
+                self.state = GameState.CHOOSING
 
     def _handle_choosing_event(self, event: pg.event.Event) -> None:
-        """回合制版本不再使用选国界面。"""
-        return
+        """处理选择势力界面的事件"""
+        if event.type != pg.MOUSEBUTTONDOWN or event.button != 1:
+            return
+        for country, button in self.faction_buttons.items():
+            cx, cy = button["center"]
+            dx = event.pos[0] - cx
+            dy = event.pos[1] - cy
+            if (dx * dx + dy * dy) <= self.faction_button_radius ** 2:
+                self._start_turn_based_game(human_country=country)
+                return
 
     def _handle_playing_event(self, event: pg.event.Event) -> None:
         """处理游戏中的事件"""
@@ -1956,6 +2153,13 @@ class GameApp:
         # 面板只显示详情
         self.info_panel.show_combat_details(attacker_info, defender_info)
 
+        # 若防守方是 AI 国家，立即做出所有防守决策（不使用任何防守卡牌）
+        if self.human_country is not None and target.country != self.human_country:
+            self.defender_jiangdong_decided = True
+            self.defender_use_jiangdong = False
+            self.defender_hold_decided = True
+            self.defender_use_hold_position = False
+
     def _execute_combat(self, attackers: List, target_province: object) -> None:
         """执行战斗，每次点击投鞒子时重新计算攻防比"""
         # 重新计算攻击力
@@ -2451,6 +2655,14 @@ class GameApp:
             if self.combat_result_timer < 0:
                 self.combat_result_timer = 0
                 self.combat_result_title = None
+
+        # 处理 AI 行动计时器
+        if (
+            self._ai_turn_timer is not None
+            and pg.time.get_ticks() >= self._ai_turn_timer
+        ):
+            self._ai_turn_timer = None
+            self._run_ai_turn()
 
     def _render(self) -> None:
         """渲染总控：根据状态画对应的界面"""
