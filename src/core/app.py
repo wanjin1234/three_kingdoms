@@ -1219,11 +1219,17 @@ class GameApp:
                         # 显示卡牌描述
                         # buff/defensive/summon 类：点击即进入目标选择模式；offensive 类：等待 Enter
                         card_def = self.card_repository.get_definition(card_id)
-                        if card_def and card_def.category in ("buff", "defensive", "summon"):
+                        if card_def and card_def.category in (
+                            "buff",
+                            "defensive",
+                            "summon",
+                        ):
                             self._play_selected_card()
                             return
                         elif card_def:
-                            self.info_panel.show_message(f"已选中: {card_def.name}，按 Enter 使用")
+                            self.info_panel.show_message(
+                                f"已选中: {card_def.name}，按 Enter 使用"
+                            )
 
                 # 优先处理 UI 面板点击
                 if self.info_panel and self.info_panel.handle_click(event.pos):
@@ -2053,7 +2059,8 @@ class GameApp:
         )
 
         # 投掷骰子
-        dice = random.randint(1, 6)
+        raw_dice = random.randint(1, 6)
+        dice = raw_dice
 
         # 检查进攻/防守双方格子效果（骰点加成）
         attacker_dice_bonus = 0
@@ -2077,12 +2084,20 @@ class GameApp:
                 defender_dice_bonus, getattr(u, "temp_dice_bonus", 0)
             )
 
-        # 江东止啼：防守方即时选择“使用”后生效（一次性）
+        # 江东止啼：防守方即时选择"使用"后生效（一次性），进攻方骰点-2
         if use_jiangdong and target_province.country == "WEI":
-            defender_dice_bonus += 2
+            attacker_dice_bonus -= 2
 
-        dice = min(6, dice + attacker_dice_bonus + defender_dice_bonus)
-        logger.debug("DICE: atk_bonus=%d def_bonus=%d use_jd=%s => final=%d | atk_units=%s", attacker_dice_bonus, defender_dice_bonus, use_jiangdong, dice, [(u.unit_type, getattr(u, "temp_dice_bonus", 0)) for _, u in attackers])
+        dice = max(1, min(6, raw_dice + attacker_dice_bonus + defender_dice_bonus))
+        logger.debug(
+            "DICE: raw=%d atk_bonus=%d def_bonus=%d use_jd=%s => final=%d | atk_units=%s",
+            raw_dice,
+            attacker_dice_bonus,
+            defender_dice_bonus,
+            use_jiangdong,
+            dice,
+            [(u.unit_type, getattr(u, "temp_dice_bonus", 0)) for _, u in attackers],
+        )
 
         result_code = resolve_combat(dice, col_index)
 
@@ -2187,8 +2202,14 @@ class GameApp:
         r_idx = max(0, min(5, col_index))
         ratio_str = ratio_strs[r_idx]
 
-        # 结果标题行： 1:1 · 骰6 · A1
-        title_line = " · ".join([ratio_str, f"骰{dice}", result_code])
+        # 结果标题行： 1:1 · 骰6 · A1（有加成时显示 骰原→实际）
+        bonus_total = attacker_dice_bonus + defender_dice_bonus
+        if bonus_total != 0:
+            sign = "+" if bonus_total > 0 else ""
+            dice_str = f"骰{raw_dice}{sign}{bonus_total}={dice}"
+        else:
+            dice_str = f"骰{dice}"
+        title_line = " · ".join([ratio_str, dice_str, result_code])
 
         # 结果简报行： 攻损X · 防损Y
         summary_parts = [f"攻损{dmg_attacker}", f"防损{dmg_defender}"]
