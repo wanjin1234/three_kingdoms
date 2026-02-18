@@ -169,7 +169,17 @@ class GameApp:
         # 回合制顺序：蜀 -> 吴 -> 魏
         self.turn_order: List[str] = ["SHU", "WU", "WEI"]
         self.turn_index: int = 0
-        self.round_count: int = 1
+        self.max_major_rounds: int = 5
+        self.max_minor_rounds: int = 6
+        self.major_round: int = 1
+        self.minor_round: int = 1
+        self.turn_game_finished: bool = False
+
+        # 国家公共属性（初始为0；回合推进与重开均不自动重置）
+        self.country_stats: Dict[str, Dict[str, int]] = {
+            country: {"people_support": 0, "political_points": 0}
+            for country in self.turn_order
+        }
 
         # 移动后可追加一次“仅该单位”的攻击（可选）
         self.pending_post_move_attack: bool = False
@@ -559,7 +569,9 @@ class GameApp:
     def _start_turn_based_game(self) -> None:
         """开始回合制对局（首手固定蜀）。"""
         self.turn_index = 0
-        self.round_count = 1
+        self.major_round = 1
+        self.minor_round = 1
+        self.turn_game_finished = False
         self.player_country = self.turn_order[self.turn_index]
 
         # 新对局重置卡牌使用状态
@@ -606,6 +618,9 @@ class GameApp:
 
     def _advance_country_turn(self, keep_info_message: bool = False) -> None:
         """切换到下一个国家。"""
+        if self.turn_game_finished:
+            return
+
         self.pending_post_move_attack = False
         self.pending_attacker = None
         self.selecting_card_target = False
@@ -615,8 +630,26 @@ class GameApp:
         self.turn_index += 1
         if self.turn_index >= len(self.turn_order):
             self.turn_index = 0
-            self.round_count += 1
-            self._end_full_round()
+
+            # 一个小回合（蜀->吴->魏）结束
+            if self.minor_round < self.max_minor_rounds:
+                self.minor_round += 1
+                self._end_full_round()
+            elif self.major_round < self.max_major_rounds:
+                # 小回合满6后进入下一个大回合
+                self.major_round += 1
+                self.minor_round = 1
+                self._end_full_round()
+            else:
+                # 5个大回合 * 6个小回合结束，对局终止
+                self.turn_game_finished = True
+                self.player_country = None
+                self.card_manager = None
+                if self.card_panel:
+                    self.card_panel.set_available_cards([])
+                if self.info_panel:
+                    self.info_panel.show_message("对局结束：已完成5个大回合（每回合6个小回合）")
+                return
 
         self.player_country = self.turn_order[self.turn_index]
         self.card_manager = self.card_managers[self.player_country]
@@ -672,7 +705,9 @@ class GameApp:
         # 4. 切换状态
         self.player_country = None
         self.turn_index = 0
-        self.round_count = 1
+        self.major_round = 1
+        self.minor_round = 1
+        self.turn_game_finished = False
         self.state = GameState.LOADING
         logger.info("Game restarted.")
 
@@ -2316,11 +2351,9 @@ class GameApp:
         country_label = (
             self.country_labels.get(self.player_country, "") if self.player_country else ""
         )
-        round_text = (
-            f"回合{self.round_count}"
-            if not country_label
-            else f"回合{self.round_count} · {country_label}"
-        )
+        round_text = f"回合 {self.major_round}-{self.minor_round}"
+        if country_label:
+            round_text = f"{round_text} · {country_label}"
         round_surf = self.round_counter_font.render(round_text, True, pg.Color("black"))
 
         # 默认贴右下角
@@ -2338,6 +2371,9 @@ class GameApp:
         bg_rect = round_rect.inflate(12, 6)
         pg.draw.rect(self.window, pg.Color(255, 255, 255, 180), bg_rect, border_radius=6)
         self.window.blit(round_surf, round_rect)
+
+        # 4.5 常态显示三国“民心/政治点数”
+        self._draw_country_stats_overlay()
 
         # 5. 画当前玩家国家标签
         if self.player_country:
@@ -2608,6 +2644,159 @@ class GameApp:
 
         # 9. 画鼠标悬停提示 (Tooltip)
         self._draw_hover_tooltip()
+
+    def _get_map_bounds_rect(self) -> pg.Rect:
+        """基于六边形中心与边长，计算地图像素包围盒。"""
+        if not self.map_manager.provinces:
+            return pg.Rect(0, 0, self.screen_width, self.screen_height)
+
+        x_min = float("inf")
+        y_min = float("inf")
+        x_max = float("-inf")
+        y_max = float("-inf")
+
+        half_h = (SQRT3 * self.hex_side) / 2
+        for province in self.map_manager.provinces:
+            center = (
+                province.center_cache
+                if province.center_cache
+                else province.compute_center(self.hex_side)
+            )
+            cx, cy = center
+            x_min = min(x_min, cx - self.hex_side)
+            x_max = max(x_max, cx + self.hex_side)
+            y_min = min(y_min, cy - half_h)
+            y_max = max(y_max, cy + half_h)
+
+        left = max(0, int(x_min))
+        top = max(0, int(y_min))
+        right = min(self.screen_width, int(x_max))
+        bottom = min(self.screen_height, int(y_max))
+        return pg.Rect(left, top, max(1, right - left), max(1, bottom - top))
+
+    def _draw_country_stats_overlay(self) -> None:
+        """绘制三国民心/政治点数信息，避免与地图六边形重叠。"""
+        map_rect = self._get_map_bounds_rect()
+        title_font = self.country_stat_title_font
+        body_font = self.country_stat_font
+
+        # 先计算统一面板尺寸
+        content_specs = {}
+        panel_w = 0
+        panel_h = 0
+        for country in self.turn_order:
+            stats = self.country_stats.get(country, {})
+            lines = [
+                self.country_labels.get(country, country),
+                f"民心：{stats.get('people_support', 0)}",
+                f"政治点数：{stats.get('political_points', 0)}",
+            ]
+            title_surf = title_font.render(lines[0], True, pg.Color("black"))
+            line1_surf = body_font.render(lines[1], True, pg.Color("black"))
+            line2_surf = body_font.render(lines[2], True, pg.Color("black"))
+            content_specs[country] = (title_surf, line1_surf, line2_surf)
+
+            local_w = max(title_surf.get_width(), line1_surf.get_width(), line2_surf.get_width())
+            panel_w = max(panel_w, local_w + 22)
+            local_h = title_surf.get_height() + line1_surf.get_height() + line2_surf.get_height() + 18
+            panel_h = max(panel_h, local_h)
+
+        # 左侧基准位（用于蜀、魏）
+        left_x = max(10, map_rect.left - panel_w - 16)
+
+        # 魏：左上缺口，但整体下移一些
+        wei_x = left_x
+        wei_y = max(10, min(self.screen_height - panel_h - 10, map_rect.top + int(panel_h * 0.45)))
+
+        # 蜀：地图左侧中部
+        shu_x = left_x
+        shu_y = max(10, min(self.screen_height - panel_h - 10, map_rect.centery - panel_h // 2))
+
+        control_rects = [btn["rect"] for btn in getattr(self, "control_btns", [])]
+        safe_bottom = self.screen_height - 12
+        if control_rects:
+            safe_bottom = min(safe_bottom, min(r.top for r in control_rects) - 10)
+
+        gap = 8
+
+        # 魏：严格避免和地图六边形区域重叠（优先向下挪）
+        wei_rect = pg.Rect(wei_x, wei_y, panel_w, panel_h)
+        try_count = 0
+        while wei_rect.colliderect(map_rect) and try_count < 20:
+            wei_rect.y = min(self.screen_height - panel_h - 10, wei_rect.y + 12)
+            try_count += 1
+        # 若仍重叠，再尽量向左挪
+        try_count = 0
+        while wei_rect.colliderect(map_rect) and try_count < 20:
+            wei_rect.x = max(10, wei_rect.x - 12)
+            try_count += 1
+
+        wei_x, wei_y = wei_rect.x, wei_rect.y
+
+        # 若蜀与魏重叠，则把蜀下移
+        if shu_y < wei_y + panel_h + gap:
+            shu_y = min(self.screen_height - panel_h - 10, wei_y + panel_h + gap)
+
+        # 吴：向左下挪，且避免与右侧 panel 重叠
+        if self.info_panel:
+            wu_x = self.info_panel.rect.left - panel_w - 28
+        else:
+            wu_x = map_rect.right + 14
+        wu_x = max(10, min(self.screen_width - panel_w - 10, wu_x))
+
+        # 吴：与屏幕下边缘的间距 = 魏/蜀与屏幕左边缘的间距
+        left_margin = min(shu_x, wei_x)
+        wu_y = self.screen_height - panel_h - left_margin
+        wu_y = max(10, min(self.screen_height - panel_h - 10, wu_y))
+
+        # 避免与魏/蜀重叠（必要时上移，不改变“左移优先”原则）
+        wu_min_y = max(wei_y + panel_h + gap, shu_y + panel_h + gap)
+        if wu_y < wu_min_y:
+            wu_y = min(self.screen_height - panel_h - 10, wu_min_y)
+
+        # 吴：严格避免与右侧面板重叠（InfoPanel / CardPanel）
+        blockers: List[pg.Rect] = []
+        if self.info_panel:
+            blockers.append(self.info_panel.rect)
+        if self.card_panel:
+            blockers.append(self.card_panel.rect)
+
+        wu_rect = pg.Rect(wu_x, wu_y, panel_w, panel_h)
+        try_count = 0
+        while blockers and any(wu_rect.colliderect(r) for r in blockers) and try_count < 30:
+            # 用户要求“往左下移”：这里优先继续左移，保持底边距规则
+            wu_rect.x = max(10, wu_rect.x - 12)
+            try_count += 1
+
+        wu_x, wu_y = wu_rect.x, wu_rect.y
+
+        placements = {
+            "SHU": pg.Rect(shu_x, shu_y, panel_w, panel_h),
+            "WEI": pg.Rect(wei_x, wei_y, panel_w, panel_h),
+            "WU": pg.Rect(wu_x, wu_y, panel_w, panel_h),
+        }
+
+        for country in self.turn_order:
+            rect = placements[country]
+            title_surf, line1_surf, line2_surf = content_specs[country]
+
+            # 不透明浅底 + 国家色边框
+            pg.draw.rect(self.window, pg.Color(245, 245, 245), rect, border_radius=8)
+            pg.draw.rect(
+                self.window,
+                self.country_button_colors.get(country, pg.Color("black")),
+                rect,
+                2,
+                border_radius=8,
+            )
+
+            x = rect.x + 10
+            y = rect.y + 6
+            self.window.blit(title_surf, (x, y))
+            y += title_surf.get_height() + 4
+            self.window.blit(line1_surf, (x, y))
+            y += line1_surf.get_height() + 2
+            self.window.blit(line2_surf, (x, y))
 
     def _draw_hover_tooltip(self) -> None:
         """Draw tooltip for hovered element"""
@@ -2999,6 +3188,9 @@ class GameApp:
 
         # 底部回合计数字体
         self.round_counter_font = self._font("msyhbd.ttc", int(height * 0.032))
+        # 三国属性（民心/政治点数）显示字体
+        self.country_stat_title_font = self._font("msyhbd.ttc", int(height * 0.028))
+        self.country_stat_font = self._font("msyh.ttc", int(height * 0.022))
 
         self.country_tag_font = self._font("STZHONGS.TTF", int(height * 0.1))
         self.country_tag_surfaces = {
