@@ -3170,6 +3170,14 @@ class GameApp:
                 tooltip_parts.append(("禁行", pg.Color("black"), False, False))
             elif self._is_hovering_river(mouse_pos):
                 tooltip_parts.append(("河流", pg.Color("black"), False, False))
+                tooltip_parts.append(
+                    (
+                        " 跨河移动行动力消耗+1；进攻跨河部队攻击力-1",
+                        pg.Color("#555555"),
+                        False,
+                        False,
+                    )
+                )
 
         # 3. 如果没悬停单位也没河流，检查格子/地形 (Terrain/City)
         if not tooltip_parts:
@@ -3212,17 +3220,41 @@ class GameApp:
 
                 if base_name:
                     # 城市名加粗变成深金色，并带阴影；其他地形默认黑色无阴影
-                    is_city = (hovered_prov.terrain or "").lower() == "city"
+                    terrain_lower = (hovered_prov.terrain or "").lower()
+                    is_city = terrain_lower == "city"
+                    is_mountain = terrain_lower in (
+                        "hill",
+                        "mountain",
+                        "hills",
+                        "mountains",
+                    )
                     if is_city:
                         # 使用更深的金色 (DarkGoldenrod #B8860B 或者是自定义)
                         # 用户觉得 gold (#FFD700) 太浅。尝试 #D4AF37 (Metallic Gold) 或 #C5A000
                         tooltip_parts.append(
                             (base_name, pg.Color("#D4AF37"), True, True)
                         )
+                        tooltip_parts.append(
+                            (
+                                " 进攻此格，攻防比向左移动一列",
+                                pg.Color("#555555"),
+                                False,
+                                False,
+                            )
+                        )
                     else:
                         tooltip_parts.append(
                             (base_name, pg.Color("black"), False, False)
                         )
+                        if is_mountain:
+                            tooltip_parts.append(
+                                (
+                                    " 行动力消耗+1；进攻此格部队攻击力-1",
+                                    pg.Color("#555555"),
+                                    False,
+                                    False,
+                                )
+                            )
 
                 # 附加国家信息
                 if hovered_prov.country:
