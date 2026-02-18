@@ -3,7 +3,7 @@
     "id": "card_zhenjing_huaxia_shu",
     "name": "威震华夏",
     "country": "SHU",
-    "description": "当敌方部队处于河岸边时，使用此技能卡，进攻该部队时战斗判定向利于其的方向移动一列",
+    "description": "当敌方部队处于河岸边时，使用此技能卡，进攻该部队时战斗判定向右移动一列（对进攻方有利）",
     "category": "offensive"
   },
   {
@@ -24,7 +24,7 @@
     "id": "card_huoshao_lianying",
     "name": "火烧连营",
     "country": "WU",
-    "description": "当敌方在某地块堆叠部队数量超过1时，使用此技能卡，进攻该地块上的部队时战斗判定向利于其的方向移动一列",
+    "description": "当敌方在某地块堆叠部队数量超过1时，使用此技能卡，进攻该地块上的部队时战斗判定向右移动一列（对进攻方有利）",
     "category": "offensive"
   },
   {
@@ -52,14 +52,14 @@
     "id": "card_gexu_qibao",
     "name": "割须弃袍",
     "country": "WEI",
-    "description": "指定某格上所有部队，本大回合受伤部队战斗力+2",
-    "category": "buff"
+    "description": "在战斗开始前使用，如果在该场战斗中有单位受到伤害，则免除防御力最高的单位所受的伤害",
+    "category": "defensive"
   },
   {
     "id": "card_jiangdong_zhiti",
     "name": "江东止啼",
     "country": "WEI",
-    "description": "指定某格上所有部队，本大回合roll点+2（最高6点）",
-    "category": "buff"
+    "description": "当敌方对我方发动进攻时使用，可使敌方roll点-2（roll点至多减少到1）",
+    "category": "defensive"
   }
 ]

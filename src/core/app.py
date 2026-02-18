@@ -1,4 +1,4 @@
-"""
+﻿"""
 这里包含了整个游戏应用的核心逻辑：GameApp。
 它是总导演，管理着游戏状态、循环、渲染和逻辑更新。
 """
@@ -405,7 +405,7 @@ class GameApp:
             self.defender_use_jiangdong = True
             self.defender_jiangdong_decided = True
             self.allow_jiangdong_selection = False
-            self.info_panel.show_message("已使用江东止啼：本次防守骰点+2")
+            self.info_panel.show_message("已使用江东止啼：本次进攻方骰点-2")
 
             # 选择后恢复当前行动方卡牌显示
             if self.player_country and self.player_country in self.card_managers:
@@ -487,8 +487,12 @@ class GameApp:
         if not card_def:
             return False
 
-        # 检查目标格子是否有效
-        target_prov = self.map_manager.get_by_id(province_id)
+        # 检查目标格子是否有效（get_by_id 需要 int，province_id 可能为 str）
+        try:
+            prov_id_int = int(province_id)
+        except (ValueError, TypeError):
+            prov_id_int = province_id
+        target_prov = self.map_manager.get_by_id(prov_id_int)
         if not target_prov:
             self.info_panel.show_message("无效的目标格子")
             return False
@@ -510,7 +514,9 @@ class GameApp:
 
         # 江东止啼为反应卡，不接受手动指定格子
         if card_id == "card_jiangdong_zhiti":
-            self.info_panel.show_message("江东止啼无需指定格子，仅在魏国被进攻时可在卡牌面板选择")
+            self.info_panel.show_message(
+                "江东止啼无需指定格子，仅在魏国被进攻时可在卡牌面板选择"
+            )
             return False
 
         # 召唤类卡牌：如果目标格子已有最大堆叠数，拒绝并提示（不消耗卡牌）
@@ -527,11 +533,11 @@ class GameApp:
             self.info_panel.show_message("刮目相看只能部署在吴国格子")
             return False
 
-        # 应用卡牌效果（记录效果/标记格子）
+        # 应用卡牌效果（记录效果/标记格子），province_id 强制为字符串确保键类型一致
         success = self.card_effect_manager.apply_card_effect(
             card_id,
             card_def.name,
-            province_id,
+            str(province_id),
             self.player_country,
         )
 
@@ -739,7 +745,9 @@ class GameApp:
                 if self.card_panel:
                     self.card_panel.set_available_cards([])
                 if self.info_panel:
-                    self.info_panel.show_message("对局结束：已完成5个大回合（每回合6个小回合）")
+                    self.info_panel.show_message(
+                        "对局结束：已完成5个大回合（每回合6个小回合）"
+                    )
                 return
 
         self.player_country = self.turn_order[self.turn_index]
@@ -1055,17 +1063,25 @@ class GameApp:
                     and self.combat_btn_rect
                     and self.combat_btn_rect.collidepoint(event.pos)
                 ):
-                    if self.defender_can_use_jiangdong and not self.defender_jiangdong_decided:
+                    if (
+                        self.defender_can_use_jiangdong
+                        and not self.defender_jiangdong_decided
+                    ):
                         self.waiting_defender_response = True
                         self.allow_jiangdong_selection = True
                         wei_manager = self.card_managers.get("WEI")
                         if wei_manager:
                             self.card_manager = wei_manager
                         self._update_card_panel()
-                        self.info_panel.show_message("进攻方已投骰，请防守方选择江东止啼（或点击不使用）")
+                        self.info_panel.show_message(
+                            "进攻方已投骰，请防守方选择江东止啼（或点击不使用）"
+                        )
                         return
 
-                    if self.defender_can_hold_position and not self.defender_hold_decided:
+                    if (
+                        self.defender_can_hold_position
+                        and not self.defender_hold_decided
+                    ):
                         self.waiting_defender_response = True
                         self.info_panel.show_message("进攻方已投骰，等待防守方即时决策")
                         return
@@ -1087,7 +1103,9 @@ class GameApp:
                     ):
                         self.defender_use_hold_position = True
                         self.defender_hold_decided = True
-                        self.info_panel.show_message("已选择：防守方选择：DR改D1DG", duration=1.2)
+                        self.info_panel.show_message(
+                            "已选择：防守方选择：DR改D1DG", duration=1.2
+                        )
                         if (
                             self.defender_jiangdong_decided
                             and self.defender_hold_decided
@@ -1133,10 +1151,15 @@ class GameApp:
                         self.defender_use_jiangdong = False
                         self.defender_jiangdong_decided = True
                         self.allow_jiangdong_selection = False
-                        if self.player_country and self.player_country in self.card_managers:
+                        if (
+                            self.player_country
+                            and self.player_country in self.card_managers
+                        ):
                             self.card_manager = self.card_managers[self.player_country]
                         self._update_card_panel()
-                        self.info_panel.show_message("已选择：本次不使用江东止啼", duration=1.2)
+                        self.info_panel.show_message(
+                            "已选择：本次不使用江东止啼", duration=1.2
+                        )
                         if (
                             self.defender_jiangdong_decided
                             and self.defender_hold_decided
@@ -1174,7 +1197,9 @@ class GameApp:
                     and self.no_attack_btn_rect.collidepoint(event.pos)
                 ):
                     if self.info_panel:
-                        self.info_panel.show_message("已选择不攻击，进入下一步", duration=1.0)
+                        self.info_panel.show_message(
+                            "已选择不攻击，进入下一步", duration=1.0
+                        )
                     self._finish_country_action("移动")
                     return
 
@@ -1196,10 +1221,13 @@ class GameApp:
                             return
 
                         # 显示卡牌描述
+                        # buff/defensive/summon 类：点击即进入目标选择模式；offensive 类：等待 Enter
                         card_def = self.card_repository.get_definition(card_id)
-                        if card_def:
-                            self.info_panel.show_message(f"已选中: {card_def.name}")
-                    return
+                        if card_def and card_def.category in ("buff", "defensive", "summon"):
+                            self._play_selected_card()
+                            return
+                        elif card_def:
+                            self.info_panel.show_message(f"已选中: {card_def.name}，按 Enter 使用")
 
                 # 优先处理 UI 面板点击
                 if self.info_panel and self.info_panel.handle_click(event.pos):
@@ -1209,9 +1237,9 @@ class GameApp:
                 if self.selecting_card_target and self.selected_card_for_effect:
                     target_prov = self._get_province_at(event.pos)
                     if target_prov:
-                        # 尝试应用卡牌效果到目标格子
+                        # 尝试应用卡牌效果到目标格子（province_id 统一转字符串）
                         if self._apply_card_to_province(
-                            self.selected_card_for_effect, target_prov.province_id
+                            self.selected_card_for_effect, str(target_prov.province_id)
                         ):
                             # 成功应用，退出目标选择模式
                             self.selecting_card_target = False
@@ -1248,7 +1276,9 @@ class GameApp:
                     # 移动后追加攻击窗口中，只允许该单位继续操作
                     if self.pending_post_move_attack and self.pending_attacker:
                         if (prov_id, slot_idx) != self.pending_attacker:
-                            self.info_panel.show_message("请继续使用刚移动的单位，或右键结束该动作")
+                            self.info_panel.show_message(
+                                "请继续使用刚移动的单位，或右键结束该动作"
+                            )
                             return
 
                     # 检查是否已选中
@@ -1339,7 +1369,9 @@ class GameApp:
                 str(target_province.province_id)
             )
             if target_effect and target_effect.protected:
-                self.info_panel.show_message("该格处于空城妙计保护中，本大回合不可被进攻")
+                self.info_panel.show_message(
+                    "该格处于空城妙计保护中，本大回合不可被进攻"
+                )
                 return
 
         can_attack = is_enemy and (
@@ -1447,8 +1479,9 @@ class GameApp:
 
         # 仅当“移动前可攻击”且“移动后可攻击”时，才提供移动后攻击选择
         # （根据规则：当且仅当移动前后都能攻击）
-        pre_move_can_attack = selected_unit.mp > 0 and self._has_attackable_target_for_unit(
-            source, selected_unit
+        pre_move_can_attack = (
+            selected_unit.mp > 0
+            and self._has_attackable_target_for_unit(source, selected_unit)
         )
 
         # 4. 执行移动
@@ -1533,8 +1566,9 @@ class GameApp:
         return terrain == "city"
 
     def _is_river_crossing(self, from_id: int, to_id: int) -> bool:
-        return self.map_manager._river_crossing_edges.get((from_id, to_id), False) or \
-            self.map_manager._river_crossing_edges.get((to_id, from_id), False)
+        return self.map_manager._river_crossing_edges.get(
+            (from_id, to_id), False
+        ) or self.map_manager._river_crossing_edges.get((to_id, from_id), False)
 
     def _get_attack_terrain_penalty(
         self, attacker_prov: object, target_prov: object, unit_state
@@ -1552,7 +1586,9 @@ class GameApp:
             getattr(unit_state, "temp_terrain_immunity", False)
         )
 
-        is_river = self._is_river_crossing(attacker_prov.province_id, target_prov.province_id)
+        is_river = self._is_river_crossing(
+            attacker_prov.province_id, target_prov.province_id
+        )
         is_mountain = self._is_mountain_terrain(target_prov)
 
         if (is_river and not river_immune) or (is_mountain and not terrain_immune):
@@ -1630,7 +1666,9 @@ class GameApp:
                 continue
 
             t_center = (
-                target.center_cache if target.center_cache else target.compute_center(self.hex_side)
+                target.center_cache
+                if target.center_cache
+                else target.compute_center(self.hex_side)
             )
             if dist(p_center, t_center) <= allowed_range_px:
                 return True
@@ -1695,7 +1733,10 @@ class GameApp:
     def _handle_combat(self, target: object) -> None:  # target: Province
         """处理战斗逻辑"""
         if self.pending_post_move_attack and self.pending_attacker:
-            if len(self.selected_units) != 1 or self.selected_units[0] != self.pending_attacker:
+            if (
+                len(self.selected_units) != 1
+                or self.selected_units[0] != self.pending_attacker
+            ):
                 self.info_panel.show_message("当前仅可由移动后的单位发起攻击")
                 return
 
@@ -2016,7 +2057,8 @@ class GameApp:
         )
 
         # 投掷骰子
-        dice = random.randint(1, 6)
+        raw_dice = random.randint(1, 6)
+        dice = raw_dice
 
         # 检查进攻/防守双方格子效果（骰点加成）
         attacker_dice_bonus = 0
@@ -2030,22 +2072,23 @@ class GameApp:
             )
 
         defender_dice_bonus = 0
-        target_effect = self.card_effect_manager.get_effect(str(target_province.province_id))
-        if target_effect and target_effect.dice_bonus > 0:
+        target_effect = self.card_effect_manager.get_effect(
+            str(target_province.province_id)
+        )
+        if target_effect and target_effect.dice_bonus != 0:
             defender_dice_bonus = target_effect.dice_bonus
         for u in target_province.units:
-            defender_dice_bonus = max(
-                defender_dice_bonus, getattr(u, "temp_dice_bonus", 0)
-            )
-
+            u_bonus = getattr(u, "temp_dice_bonus", 0)
+            if u_bonus < 0:
+                defender_dice_bonus = min(defender_dice_bonus, u_bonus)
+            else:
+                defender_dice_bonus = max(defender_dice_bonus, u_bonus)
         # 江东止啼：防守方即时选择“使用”后生效（一次性）
-        if (
-            use_jiangdong
-            and target_province.country == "WEI"
-        ):
-            defender_dice_bonus += 2
+        if use_jiangdong and target_province.country == "WEI":
+            defender_dice_bonus -= 2
 
-        dice = min(6, dice + attacker_dice_bonus + defender_dice_bonus)
+        dice = max(1, min(6, raw_dice + attacker_dice_bonus + defender_dice_bonus))
+        logger.debug("DICE: raw=%d atk_bonus=%d def_bonus=%d use_jd=%s => final=%d | atk_units=%s",raw_dice,attacker_dice_bonus,defender_dice_bonus,use_jiangdong,dice,[(u.unit_type,getattr(u,"temp_dice_bonus",0)) for _,u in attackers])
 
         result_code = resolve_combat(dice, col_index)
 
@@ -2100,9 +2143,7 @@ class GameApp:
         for pid, units in attacker_groups.items():
             prov = self.map_manager.get_by_id(pid)
             if prov:
-                self._try_apply_gexu_guard(
-                    prov, units, pre_atk_hp_by_prov.get(pid, {})
-                )
+                self._try_apply_gexu_guard(prov, units, pre_atk_hp_by_prov.get(pid, {}))
 
         # Retreat Logic
         if retreat_defender:
@@ -2152,8 +2193,13 @@ class GameApp:
         r_idx = max(0, min(5, col_index))
         ratio_str = ratio_strs[r_idx]
 
-        # 结果标题行： 1:1 · 骰6 · A1
-        title_line = " · ".join([ratio_str, f"骰{dice}", result_code])
+        # 结果标题行： 1:1 · 骰6 · A1（若骰点被锦囊改变则拆成"骰原" · "修正后=新" 两段）
+        if dice != raw_dice:
+            bonus_total = attacker_dice_bonus + defender_dice_bonus
+            sign = "+" if bonus_total > 0 else ""
+            title_line = " · ".join([ratio_str, f"骰{raw_dice}", f"锦囊{sign}{bonus_total}={dice}", result_code])
+        else:
+            title_line = " · ".join([ratio_str, f"骰{dice}", result_code])
 
         # 结果简报行： 攻损X · 防损Y
         summary_parts = [f"攻损{dmg_attacker}", f"防损{dmg_defender}"]
@@ -2499,7 +2545,9 @@ class GameApp:
 
         # 4. 右下角显示回合信息（避开功能按钮）
         country_label = (
-            self.country_labels.get(self.player_country, "") if self.player_country else ""
+            self.country_labels.get(self.player_country, "")
+            if self.player_country
+            else ""
         )
         round_text = f"回合 {self.major_round}-{self.minor_round}"
         if country_label:
@@ -2519,7 +2567,9 @@ class GameApp:
 
         # 轻微底衬，提高可读性
         bg_rect = round_rect.inflate(12, 6)
-        pg.draw.rect(self.window, pg.Color(255, 255, 255, 180), bg_rect, border_radius=6)
+        pg.draw.rect(
+            self.window, pg.Color(255, 255, 255, 180), bg_rect, border_radius=6
+        )
         self.window.blit(round_surf, round_rect)
 
         # 4.5 常态显示三国“民心/政治点数”
@@ -2606,9 +2656,13 @@ class GameApp:
                     hold_no_txt = "保持正常DR"
                     hold_yes_surf = font.render(hold_yes_txt, True, pg.Color("white"))
                     hold_no_surf = font.render(hold_no_txt, True, pg.Color("white"))
-                    hold_col_w = max(hold_yes_surf.get_width(), hold_no_surf.get_width()) + 20
+                    hold_col_w = (
+                        max(hold_yes_surf.get_width(), hold_no_surf.get_width()) + 20
+                    )
 
-                    hold_yes_rect = pg.Rect(next_col_right - hold_col_w, btn_y, hold_col_w, btn_h)
+                    hold_yes_rect = pg.Rect(
+                        next_col_right - hold_col_w, btn_y, hold_col_w, btn_h
+                    )
                     hold_no_rect = pg.Rect(
                         next_col_right - hold_col_w,
                         btn_y + btn_h + row_gap,
@@ -2625,10 +2679,19 @@ class GameApp:
                     if hold_no_rect.collidepoint(pg.mouse.get_pos()):
                         hold_no_color = pg.Color("#666666")
 
-                    pg.draw.rect(self.window, hold_yes_color, hold_yes_rect, border_radius=5)
-                    pg.draw.rect(self.window, hold_no_color, hold_no_rect, border_radius=5)
-                    self.window.blit(hold_yes_surf, hold_yes_surf.get_rect(center=hold_yes_rect.center))
-                    self.window.blit(hold_no_surf, hold_no_surf.get_rect(center=hold_no_rect.center))
+                    pg.draw.rect(
+                        self.window, hold_yes_color, hold_yes_rect, border_radius=5
+                    )
+                    pg.draw.rect(
+                        self.window, hold_no_color, hold_no_rect, border_radius=5
+                    )
+                    self.window.blit(
+                        hold_yes_surf,
+                        hold_yes_surf.get_rect(center=hold_yes_rect.center),
+                    )
+                    self.window.blit(
+                        hold_no_surf, hold_no_surf.get_rect(center=hold_no_rect.center)
+                    )
 
             # --- 检查是否需要显示“解除混乱”按钮 ---
             # 条件：1. 没有进入战斗准备 (show_combat_ui is False)
@@ -2806,11 +2869,18 @@ class GameApp:
                         btn_color = pg.Color("#666666")
 
                     pg.draw.rect(self.window, btn_color, btn_rect, border_radius=6)
-                    skip_surf = self.tooltip_font.render("不使用江东止啼", True, pg.Color("white"))
-                    self.window.blit(skip_surf, skip_surf.get_rect(center=btn_rect.center))
+                    skip_surf = self.tooltip_font.render(
+                        "不使用江东止啼", True, pg.Color("white")
+                    )
+                    self.window.blit(
+                        skip_surf, skip_surf.get_rect(center=btn_rect.center)
+                    )
 
                     # 让卡牌 tooltip 永远在卡牌区按钮之上
                     self.card_panel.draw_tooltip(self.window)
+            else:
+                # 非江东止啼响应状态，也要渲染卡牌 tooltip
+                self.card_panel.draw_tooltip(self.window)
 
         # 9. 画鼠标悬停提示 (Tooltip)
         self._draw_hover_tooltip()
@@ -2867,9 +2937,16 @@ class GameApp:
             line2_surf = body_font.render(lines[2], True, pg.Color("black"))
             content_specs[country] = (title_surf, line1_surf, line2_surf)
 
-            local_w = max(title_surf.get_width(), line1_surf.get_width(), line2_surf.get_width())
+            local_w = max(
+                title_surf.get_width(), line1_surf.get_width(), line2_surf.get_width()
+            )
             panel_w = max(panel_w, local_w + 22)
-            local_h = title_surf.get_height() + line1_surf.get_height() + line2_surf.get_height() + 18
+            local_h = (
+                title_surf.get_height()
+                + line1_surf.get_height()
+                + line2_surf.get_height()
+                + 18
+            )
             panel_h = max(panel_h, local_h)
 
         # 左侧基准位（用于蜀、魏）
@@ -2877,11 +2954,16 @@ class GameApp:
 
         # 魏：左上缺口，但整体下移一些
         wei_x = left_x
-        wei_y = max(10, min(self.screen_height - panel_h - 10, map_rect.top + int(panel_h * 0.45)))
+        wei_y = max(
+            10,
+            min(self.screen_height - panel_h - 10, map_rect.top + int(panel_h * 0.45)),
+        )
 
         # 蜀：地图左侧中部
         shu_x = left_x
-        shu_y = max(10, min(self.screen_height - panel_h - 10, map_rect.centery - panel_h // 2))
+        shu_y = max(
+            10, min(self.screen_height - panel_h - 10, map_rect.centery - panel_h // 2)
+        )
 
         control_rects = [btn["rect"] for btn in getattr(self, "control_btns", [])]
         safe_bottom = self.screen_height - 12
@@ -2934,7 +3016,11 @@ class GameApp:
 
         wu_rect = pg.Rect(wu_x, wu_y, panel_w, panel_h)
         try_count = 0
-        while blockers and any(wu_rect.colliderect(r) for r in blockers) and try_count < 30:
+        while (
+            blockers
+            and any(wu_rect.colliderect(r) for r in blockers)
+            and try_count < 30
+        ):
             # 用户要求“往左下移”：这里优先继续左移，保持底边距规则
             wu_rect.x = max(10, wu_rect.x - 12)
             try_count += 1
@@ -2975,8 +3061,13 @@ class GameApp:
                     btn_w = rect.width - 16
                     btn_x = rect.x + 8
 
-                    available_h = rect.height - (title_surf.get_height() + top_gap + bottom_gap)
-                    btn_h = min(max(18, body_font.get_height() + 4), (available_h - row_gap) // 2)
+                    available_h = rect.height - (
+                        title_surf.get_height() + top_gap + bottom_gap
+                    )
+                    btn_h = min(
+                        max(18, body_font.get_height() + 4),
+                        (available_h - row_gap) // 2,
+                    )
                     btn_h = max(16, btn_h)
 
                     btn1_y = y + title_surf.get_height() + top_gap
@@ -2992,11 +3083,19 @@ class GameApp:
                     if politics_rect.collidepoint(pg.mouse.get_pos()):
                         politics_color = pg.Color("#2b6aa2")
 
-                    pg.draw.rect(self.window, support_color, support_rect, border_radius=6)
-                    pg.draw.rect(self.window, politics_color, politics_rect, border_radius=6)
+                    pg.draw.rect(
+                        self.window, support_color, support_rect, border_radius=6
+                    )
+                    pg.draw.rect(
+                        self.window, politics_color, politics_rect, border_radius=6
+                    )
 
-                    support_surf = body_font.render("+2 民心点数", True, pg.Color("white"))
-                    politics_surf = body_font.render("+2 政治点数", True, pg.Color("white"))
+                    support_surf = body_font.render(
+                        "+2 民心点数", True, pg.Color("white")
+                    )
+                    politics_surf = body_font.render(
+                        "+2 政治点数", True, pg.Color("white")
+                    )
                     self.window.blit(
                         support_surf,
                         support_surf.get_rect(center=support_rect.center),
@@ -3012,8 +3111,13 @@ class GameApp:
                     }
                 else:
                     done_surf = body_font.render("已选择", True, pg.Color("black"))
-                    done_x = min(rect.right - done_surf.get_width() - 8, x + title_surf.get_width() + 8)
-                    done_y = y + max(0, (title_surf.get_height() - done_surf.get_height()) // 2)
+                    done_x = min(
+                        rect.right - done_surf.get_width() - 8,
+                        x + title_surf.get_width() + 8,
+                    )
+                    done_y = y + max(
+                        0, (title_surf.get_height() - done_surf.get_height()) // 2
+                    )
                     self.window.blit(
                         done_surf,
                         (done_x, done_y),
