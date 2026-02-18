@@ -487,12 +487,8 @@ class GameApp:
         if not card_def:
             return False
 
-        # 检查目标格子是否有效（get_by_id 需要 int，province_id 可能为 str）
-        try:
-            prov_id_int = int(province_id)
-        except (ValueError, TypeError):
-            prov_id_int = province_id
-        target_prov = self.map_manager.get_by_id(prov_id_int)
+        # 检查目标格子是否有效
+        target_prov = self.map_manager.get_by_id(province_id)
         if not target_prov:
             self.info_panel.show_message("无效的目标格子")
             return False
@@ -533,11 +529,11 @@ class GameApp:
             self.info_panel.show_message("刮目相看只能部署在吴国格子")
             return False
 
-        # 应用卡牌效果（记录效果/标记格子），province_id 强制为字符串确保键类型一致
+        # 应用卡牌效果（记录效果/标记格子）
         success = self.card_effect_manager.apply_card_effect(
             card_id,
             card_def.name,
-            str(province_id),
+            province_id,
             self.player_country,
         )
 
@@ -1237,9 +1233,9 @@ class GameApp:
                 if self.selecting_card_target and self.selected_card_for_effect:
                     target_prov = self._get_province_at(event.pos)
                     if target_prov:
-                        # 尝试应用卡牌效果到目标格子（province_id 统一转字符串）
+                        # 尝试应用卡牌效果到目标格子
                         if self._apply_card_to_province(
-                            self.selected_card_for_effect, str(target_prov.province_id)
+                            self.selected_card_for_effect, target_prov.province_id
                         ):
                             # 成功应用，退出目标选择模式
                             self.selecting_card_target = False
@@ -2057,8 +2053,7 @@ class GameApp:
         )
 
         # 投掷骰子
-        raw_dice = random.randint(1, 6)
-        dice = raw_dice
+        dice = random.randint(1, 6)
 
         # 检查进攻/防守双方格子效果（骰点加成）
         attacker_dice_bonus = 0
@@ -2075,20 +2070,19 @@ class GameApp:
         target_effect = self.card_effect_manager.get_effect(
             str(target_province.province_id)
         )
-        if target_effect and target_effect.dice_bonus != 0:
+        if target_effect and target_effect.dice_bonus > 0:
             defender_dice_bonus = target_effect.dice_bonus
         for u in target_province.units:
-            u_bonus = getattr(u, "temp_dice_bonus", 0)
-            if u_bonus < 0:
-                defender_dice_bonus = min(defender_dice_bonus, u_bonus)
-            else:
-                defender_dice_bonus = max(defender_dice_bonus, u_bonus)
+            defender_dice_bonus = max(
+                defender_dice_bonus, getattr(u, "temp_dice_bonus", 0)
+            )
+
         # 江东止啼：防守方即时选择“使用”后生效（一次性）
         if use_jiangdong and target_province.country == "WEI":
-            defender_dice_bonus -= 2
+            defender_dice_bonus += 2
 
-        dice = max(1, min(6, raw_dice + attacker_dice_bonus + defender_dice_bonus))
-        logger.debug("DICE: raw=%d atk_bonus=%d def_bonus=%d use_jd=%s => final=%d | atk_units=%s",raw_dice,attacker_dice_bonus,defender_dice_bonus,use_jiangdong,dice,[(u.unit_type,getattr(u,"temp_dice_bonus",0)) for _,u in attackers])
+        dice = min(6, dice + attacker_dice_bonus + defender_dice_bonus)
+        logger.debug("DICE: atk_bonus=%d def_bonus=%d use_jd=%s => final=%d | atk_units=%s", attacker_dice_bonus, defender_dice_bonus, use_jiangdong, dice, [(u.unit_type, getattr(u, "temp_dice_bonus", 0)) for _, u in attackers])
 
         result_code = resolve_combat(dice, col_index)
 
@@ -2193,13 +2187,8 @@ class GameApp:
         r_idx = max(0, min(5, col_index))
         ratio_str = ratio_strs[r_idx]
 
-        # 结果标题行： 1:1 · 骰6 · A1（若骰点被锦囊改变则拆成"骰原" · "修正后=新" 两段）
-        if dice != raw_dice:
-            bonus_total = attacker_dice_bonus + defender_dice_bonus
-            sign = "+" if bonus_total > 0 else ""
-            title_line = " · ".join([ratio_str, f"骰{raw_dice}", f"锦囊{sign}{bonus_total}={dice}", result_code])
-        else:
-            title_line = " · ".join([ratio_str, f"骰{dice}", result_code])
+        # 结果标题行： 1:1 · 骰6 · A1
+        title_line = " · ".join([ratio_str, f"骰{dice}", result_code])
 
         # 结果简报行： 攻损X · 防损Y
         summary_parts = [f"攻损{dmg_attacker}", f"防损{dmg_defender}"]
@@ -2876,11 +2865,8 @@ class GameApp:
                         skip_surf, skip_surf.get_rect(center=btn_rect.center)
                     )
 
-                    # 让卡牌 tooltip 永远在卡牌区按钮之上
-                    self.card_panel.draw_tooltip(self.window)
-            else:
-                # 非江东止啼响应状态，也要渲染卡牌 tooltip
-                self.card_panel.draw_tooltip(self.window)
+            # 卡牌 tooltip 始终在卡牌面板最顶层绘制（不受江东止啼条件限制）
+            self.card_panel.draw_tooltip(self.window)
 
         # 9. 画鼠标悬停提示 (Tooltip)
         self._draw_hover_tooltip()
