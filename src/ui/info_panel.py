@@ -413,6 +413,10 @@ class CardPanel(BasePanel):
             line_surf = self.tooltip_font.render(line, True, pg.Color("black"))
             surface.blit(line_surf, (tooltip_x + padding, text_y))
             text_y += line_height
+
+    def draw_tooltip(self, surface: pg.Surface) -> None:
+        """对外暴露：绘制卡牌 tooltip（用于控制图层顺序）"""
+        self._draw_tooltip(surface)
     
     def draw(self, surface: pg.Surface) -> None:
         # 去掉顶部边框，避免与上方 InfoPanel 的底部边框重叠变粗
@@ -435,48 +439,76 @@ class CardPanel(BasePanel):
             no_card_rect = no_card_surf.get_rect(center=(self.rect.centerx, content_y + 20))
             surface.blit(no_card_surf, no_card_rect)
         else:
-            # 绘制卡牌
+            # 绘制卡牌按钮：3列并排方块
             card_font = self._get_font(self._card_font_size)
-            card_height = int(self._card_font_size * 1.5)  # 卡牌高度为字体大小的1.5倍，保证充足空间
-            card_x = self.rect.left + 10
-            card_width = self.rect.width - 20
+            cols = 3
+            gap = 8
+            card_count = len(self.available_cards)
+            rows = max(1, (card_count + cols - 1) // cols)
+
+            inner_x = self.rect.left + 10
+            inner_w = self.rect.width - 20
+            inner_h = self.rect.bottom - 10 - content_y
+
+            max_size_by_width = (inner_w - gap * (cols - 1)) // cols
+            max_size_by_height = (inner_h - gap * (rows - 1)) // rows if rows > 0 else max_size_by_width
+            card_size = max(24, min(max_size_by_width, max_size_by_height))
+
+            grid_w = cols * card_size + gap * (cols - 1)
+            grid_x = inner_x + max(0, (inner_w - grid_w) // 2)
             
             for i, card in enumerate(self.available_cards):
-                card_y = content_y + i * (card_height + 6)  # 适度间距
+                row = i // cols
+                col = i % cols
+                card_x = grid_x + col * (card_size + gap)
+                card_y = content_y + row * (card_size + gap)
                 
                 # 检查是否超出面板范围
-                if card_y + card_height > self.rect.bottom - 10:
+                if card_y + card_size > self.rect.bottom - 10:
                     break
                 
-                card_rect = pg.Rect(card_x, card_y, card_width, card_height)
+                card_rect = pg.Rect(card_x, card_y, card_size, card_size)
                 self.card_rects[card.id] = card_rect
                 
                 # 判断是否选中
                 is_selected = card.id == self.selected_card_id
+                is_hover = card.id == self.card_id_at_mouse
                 
-                # 绘制卡牌背景
+                # 绘制按钮背景
                 if is_selected:
-                    # 选中时：金色边框
-                    bg_color = pg.Color("lightyellow")
+                    # 选中：金色强调
+                    bg_color = pg.Color(255, 246, 204)
                     border_color = pg.Color("gold")
                     border_width = 2
+                    text_color = pg.Color("black")
+                elif is_hover:
+                    # 悬停：蓝灰按钮
+                    bg_color = pg.Color(220, 232, 245)
+                    border_color = pg.Color(60, 90, 130)
+                    border_width = 2
+                    text_color = pg.Color("black")
                 else:
-                    # 未选中：白色背景，黑色边框
-                    bg_color = pg.Color("white")
-                    border_color = pg.Color("black")
+                    # 默认：浅灰按钮
+                    bg_color = pg.Color(238, 238, 238)
+                    border_color = pg.Color(90, 90, 90)
                     border_width = 1
+                    text_color = pg.Color("black")
+
+                # 按钮阴影
+                shadow_rect = card_rect.move(1, 1)
+                pg.draw.rect(surface, pg.Color(180, 180, 180), shadow_rect, border_radius=6)
                 
-                pg.draw.rect(surface, bg_color, card_rect)
-                pg.draw.rect(surface, border_color, card_rect, width=border_width)
+                pg.draw.rect(surface, bg_color, card_rect, border_radius=6)
+                pg.draw.rect(surface, border_color, card_rect, width=border_width, border_radius=6)
                 
                 # 绘制卡牌名称，确保完全框内
-                card_name_surf = card_font.render(card.name, True, pg.Color("black"))
+                card_name_surf = card_font.render(card.name, True, text_color)
                 name_width = card_name_surf.get_width()
                 name_height = card_name_surf.get_height()
                 
                 # 留边距预留（两侧各留4像素）
                 margin = 4
-                container_width = card_width - margin * 2
+                container_width = card_size - margin * 2
                 
                 # 如果文字超出框外，使用省略号
                 if name_width > container_width:
@@ -485,12 +517,12 @@ class CardPanel(BasePanel):
                     dot_num = 1
                     while card_font.size(display_name + "•" * dot_num)[0] > container_width and len(display_name) > 1:
                         display_name = display_name[:-1]
-                    card_name_surf = card_font.render(display_name + "•" * dot_num, True, pg.Color("black"))
+                    card_name_surf = card_font.render(display_name + "•" * dot_num, True, text_color)
                     name_width = card_name_surf.get_width()
                 
                 # 水平居中、垂直居中
-                name_x = card_rect.left + (card_width - name_width) // 2
-                name_y = card_rect.top + (card_height - name_height) // 2
+                name_x = card_rect.left + (card_size - name_width) // 2
+                name_y = card_rect.top + (card_size - name_height) // 2
                 
                 # 确保文字完全在框内（额外边距3像素）
                 name_x = max(card_rect.left + margin, name_x)
@@ -500,8 +532,7 @@ class CardPanel(BasePanel):
                 
                 surface.blit(card_name_surf, (name_x, name_y))
         
-        # 最后绘制 tooltip 浮窗（确保在最上层）
-        self._draw_tooltip(surface)
+        # tooltip 由上层渲染流程统一控制图层顺序
 
 
 class InfoPanel(BasePanel):

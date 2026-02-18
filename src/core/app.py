@@ -180,6 +180,11 @@ class GameApp:
             country: {"people_support": 0, "political_points": 0}
             for country in self.turn_order
         }
+        self.major_round_choice_pending: bool = False
+        self.major_round_choice_done: Dict[str, bool] = {
+            country: False for country in self.turn_order
+        }
+        self.country_stat_choice_btns: Dict[str, Dict[str, pg.Rect]] = {}
 
         # 移动后可追加一次“仅该单位”的攻击（可选）
         self.pending_post_move_attack: bool = False
@@ -261,6 +266,9 @@ class GameApp:
         self._recover_btn_surf = self.combat_ui_font.render(
             "解除混乱", True, pg.Color("white")
         )
+        self._no_attack_btn_surf = self.combat_ui_font.render(
+            "不攻击", True, pg.Color("white")
+        )
 
         # Tooltip Caching
         self._last_tooltip_data = None
@@ -302,9 +310,13 @@ class GameApp:
         self.defender_hold_decided: bool = True
         self.defender_use_hold_position: bool = False
         self.waiting_defender_response: bool = False
+        # 被进攻时是否允许从卡牌面板选择“江东止啼”
+        self.allow_jiangdong_selection: bool = False
 
         # 解除混乱按钮区域
         self.recover_btn_rect: pg.Rect | None = None
+        self.no_attack_btn_rect: pg.Rect | None = None
+        self.skip_jiangdong_card_btn_rect: pg.Rect | None = None
 
         # 战斗结果显示 (Top UI area)
         self.combat_result_title: str | None = None  # e.g. "1:1 · 骰6 · A1"
@@ -345,6 +357,17 @@ class GameApp:
         """更新卡牌面板显示"""
         if self.card_panel and self.card_manager:
             available_cards = self.card_manager.get_available_cards()
+
+            # 江东止啼仅在“被进攻（魏方防守）”时可选
+            if self.allow_jiangdong_selection:
+                available_cards = [
+                    c for c in available_cards if c.id == "card_jiangdong_zhiti"
+                ]
+            else:
+                available_cards = [
+                    c for c in available_cards if c.id != "card_jiangdong_zhiti"
+                ]
+
             self.card_panel.set_available_cards(available_cards)
 
     def _play_selected_card(self) -> None:
@@ -366,9 +389,38 @@ class GameApp:
         if not card_def:
             return
 
-        # 江东止啼：防守反应卡，不需要提前指定目标；遭受进攻时自动触发
+        # 战斗中仅允许处理防守反应卡（江东止啼）
+        if self.show_combat_ui and selected_card_id != "card_jiangdong_zhiti":
+            self.info_panel.show_message("战斗进行中仅可使用江东止啼")
+            return
+
+        # 江东止啼：仅在被进攻（魏方防守）时可选择并使用
         if selected_card_id == "card_jiangdong_zhiti":
-            self.info_panel.show_message("江东止啼为防守反应卡，遭受进攻时自动触发")
+            if not self.allow_jiangdong_selection:
+                self.info_panel.show_message("江东止啼仅在魏国被进攻时可选择")
+                return
+
+            # 立即消耗并登记本次战斗生效
+            self.card_manager.use_card(selected_card_id)
+            self.defender_use_jiangdong = True
+            self.defender_jiangdong_decided = True
+            self.allow_jiangdong_selection = False
+            self.info_panel.show_message("已使用江东止啼：本次防守骰点+2")
+
+            # 选择后恢复当前行动方卡牌显示
+            if self.player_country and self.player_country in self.card_managers:
+                self.card_manager = self.card_managers[self.player_country]
+            self._update_card_panel()
+
+            # 若此时正在等待防守方其他决策，且已满足条件，则继续战斗结算
+            if (
+                self.waiting_defender_response
+                and self.defender_jiangdong_decided
+                and self.defender_hold_decided
+                and self.combat_callback
+            ):
+                self.waiting_defender_response = False
+                self.combat_callback()
             return
 
         # 根据卡牌类型应用不同的处理方式
@@ -458,7 +510,7 @@ class GameApp:
 
         # 江东止啼为反应卡，不接受手动指定格子
         if card_id == "card_jiangdong_zhiti":
-            self.info_panel.show_message("江东止啼无需指定格子，敌方进攻魏国时自动触发")
+            self.info_panel.show_message("江东止啼无需指定格子，仅在魏国被进攻时可在卡牌面板选择")
             return False
 
         # 召唤类卡牌：如果目标格子已有最大堆叠数，拒绝并提示（不消耗卡牌）
@@ -583,9 +635,44 @@ class GameApp:
 
         self.card_effect_manager.clear_all_effects()
         self._replenish_action_points()
+        self._start_major_round_choice_phase()
         self.clear_selection()
         self._update_card_panel()
         self.state = GameState.PLAYING
+
+    def _start_major_round_choice_phase(self) -> None:
+        """每个大回合开始：三国各自选择 +2 民心点数 或 +2 政治点数。"""
+        self.major_round_choice_pending = True
+        self.major_round_choice_done = {country: False for country in self.turn_order}
+        self.country_stat_choice_btns = {}
+
+    def _apply_major_round_choice(self, country: str, choice: str) -> None:
+        """应用国家在大回合开始时的加点选择。"""
+        if not self.major_round_choice_pending:
+            return
+        if country not in self.turn_order:
+            return
+        if self.major_round_choice_done.get(country, False):
+            return
+
+        stats = self.country_stats.setdefault(
+            country, {"people_support": 0, "political_points": 0}
+        )
+        if choice == "support":
+            stats["people_support"] = int(stats.get("people_support", 0)) + 2
+        elif choice == "politics":
+            stats["political_points"] = int(stats.get("political_points", 0)) + 2
+        else:
+            return
+
+        self.major_round_choice_done[country] = True
+
+        if all(self.major_round_choice_done.get(c, False) for c in self.turn_order):
+            self.major_round_choice_pending = False
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"第{self.major_round}大回合加点完成：三国均已选择"
+                )
 
     def _end_full_round(self) -> None:
         """三个国家都行动完后触发：清理回合效果并复位行动力。"""
@@ -609,6 +696,9 @@ class GameApp:
         self.defender_hold_decided = True
         self.defender_use_hold_position = False
         self.waiting_defender_response = False
+        self.allow_jiangdong_selection = False
+        self.no_attack_btn_rect = None
+        self.skip_jiangdong_card_btn_rect = None
 
         if not keep_info_message:
             self.combat_result_title = None
@@ -640,6 +730,7 @@ class GameApp:
                 self.major_round += 1
                 self.minor_round = 1
                 self._end_full_round()
+                self._start_major_round_choice_phase()
             else:
                 # 5个大回合 * 6个小回合结束，对局终止
                 self.turn_game_finished = True
@@ -769,6 +860,14 @@ class GameApp:
         self.defender_hold_decided = True
         self.defender_use_hold_position = False
         self.waiting_defender_response = False
+        self.allow_jiangdong_selection = False
+        self.no_attack_btn_rect = None
+        self.skip_jiangdong_card_btn_rect = None
+
+        # 退出战斗预览时恢复当前行动国卡牌面板
+        if self.player_country and self.player_country in self.card_managers:
+            self.card_manager = self.card_managers[self.player_country]
+            self._update_card_panel()
         # 如果还有选中单位，恢复显示选中单位的信息
         self._update_selection_info()
 
@@ -916,6 +1015,10 @@ class GameApp:
                     # 否则取消单位选择
                     self.clear_selection()
             elif event.key == pg.K_RETURN:
+                if self.major_round_choice_pending:
+                    if self.info_panel:
+                        self.info_panel.show_message("请先完成三国大回合加点选择")
+                    return
                 # 按 Enter 打出选中的卡牌（不占用本国回合动作次数）
                 self._play_selected_card()
         elif event.type == pg.MOUSEBUTTONDOWN:
@@ -930,16 +1033,39 @@ class GameApp:
                             self._restart_game()
                         return
 
+                # 0.0x 大回合开始加点按钮（三国）
+                if self.major_round_choice_pending:
+                    for country, btns in self.country_stat_choice_btns.items():
+                        support_rect = btns.get("support")
+                        politics_rect = btns.get("politics")
+                        if support_rect and support_rect.collidepoint(event.pos):
+                            self._apply_major_round_choice(country, "support")
+                            return
+                        if politics_rect and politics_rect.collidepoint(event.pos):
+                            self._apply_major_round_choice(country, "politics")
+                            return
+
+                    if self.info_panel:
+                        self.info_panel.show_message("请在三国面板中完成加点选择")
+                    return
+
                 # 0. 优先处理顶部的战斗按钮
                 if (
                     self.show_combat_ui
                     and self.combat_btn_rect
                     and self.combat_btn_rect.collidepoint(event.pos)
                 ):
-                    if (
-                        (self.defender_can_use_jiangdong and not self.defender_jiangdong_decided)
-                        or (self.defender_can_hold_position and not self.defender_hold_decided)
-                    ):
+                    if self.defender_can_use_jiangdong and not self.defender_jiangdong_decided:
+                        self.waiting_defender_response = True
+                        self.allow_jiangdong_selection = True
+                        wei_manager = self.card_managers.get("WEI")
+                        if wei_manager:
+                            self.card_manager = wei_manager
+                        self._update_card_panel()
+                        self.info_panel.show_message("进攻方已投骰，请防守方选择江东止啼（或点击不使用）")
+                        return
+
+                    if self.defender_can_hold_position and not self.defender_hold_decided:
                         self.waiting_defender_response = True
                         self.info_panel.show_message("进攻方已投骰，等待防守方即时决策")
                         return
@@ -947,51 +1073,6 @@ class GameApp:
                         self.combat_callback()
                     # 点击按钮后，UI会在 clear_selection 关闭，或者在 callback 里处理
                     # 这里 return 防止点穿到下面地图
-                    return
-
-                # 0.05 防守方决策按钮
-                if (
-                    self.show_combat_ui
-                    and self.defense_jiangdong_btn_rect
-                    and self.defense_jiangdong_btn_rect.collidepoint(event.pos)
-                ):
-                    if (
-                        self.waiting_defender_response
-                        and self.defender_can_use_jiangdong
-                        and not self.defender_jiangdong_decided
-                    ):
-                        self.defender_use_jiangdong = True
-                        self.defender_jiangdong_decided = True
-                        self.info_panel.show_message("已选择：本次发动江东止啼", duration=1.2)
-                        if (
-                            self.defender_jiangdong_decided
-                            and self.defender_hold_decided
-                            and self.combat_callback
-                        ):
-                            self.waiting_defender_response = False
-                            self.combat_callback()
-                    return
-
-                if (
-                    self.show_combat_ui
-                    and self.defense_jiangdong_skip_btn_rect
-                    and self.defense_jiangdong_skip_btn_rect.collidepoint(event.pos)
-                ):
-                    if (
-                        self.waiting_defender_response
-                        and self.defender_can_use_jiangdong
-                        and not self.defender_jiangdong_decided
-                    ):
-                        self.defender_use_jiangdong = False
-                        self.defender_jiangdong_decided = True
-                        self.info_panel.show_message("已选择：本次不发动江东止啼", duration=1.2)
-                        if (
-                            self.defender_jiangdong_decided
-                            and self.defender_hold_decided
-                            and self.combat_callback
-                        ):
-                            self.waiting_defender_response = False
-                            self.combat_callback()
                     return
 
                 if (
@@ -1038,6 +1119,33 @@ class GameApp:
                             self.combat_callback()
                     return
 
+                # 0.055 江东止啼：不使用按钮（放在卡牌区域）
+                if (
+                    self.show_combat_ui
+                    and self.skip_jiangdong_card_btn_rect
+                    and self.skip_jiangdong_card_btn_rect.collidepoint(event.pos)
+                ):
+                    if (
+                        self.waiting_defender_response
+                        and self.defender_can_use_jiangdong
+                        and not self.defender_jiangdong_decided
+                    ):
+                        self.defender_use_jiangdong = False
+                        self.defender_jiangdong_decided = True
+                        self.allow_jiangdong_selection = False
+                        if self.player_country and self.player_country in self.card_managers:
+                            self.card_manager = self.card_managers[self.player_country]
+                        self._update_card_panel()
+                        self.info_panel.show_message("已选择：本次不使用江东止啼", duration=1.2)
+                        if (
+                            self.defender_jiangdong_decided
+                            and self.defender_hold_decided
+                            and self.combat_callback
+                        ):
+                            self.waiting_defender_response = False
+                            self.combat_callback()
+                    return
+
                 # 0.1 检查“解除混乱”按钮
                 if self.recover_btn_rect and self.recover_btn_rect.collidepoint(
                     event.pos
@@ -1059,12 +1167,34 @@ class GameApp:
                         self._finish_country_action("解除混乱")
                     return
 
+                # 0.15 检查“移动后不攻击”按钮
+                if (
+                    self.pending_post_move_attack
+                    and self.no_attack_btn_rect
+                    and self.no_attack_btn_rect.collidepoint(event.pos)
+                ):
+                    if self.info_panel:
+                        self.info_panel.show_message("已选择不攻击，进入下一步", duration=1.0)
+                    self._finish_country_action("移动")
+                    return
+
                 # 0.2 检查卡牌面板点击
                 if self.card_panel and self.card_panel.rect.collidepoint(event.pos):
                     card_id = self.card_panel.get_card_at(event.pos)
                     if card_id:
                         # 选中卡牌
                         self.card_panel.select_card(card_id)
+
+                        # 防守响应阶段：点击“江东止啼”即立即生效并推进（无需再按 Enter）
+                        if (
+                            card_id == "card_jiangdong_zhiti"
+                            and self.show_combat_ui
+                            and self.waiting_defender_response
+                            and self.allow_jiangdong_selection
+                        ):
+                            self._play_selected_card()
+                            return
+
                         # 显示卡牌描述
                         card_def = self.card_repository.get_definition(card_id)
                         if card_def:
@@ -1136,6 +1266,10 @@ class GameApp:
 
             elif event.button == 3:
                 # 右键点击：移动或攻击
+                if self.major_round_choice_pending:
+                    if self.info_panel:
+                        self.info_panel.show_message("请先完成三国大回合加点选择")
+                    return
                 self._handle_game_right_click(event.pos)
         elif event.type == pg.MOUSEMOTION:
             # 处理鼠标移动以显示卡牌描述提示
@@ -1222,8 +1356,9 @@ class GameApp:
         else:
             # 移动或占领空地
             if self.pending_post_move_attack:
-                # 移动后攻击是可选动作；若本次未攻击，右键其他目标即结束该动作
-                self._finish_country_action("移动")
+                # 移动后攻击窗口中，不再通过右键空地结束；需点击“不攻击”按钮
+                if self.info_panel:
+                    self.info_panel.show_message("请选择攻击单位或不攻击")
                 return
             self._handle_movement(target_province)
 
@@ -1310,6 +1445,12 @@ class GameApp:
             self.info_panel.show_message("堆叠部队过多")
             return
 
+        # 仅当“移动前可攻击”且“移动后可攻击”时，才提供移动后攻击选择
+        # （根据规则：当且仅当移动前后都能攻击）
+        pre_move_can_attack = selected_unit.mp > 0 and self._has_attackable_target_for_unit(
+            source, selected_unit
+        )
+
         # 4. 执行移动
         new_source_list = []
         # 将未移动的单位保留在原地
@@ -1340,15 +1481,19 @@ class GameApp:
         )
 
         moved_unit = moving_units[0] if moving_units else None
-        if moved_unit and moved_unit.mp > 0 and self._has_attackable_target_for_unit(
-            target, moved_unit
-        ):
+        post_move_can_attack = bool(
+            moved_unit
+            and moved_unit.mp > 0
+            and self._has_attackable_target_for_unit(target, moved_unit)
+        )
+
+        if moved_unit and pre_move_can_attack and post_move_can_attack:
             # 允许追加一次仅该单位的攻击
             moved_slot = target.units.index(moved_unit)
             self.pending_post_move_attack = True
             self.pending_attacker = (target.province_id, moved_slot)
             self.add_selection(target.province_id, moved_slot)
-            self.info_panel.show_message("可继续攻击一次（仅该移动单位）")
+            self.info_panel.show_message("请选择攻击单位或不攻击")
             return
 
         self._finish_country_action("移动")
@@ -1739,8 +1884,15 @@ class GameApp:
             and not wei_manager.is_card_used("card_jiangdong_zhiti")
         )
         self.defender_use_jiangdong = False
+        # 仅在进攻方点击投骰后，才进入江东止啼选择阶段
         self.defender_jiangdong_decided = not self.defender_can_use_jiangdong
         self.waiting_defender_response = False
+
+        # 战斗预览阶段维持进攻方卡牌显示；投骰后再切到防守方江东止啼选择
+        self.allow_jiangdong_selection = False
+        if self.player_country and self.player_country in self.card_managers:
+            self.card_manager = self.card_managers[self.player_country]
+            self._update_card_panel()
 
         self.defender_can_hold_position = self._is_fort_or_city(target) and bool(
             target.units
@@ -1849,6 +2001,10 @@ class GameApp:
         self, col_index: int, attackers: List, target_province: object
     ) -> None:
         """投骰子后的回调"""
+        # 先缓存防守方决策，避免 clear_selection 清理战斗预览时重置状态
+        use_jiangdong = self.defender_use_jiangdong
+        use_hold_position = self.defender_use_hold_position
+
         # 战斗开始结算，立刻清除选中状态，防止后续操作引用到已死亡或移动的单位
         self.clear_selection(clear_ui=False)
 
@@ -1884,16 +2040,10 @@ class GameApp:
 
         # 江东止啼：防守方即时选择“使用”后生效（一次性）
         if (
-            self.defender_jiangdong_decided
-            and self.defender_use_jiangdong
+            use_jiangdong
             and target_province.country == "WEI"
         ):
-            wei_manager = self.card_managers.get("WEI")
-            if wei_manager and not wei_manager.is_card_used("card_jiangdong_zhiti"):
-                defender_dice_bonus += 2
-                wei_manager.use_card("card_jiangdong_zhiti")
-                if self.player_country == "WEI":
-                    self._update_card_panel()
+            defender_dice_bonus += 2
 
         dice = min(6, dice + attacker_dice_bonus + defender_dice_bonus)
 
@@ -1960,7 +2110,7 @@ class GameApp:
             if (
                 self._is_fort_or_city(target_province)
                 and target_province.units
-                and self.defender_use_hold_position
+                and use_hold_position
             ):
                 for defender in target_province.units:
                     defender.is_confused = True
@@ -2433,20 +2583,13 @@ class GameApp:
                 # 3. 防守方决策按钮（样式参考投骰子按钮）
                 option_right_x = ratio_x - 20
                 row_gap = 8
-                col_gap = 14
-
-                show_jiangdong = (
-                    self.waiting_defender_response
-                    and self.defender_can_use_jiangdong
-                    and not self.defender_jiangdong_decided
-                )
                 show_hold = (
                     self.waiting_defender_response
                     and self.defender_can_hold_position
                     and not self.defender_hold_decided
                 )
 
-                if show_jiangdong or show_hold:
+                if show_hold:
                     title = "防守方即时决策"
                     title_surf = font.render(title, True, pg.Color("black"))
                     title_y = btn_y - title_surf.get_height() - 6
@@ -2455,38 +2598,7 @@ class GameApp:
                         (option_right_x - title_surf.get_width(), title_y),
                     )
 
-                # 列1：江东止啼（上下两行、统一宽度）
                 next_col_right = option_right_x
-                if show_jiangdong:
-                    jd_yes_txt = "使用江东止啼"
-                    jd_no_txt = "不使用"
-                    jd_yes_surf = font.render(jd_yes_txt, True, pg.Color("white"))
-                    jd_no_surf = font.render(jd_no_txt, True, pg.Color("white"))
-                    jd_col_w = max(jd_yes_surf.get_width(), jd_no_surf.get_width()) + 20
-
-                    jd_yes_rect = pg.Rect(next_col_right - jd_col_w, btn_y, jd_col_w, btn_h)
-                    jd_no_rect = pg.Rect(
-                        next_col_right - jd_col_w,
-                        btn_y + btn_h + row_gap,
-                        jd_col_w,
-                        btn_h,
-                    )
-                    self.defense_jiangdong_btn_rect = jd_yes_rect
-                    self.defense_jiangdong_skip_btn_rect = jd_no_rect
-
-                    jd_yes_color = pg.Color("#8B0000")
-                    if jd_yes_rect.collidepoint(pg.mouse.get_pos()):
-                        jd_yes_color = pg.Color("#A52A2A")
-                    jd_no_color = pg.Color("#4B4B4B")
-                    if jd_no_rect.collidepoint(pg.mouse.get_pos()):
-                        jd_no_color = pg.Color("#666666")
-
-                    pg.draw.rect(self.window, jd_yes_color, jd_yes_rect, border_radius=5)
-                    pg.draw.rect(self.window, jd_no_color, jd_no_rect, border_radius=5)
-                    self.window.blit(jd_yes_surf, jd_yes_surf.get_rect(center=jd_yes_rect.center))
-                    self.window.blit(jd_no_surf, jd_no_surf.get_rect(center=jd_no_rect.center))
-
-                    next_col_right = jd_yes_rect.x - col_gap
 
                 # 列2：DR改D1DG（上下两行、统一宽度）
                 if show_hold:
@@ -2524,15 +2636,42 @@ class GameApp:
             #      3. (隐含) combat_target 为 None (show_combat_ui False 已经涵盖了大部分情况，双重保险)
             else:
                 self.recover_btn_rect = None  # Reset
-                confused_list = []
-                for pid, slot in self.selected_units:
-                    prov = self.map_manager.get_by_id(pid)
-                    if prov and slot < len(prov.units):
-                        u = prov.units[slot]
-                        if u.is_confused:
-                            confused_list.append(u)
+                self.no_attack_btn_rect = None
 
-                if len(confused_list) == 1:
+                # 移动后攻击选择窗口：显示“不攻击”按钮
+                if self.pending_post_move_attack and self.pending_attacker:
+                    btn_surf = self._no_attack_btn_surf
+                    btn_w = btn_surf.get_width() + 22
+                    btn_h = btn_surf.get_height() + 10
+
+                    top_area_height = int(self.screen_height * 0.15)
+                    tag_x = self.country_tag_pos[0]
+                    btn_x = tag_x - btn_w - 30
+                    btn_y = (top_area_height - btn_h) // 2
+
+                    self.no_attack_btn_rect = pg.Rect(btn_x, btn_y, btn_w, btn_h)
+
+                    btn_color = pg.Color("#555555")
+                    if self.no_attack_btn_rect.collidepoint(pg.mouse.get_pos()):
+                        btn_color = pg.Color("#6f6f6f")
+
+                    pg.draw.rect(
+                        self.window, btn_color, self.no_attack_btn_rect, border_radius=5
+                    )
+                    text_rect = btn_surf.get_rect(center=self.no_attack_btn_rect.center)
+                    self.window.blit(btn_surf, text_rect)
+
+                # 正常情况下才绘制“解除混乱”按钮
+                confused_list = []
+                if not self.pending_post_move_attack:
+                    for pid, slot in self.selected_units:
+                        prov = self.map_manager.get_by_id(pid)
+                        if prov and slot < len(prov.units):
+                            u = prov.units[slot]
+                            if u.is_confused:
+                                confused_list.append(u)
+
+                if (not self.pending_post_move_attack) and len(confused_list) == 1:
                     # 绘制解除混乱按钮
                     btn_surf = self._recover_btn_surf
 
@@ -2639,8 +2778,39 @@ class GameApp:
             self.info_panel.draw(self.window)
 
         # 8. 绘制卡牌面板（卡牌不占用回合动作次数）
+        self.skip_jiangdong_card_btn_rect = None
         if self.card_panel:
             self.card_panel.draw(self.window)
+
+            # 江东止啼“不使用”按钮：放在卡牌区域（叠加在江东止啼卡牌位置）
+            show_jiangdong_skip = (
+                self.show_combat_ui
+                and self.waiting_defender_response
+                and self.defender_can_use_jiangdong
+                and not self.defender_jiangdong_decided
+            )
+            if show_jiangdong_skip:
+                jd_rect = self.card_panel.card_rects.get("card_jiangdong_zhiti")
+                if jd_rect:
+                    overlay_h = max(20, int(jd_rect.height * 0.33))
+                    btn_rect = pg.Rect(
+                        jd_rect.left + 4,
+                        jd_rect.bottom - overlay_h - 4,
+                        jd_rect.width - 8,
+                        overlay_h,
+                    )
+                    self.skip_jiangdong_card_btn_rect = btn_rect
+
+                    btn_color = pg.Color("#4B4B4B")
+                    if btn_rect.collidepoint(pg.mouse.get_pos()):
+                        btn_color = pg.Color("#666666")
+
+                    pg.draw.rect(self.window, btn_color, btn_rect, border_radius=6)
+                    skip_surf = self.tooltip_font.render("不使用江东止啼", True, pg.Color("white"))
+                    self.window.blit(skip_surf, skip_surf.get_rect(center=btn_rect.center))
+
+                    # 让卡牌 tooltip 永远在卡牌区按钮之上
+                    self.card_panel.draw_tooltip(self.window)
 
         # 9. 画鼠标悬停提示 (Tooltip)
         self._draw_hover_tooltip()
@@ -2679,6 +2849,7 @@ class GameApp:
         map_rect = self._get_map_bounds_rect()
         title_font = self.country_stat_title_font
         body_font = self.country_stat_font
+        self.country_stat_choice_btns = {}
 
         # 先计算统一面板尺寸
         content_specs = {}
@@ -2688,7 +2859,7 @@ class GameApp:
             stats = self.country_stats.get(country, {})
             lines = [
                 self.country_labels.get(country, country),
-                f"民心：{stats.get('people_support', 0)}",
+                f"民心点数：{stats.get('people_support', 0)}",
                 f"政治点数：{stats.get('political_points', 0)}",
             ]
             title_surf = title_font.render(lines[0], True, pg.Color("black"))
@@ -2793,10 +2964,69 @@ class GameApp:
             x = rect.x + 10
             y = rect.y + 6
             self.window.blit(title_surf, (x, y))
-            y += title_surf.get_height() + 4
-            self.window.blit(line1_surf, (x, y))
-            y += line1_surf.get_height() + 2
-            self.window.blit(line2_surf, (x, y))
+
+            # 大回合开始加点阶段：用按钮替代属性显示
+            if self.major_round_choice_pending:
+                if not self.major_round_choice_done.get(country, False):
+                    # 按钮尺寸收紧，确保不会超出国家框
+                    top_gap = 4
+                    bottom_gap = 6
+                    row_gap = 4
+                    btn_w = rect.width - 16
+                    btn_x = rect.x + 8
+
+                    available_h = rect.height - (title_surf.get_height() + top_gap + bottom_gap)
+                    btn_h = min(max(18, body_font.get_height() + 4), (available_h - row_gap) // 2)
+                    btn_h = max(16, btn_h)
+
+                    btn1_y = y + title_surf.get_height() + top_gap
+                    btn2_y = btn1_y + btn_h + row_gap
+
+                    support_rect = pg.Rect(btn_x, btn1_y, btn_w, btn_h)
+                    politics_rect = pg.Rect(btn_x, btn2_y, btn_w, btn_h)
+
+                    support_color = pg.Color("#7a1f1f")
+                    if support_rect.collidepoint(pg.mouse.get_pos()):
+                        support_color = pg.Color("#9b2a2a")
+                    politics_color = pg.Color("#1f4f7a")
+                    if politics_rect.collidepoint(pg.mouse.get_pos()):
+                        politics_color = pg.Color("#2b6aa2")
+
+                    pg.draw.rect(self.window, support_color, support_rect, border_radius=6)
+                    pg.draw.rect(self.window, politics_color, politics_rect, border_radius=6)
+
+                    support_surf = body_font.render("+2 民心点数", True, pg.Color("white"))
+                    politics_surf = body_font.render("+2 政治点数", True, pg.Color("white"))
+                    self.window.blit(
+                        support_surf,
+                        support_surf.get_rect(center=support_rect.center),
+                    )
+                    self.window.blit(
+                        politics_surf,
+                        politics_surf.get_rect(center=politics_rect.center),
+                    )
+
+                    self.country_stat_choice_btns[country] = {
+                        "support": support_rect,
+                        "politics": politics_rect,
+                    }
+                else:
+                    done_surf = body_font.render("已选择", True, pg.Color("black"))
+                    done_x = min(rect.right - done_surf.get_width() - 8, x + title_surf.get_width() + 8)
+                    done_y = y + max(0, (title_surf.get_height() - done_surf.get_height()) // 2)
+                    self.window.blit(
+                        done_surf,
+                        (done_x, done_y),
+                    )
+                    y2 = y + title_surf.get_height() + 4
+                    self.window.blit(line1_surf, (x, y2))
+                    y2 += line1_surf.get_height() + 2
+                    self.window.blit(line2_surf, (x, y2))
+            else:
+                y += title_surf.get_height() + 4
+                self.window.blit(line1_surf, (x, y))
+                y += line1_surf.get_height() + 2
+                self.window.blit(line2_surf, (x, y))
 
     def _draw_hover_tooltip(self) -> None:
         """Draw tooltip for hovered element"""
@@ -3189,7 +3419,7 @@ class GameApp:
         # 底部回合计数字体
         self.round_counter_font = self._font("msyhbd.ttc", int(height * 0.032))
         # 三国属性（民心/政治点数）显示字体
-        self.country_stat_title_font = self._font("msyhbd.ttc", int(height * 0.028))
+        self.country_stat_title_font = self._font("STZHONGS.TTF", int(height * 0.038))
         self.country_stat_font = self._font("msyh.ttc", int(height * 0.022))
 
         self.country_tag_font = self._font("STZHONGS.TTF", int(height * 0.1))
