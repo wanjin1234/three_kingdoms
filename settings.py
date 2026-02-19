@@ -5,14 +5,19 @@
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 
-# 自动计算项目的根目录路径。
-# __file__ 是这个文件本身的路径，parent 是它的父目录。
-# 这样不管你把游戏拷到哪里，它都能找到自己的位置。
-BASE_DIR = Path(__file__).parent.resolve()
+# 兼容 PyInstaller --onefile 打包：运行时资源解压到 sys._MEIPASS
+def _base_dir() -> Path:
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return Path(__file__).parent.resolve()
+
+
+BASE_DIR = _base_dir()
 ASSET_ROOT = BASE_DIR / "assets"
 
 
