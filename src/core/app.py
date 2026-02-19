@@ -784,8 +784,48 @@ class GameApp:
     # AI TURN
     # ---------------------------------------------------------------
 
+    def _ai_get_border_provinces(self, country: str):
+        """返回己方的边境省列表：与敌方省份相邻（距离 <= 1格）的己方省份，
+        按其到最近敌省的像素距离升序排列（越靠前越接近敌方）。"""
+        unit_stride = SQRT3 * self.hex_side
+        border = []
+        for prov in self.map_manager.provinces:
+            if prov.country != country:
+                continue
+            p_center = prov.center_cache or prov.compute_center(self.hex_side)
+            min_d = float("inf")
+            for enemy in self.map_manager.provinces:
+                if enemy.country == country or not enemy.country:
+                    continue
+                e_center = enemy.center_cache or enemy.compute_center(self.hex_side)
+                d = dist(p_center, e_center)
+                if d < min_d:
+                    min_d = d
+            # 1.1 格范围内有敌省即视为边境
+            if min_d <= unit_stride * 1.1:
+                border.append((min_d, prov))
+        border.sort(key=lambda x: x[0])
+        return [p for _, p in border]
+
+    def _ai_execute_combat(self, province, slot_idx, target):
+        """AI 直接执行战斗（跳过 UI 交互）。返回是否成功发起。"""
+        self.selected_units = [(province.province_id, slot_idx)]
+        self._handle_combat(target)
+        if self.combat_callback and self.show_combat_ui:
+            self.defender_jiangdong_decided = True
+            self.defender_use_jiangdong = False
+            self.defender_hold_decided = True
+            self.defender_use_hold_position = False
+            cb = self.combat_callback
+            self.combat_callback = None
+            self.show_combat_ui = False
+            cb()
+            return True
+        return False
+
     def _run_ai_turn(self) -> None:
-        """AI 行动：自动完成大回合加点选择 + 移动/攻击，然后结束本国回合。"""
+        """AI 行动：自动完成大回合加点选择 + 移动/攻击，然后结束本国回合。
+        策略：先将所有内陆部队调往边境，全部到位后再发动进攻。"""
         if self.turn_game_finished:
             return
         country = self.player_country
@@ -797,59 +837,77 @@ class GameApp:
             for c in list(self.turn_order):
                 if not self.major_round_choice_done.get(c, False):
                     self._apply_major_round_choice(c, "support")
-            # 加点后检查是否仍处于 pending，若仍然 pending 说明还有等待，
-            # 此时不能进行攻防，先返回；下一帧重新调度
             if self.major_round_choice_pending:
                 self._ai_turn_timer = pg.time.get_ticks() + 300
                 return
 
-        # --- 阶段2：寻找可攻击的单位并攻击 ---
-        action_taken = False
-        for province in list(self.map_manager.provinces):
+        # 预计算本国边境省集合
+        border_provs = self._ai_get_border_provinces(country)
+        border_ids = {p.province_id for p in border_provs}
+
+        # 收集所有己方有行动力的单位，按"是否在边境"分两组
+        border_units = []   # (province, slot_idx, unit_state)
+        inland_units = []
+
+        for province in self.map_manager.provinces:
             if province.country != country:
                 continue
-            for slot_idx, unit_state in enumerate(list(province.units)):
+            for slot_idx, unit_state in enumerate(province.units):
                 if unit_state.mp <= 0:
                     continue
+                if province.province_id in border_ids:
+                    border_units.append((province, slot_idx, unit_state))
+                else:
+                    inland_units.append((province, slot_idx, unit_state))
+
+        action_taken = False
+
+        # --- 阶段2（最高优先级）：内陆单位向边境线移动 ---
+        # 只要还有内陆单位能移动，就优先集结，不发动攻击
+        if inland_units:
+            # 按距最近边境省由近到远排序，离边境最近的先动
+            def _inland_priority(item):
+                prov, _, _ = item
+                p_c = prov.center_cache or prov.compute_center(self.hex_side)
+                min_d = float("inf")
+                for bp in border_provs:
+                    b_c = bp.center_cache or bp.compute_center(self.hex_side)
+                    d = dist(p_c, b_c)
+                    if d < min_d:
+                        min_d = d
+                return min_d
+
+            inland_units.sort(key=_inland_priority)
+
+            for province, slot_idx, unit_state in inland_units:
+                dest = self._ai_pick_move_target(province, unit_state, border_provs)
+                if dest is not None:
+                    self.selected_units = [(province.province_id, slot_idx)]
+                    self._handle_movement(dest)
+                    action_taken = True
+                    break
+
+        # --- 阶段3：所有单位均已在边境（或内陆无法移动），发动攻击 ---
+        if not action_taken:
+            for province, slot_idx, unit_state in border_units:
                 if self._has_attackable_target_for_unit(province, unit_state):
                     target = self._ai_pick_attack_target(province, unit_state)
                     if target is not None:
-                        # 模拟选中该单位并发起攻击
-                        self.selected_units = [(province.province_id, slot_idx)]
-                        self._handle_combat(target)
-                        # AI 直接执行战斗，不等待 UI 交互
-                        if self.combat_callback and self.show_combat_ui:
-                            self.defender_jiangdong_decided = True
-                            self.defender_use_jiangdong = False
-                            self.defender_hold_decided = True
-                            self.defender_use_hold_position = False
-                            cb = self.combat_callback
-                            self.combat_callback = None
-                            self.show_combat_ui = False
-                            cb()
-                        action_taken = True
-                        break
-            if action_taken:
-                break
+                        if self._ai_execute_combat(province, slot_idx, target):
+                            action_taken = True
+                            break
 
+        # --- 阶段4：无法攻击，边境单位向敌省压进 ---
         if not action_taken:
-            # --- 阶段3：无法攻击，尝试移动靠近敌方 ---
-            for province in list(self.map_manager.provinces):
-                if province.country != country:
-                    continue
-                for slot_idx, unit_state in enumerate(list(province.units)):
-                    if unit_state.mp <= 0:
-                        continue
-                    dest = self._ai_pick_move_target(province, unit_state)
-                    if dest is not None:
-                        self.selected_units = [(province.province_id, slot_idx)]
-                        self._handle_movement(dest)
-                        action_taken = True
-                        break
-                if action_taken:
+            for province, slot_idx, unit_state in border_units:
+                dest = self._ai_pick_move_target(province, unit_state, None)
+                if dest is not None:
+                    self.selected_units = [(province.province_id, slot_idx)]
+                    self._handle_movement(dest)
+                    action_taken = True
                     break
 
-        # --- 阶段4：结束本国回合 ---
+        # --- 阶段5：结束本国回合 ---
         self._finish_country_action(f"AI({country})行动", keep_info_message=action_taken)
 
     def _ai_pick_attack_target(self, province, unit_state):
@@ -881,50 +939,53 @@ class GameApp:
                     best = target
         return best
 
-    def _ai_pick_move_target(self, province, unit_state):
-        """AI 选择移动目标：向最近的敌省移动一步（选相邻且步数最近的格子）。"""
-        from src.map.map_manager import dist as _dist_fn
-
-        p_center = (
-            province.center_cache
-            if province.center_cache
-            else province.compute_center(self.hex_side)
-        )
-        # 找最近的敌省
-        nearest_enemy = None
-        nearest_d = float("inf")
-        for target in self.map_manager.provinces:
-            if target.country == province.country or not target.country:
-                continue
-            t_center = (
-                target.center_cache
-                if target.center_cache
-                else target.compute_center(self.hex_side)
-            )
-            d = dist(p_center, t_center)
-            if d < nearest_d:
-                nearest_d = d
-                nearest_enemy = target
-
-        if nearest_enemy is None:
-            return None
-
-        # 在可达格子中选择距敌最近的（路径代价 <= 行动力）
+    def _ai_pick_move_target(self, province, unit_state, border_provs=None):
+        """AI 选择移动目标。
+        - 若提供了 border_provs（边境省列表），内陆单位优先移向最近的边境省。
+        - 边境单位或无边境时，移向最近的敌省旁的最优格子。
+        """
         ap = unit_state.mp
         if ap <= 0:
             return None
 
-        enemy_center = (
-            nearest_enemy.center_cache
-            if nearest_enemy.center_cache
-            else nearest_enemy.compute_center(self.hex_side)
-        )
+        p_center = province.center_cache or province.compute_center(self.hex_side)
+
+        # 决定"目标锚点"：内陆单位以最近边境省为锚，边境单位以最近敌省为锚
+        anchor_center = None
+        if border_provs:
+            # 找最近的边境省（自己本身不算）
+            best_d = float("inf")
+            for bp in border_provs:
+                if bp.province_id == province.province_id:
+                    continue
+                bc = bp.center_cache or bp.compute_center(self.hex_side)
+                d = dist(p_center, bc)
+                if d < best_d:
+                    best_d = d
+                    anchor_center = bc
+
+        if anchor_center is None:
+            # 回退：以最近敌省为锚
+            best_d = float("inf")
+            for target in self.map_manager.provinces:
+                if target.country == province.country or not target.country:
+                    continue
+                tc = target.center_cache or target.compute_center(self.hex_side)
+                d = dist(p_center, tc)
+                if d < best_d:
+                    best_d = d
+                    anchor_center = tc
+
+        if anchor_center is None:
+            return None
+
+        # 在行动力范围内找距锚点最近的可移动格子
         best_dest = None
-        best_dist_to_enemy = float("inf")
+        best_dist_to_anchor = float("inf")
         for candidate in self.map_manager.provinces:
             if candidate.province_id == province.province_id:
                 continue
-            # 只允许移动至己方或中立格子（不能直接移动进入敌方有单位格子）
+            # 不能移入敌方占领的省（有敌军驻守的）
             if candidate.country not in (province.country, None, ""):
                 continue
             path_cost = self.map_manager.find_path_cost(
@@ -932,14 +993,10 @@ class GameApp:
             )
             if path_cost > ap or path_cost > 100:
                 continue
-            c_center = (
-                candidate.center_cache
-                if candidate.center_cache
-                else candidate.compute_center(self.hex_side)
-            )
-            d_to_enemy = dist(c_center, enemy_center)
-            if d_to_enemy < best_dist_to_enemy:
-                best_dist_to_enemy = d_to_enemy
+            c_center = candidate.center_cache or candidate.compute_center(self.hex_side)
+            d_to_anchor = dist(c_center, anchor_center)
+            if d_to_anchor < best_dist_to_anchor:
+                best_dist_to_anchor = d_to_anchor
                 best_dest = candidate
 
         return best_dest
