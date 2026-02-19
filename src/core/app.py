@@ -23,6 +23,7 @@ from src.core.combat import (
     resolve_combat,
 )
 from src.core.events import EventManager
+from src.core.score_manager import ScoreManager
 from src.game_objects.card import CardManager, CardRepository
 from src.game_objects.card_effects import CardEffectManager
 from src.game_objects.event_card import EventCardDeck, EventCardDef
@@ -293,7 +294,17 @@ class GameApp:
 
         # 卡牌目标选择状态
         self.selecting_card_target = False  # 是否正在选择卡牌目标
-        self.selected_card_for_effect: str | None = None  # 待应用的卡牌ID
+        self.selected_card_for_effect: str | None = None  # 待应用的卡牌 ID
+
+        # ====================================================================
+        # 分数管理系统
+        # ====================================================================
+        self.score_manager = ScoreManager()
+        self.score_manager_initial_recorded = False
+        
+        # 分数显示状态（None = 不显示）
+        # 结构：{"type": "wei_turn" | "game_over", "record": ScoreRecord, "net_scores": Dict}
+        self.show_score_screen: dict | None = None
 
         # 改回使用默认的 Arial 字体，因为中文字体 (msyh) 的垂直基线会导致数字无法垂直居中
         self.selection_overlay = SelectionOverlay()
@@ -705,6 +716,11 @@ class GameApp:
 
         self.card_effect_manager.clear_all_effects()
         self._replenish_action_points()
+        
+        # 记录开局分数（在游戏真正开始时）
+        self.score_manager.record_initial_scores(self.map_manager.provinces)
+        self.score_manager_initial_recorded = True
+        
         self._start_major_round_choice_phase()
         self.clear_selection()
         self._update_card_panel()
@@ -739,6 +755,8 @@ class GameApp:
         )
         if choice == "support":
             stats["people_support"] = int(stats.get("people_support", 0)) + 2
+            # 民心等级提升后，检查是否达成"天下归心"胜利条件
+            self._check_tianxia_guixin_victory()
         elif choice == "politics":
             stats["political_points"] = int(stats.get("political_points", 0)) + 2
         else:
@@ -763,6 +781,239 @@ class GameApp:
         self.evt_flag_hefei = False
         self.evt_flag_all_attack = False
         self.evt_yishen_used = False  # 一身是胆使用标志重置（每大回合重置）
+
+
+    def _show_score_screen(self, screen_type: str) -> None:
+        """
+        显示分数屏幕。
+        
+        Args:
+            screen_type: "wei_turn" (魏国行动完) 或 "game_over" (游戏结束)
+        """
+        # 获取详细分数信息
+        record = self.score_manager.get_detailed_scores(
+            self.map_manager.provinces,
+            self.country_stats
+        )
+        
+        # 计算净得分
+        net_scores = {
+            "SHU": record.shu_score - record.shu_initial,
+            "WEI": record.wei_score - record.wei_initial,
+            "WU": record.wu_score - record.wu_initial,
+        }
+        
+        # 设置显示状态
+        self.show_score_screen = {
+            "type": screen_type,
+            "record": record,
+            "net_scores": net_scores,
+        }
+        
+        # 检查游戏结束时的胜利条件
+        if screen_type == "game_over":
+            # 检查"天下归心"
+            tianxia_winner = self.score_manager.check_tianxia_guixin(
+                self.map_manager.provinces,
+                self.country_stats
+            )
+            if tianxia_winner:
+                self.show_score_screen["tianxia_winner"] = tianxia_winner
+            else:
+                # 检查"一代枭雄"
+                winner, net = self.score_manager.get_winner_by_score(
+                    self.map_manager.provinces,
+                    self.country_stats
+                )
+                self.show_score_screen["score_winner"] = winner
+                self.show_score_screen["net_scores"] = net
+
+    def _render_score_screen(self) -> None:
+        """渲染分数显示屏幕（白屏）"""
+        if not self.show_score_screen:
+            return
+        
+        # 填充白色背景
+        self.window.fill(pg.Color("white"))
+        
+        record = self.show_score_screen["record"]
+        net_scores = self.show_score_screen["net_scores"]
+        screen_type = self.show_score_screen["type"]
+        
+        # 字体设置
+        title_size = int(self.screen_height * 0.05)
+        body_size = int(self.screen_height * 0.035)
+        small_size = int(self.screen_height * 0.025)
+        
+        title_font = self._font("msyh.ttc", title_size)
+        body_font = self._font("msyh.ttc", body_size)
+        small_font = self._font("msyh.ttc", small_size)
+        
+        # 标题
+        if screen_type == "wei_turn":
+            title_text = "魏国行动完毕 - 各国分数"
+        else:
+            title_text = "游戏结束 - 最终分数"
+        
+        title_surf = title_font.render(title_text, True, pg.Color("black"))
+        title_rect = title_surf.get_rect(centerx=self.screen_width // 2, top=40)
+        self.window.blit(title_surf, title_rect)
+        
+        # 显示各国分数
+        y_offset = title_rect.bottom + 40
+        
+        countries = [
+            ("SHU", "蜀汉", pg.Color("red")),
+            ("WEI", "曹魏", pg.Color("blue")),
+            ("WU", "孙吴", pg.Color("green")),
+        ]
+        
+        # 计算每列的位置
+        col_width = self.screen_width // 3
+        # 特殊地点名称映射
+        special_names_map = {
+            "Hanzhong": "汉中", "Jingzhou": "荆州", "Chengdu": "成都",
+            "Liangzhou": "凉州", "Youzhou": "幽州", "Xiangyang": "襄阳",
+            "Hefei": "合肥", "Changan": "长安", "Luoyang": "洛阳",
+            "Wuchang": "武昌", "Changsha": "长沙", "Jianye": "建业",
+        }
+
+        # 先计算每个国家需要的最大宽度（根据特殊地点文字长度）
+        min_box_width = 320  # 最小宽度
+        max_box_width = int(self.screen_width * 0.9) // 3  # 最大宽度
+        
+        for country, cn_name, color in countries:
+            if country == "SHU":
+                special = record.shu_special
+            elif country == "WEI":
+                special = record.wei_special
+            else:
+                special = record.wu_special
+            
+            if special:
+                special_names_str = ", ".join([special_names_map.get(n, n) for n in special])
+                special_text = f"特殊地点：{special_names_str}"
+                special_surf = small_font.render(special_text, True, pg.Color("black"))
+                needed_width = special_surf.get_width() + 30
+                min_box_width = max(min_box_width, needed_width)
+
+        box_width = min(min_box_width, max_box_width)
+        box_height = 360  # 增加高度以容纳所有内容
+        
+        for i, (country, cn_name, color) in enumerate(countries):
+            # 计算盒子位置（水平排列）
+            box_x = i * col_width + (col_width - box_width) // 2
+            box_y = y_offset
+            
+            # 绘制盒子背景
+            box_rect = pg.Rect(box_x, box_y, box_width, box_height)
+            pg.draw.rect(self.window, pg.Color(250, 250, 250), box_rect, border_radius=10)
+            pg.draw.rect(self.window, color, box_rect, 3, border_radius=10)
+            
+            # 国家名称
+            name_surf = body_font.render(cn_name, True, color)
+            name_rect = name_surf.get_rect(centerx=box_x + box_width // 2, top=box_y + 10)
+            self.window.blit(name_surf, name_rect)
+            
+            # 分数信息
+            info_y = name_rect.bottom + 15
+            
+            # 当前分数
+            if country == "SHU":
+                current = record.shu_score
+                initial = record.shu_initial
+                net = net_scores["SHU"]
+            elif country == "WEI":
+                current = record.wei_score
+                initial = record.wei_initial
+                net = net_scores["WEI"]
+            else:
+                current = record.wu_score
+                initial = record.wu_initial
+                net = net_scores["WU"]
+            
+            current_surf = small_font.render(f"当前分数：{current:.1f}", True, pg.Color("black"))
+            self.window.blit(current_surf, (box_x + 15, info_y))
+            info_y += current_surf.get_height() + 5
+            
+            initial_surf = small_font.render(f"开局分数：{initial:.1f}", True, pg.Color("black"))
+            self.window.blit(initial_surf, (box_x + 15, info_y))
+            info_y += initial_surf.get_height() + 5
+            
+            # 净得分（用颜色区分正负）
+            net_color = pg.Color("darkgreen") if net >= 0 else pg.Color("red")
+            sign = "+" if net >= 0 else ""
+            net_surf = small_font.render(f"净得分：{sign}{net:.1f}", True, net_color)
+            self.window.blit(net_surf, (box_x + 15, info_y))
+            info_y += net_surf.get_height() + 15
+            
+            # 民心等级
+            if country == "SHU":
+                support = record.shu_people_support
+            elif country == "WEI":
+                support = record.wei_people_support
+            else:
+                support = record.wu_people_support
+            
+            support_surf = small_font.render(f"民心等级：{support}", True, pg.Color("black"))
+            self.window.blit(support_surf, (box_x + 15, info_y))
+            info_y += support_surf.get_height() + 15
+            
+            # 占领的特殊地点
+            if country == "SHU":
+                special = record.shu_special
+                normal = record.shu_normal
+            elif country == "WEI":
+                special = record.wei_special
+                normal = record.wei_normal
+            else:
+                special = record.wu_special
+                normal = record.wu_normal
+            
+            # 特殊地点名称映射
+            special_names = {
+                "Hanzhong": "汉中", "Jingzhou": "荆州", "Chengdu": "成都",
+                "Liangzhou": "凉州", "Youzhou": "幽州", "Xiangyang": "襄阳",
+                "Hefei": "合肥", "Changan": "长安", "Luoyang": "洛阳",
+                "Wuchang": "武昌", "Changsha": "长沙", "Jianye": "建业",
+            }
+            
+            if special:
+                special_names_str = ", ".join([special_names.get(n, n) for n in special])
+                special_surf = small_font.render(f"特殊地点：{special_names_str}", True, pg.Color("black"))
+                self.window.blit(special_surf, (box_x + 15, info_y))
+                info_y += special_surf.get_height() + 5
+            
+            normal_surf = small_font.render(f"普通地块：{normal}", True, pg.Color("black"))
+            self.window.blit(normal_surf, (box_x + 15, info_y))
+        
+        # 游戏结束时显示胜利者
+        if screen_type == "game_over":
+            y_offset = y_offset + box_height + 60
+            
+            # 检查"天下归心"
+            if "tianxia_winner" in self.show_score_screen:
+                winner = self.show_score_screen["tianxia_winner"]
+                winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
+                winner_text = f"胜利：{winner_names.get(winner, winner)} 达成「天下归心」!"
+                winner_surf = title_font.render(winner_text, True, pg.Color("gold"))
+                winner_rect = winner_surf.get_rect(centerx=self.screen_width // 2, top=y_offset)
+                self.window.blit(winner_surf, winner_rect)
+            elif "score_winner" in self.show_score_screen:
+                winner = self.show_score_screen["score_winner"]
+                if winner:
+                    winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
+                    winner_text = f"胜利：{winner_names.get(winner, winner)} 获得「一代枭雄」!"
+                else:
+                    winner_text = "平局！"
+                winner_surf = title_font.render(winner_text, True, pg.Color("gold"))
+                winner_rect = winner_surf.get_rect(centerx=self.screen_width // 2, top=y_offset)
+                self.window.blit(winner_surf, winner_rect)
+        
+        # 底部提示
+        hint_surf = small_font.render("按 ESC 退出", True, pg.Color("gray"))
+        hint_rect = hint_surf.get_rect(centerx=self.screen_width // 2, bottom=self.screen_height - 30)
+        self.window.blit(hint_surf, hint_rect)
 
     def _clear_for_turn_switch(self, keep_info_message: bool = False) -> None:
         """切换国家前清理交互状态，可选保留信息面板内容（用于保留战果）。"""
@@ -820,6 +1071,10 @@ class GameApp:
         if self.turn_index >= len(self.turn_order):
             self.turn_index = 0
 
+            # 魏国行动完毕，显示分数
+            if self.state == GameState.PLAYING and not self.turn_game_finished:
+                self._show_score_screen("wei_turn")
+
             # 一个小回合（蜀->吴->魏）结束
             if self.minor_round < self.max_minor_rounds:
                 self.minor_round += 1
@@ -841,6 +1096,8 @@ class GameApp:
                     self.info_panel.show_message(
                         "对局结束：已完成5个大回合（每回合6个小回合）"
                     )
+                # 显示游戏结束分数
+                self._show_score_screen("game_over")
                 return
 
         self.player_country = self.turn_order[self.turn_index]
@@ -1361,6 +1618,11 @@ class GameApp:
             self.stop()
             return
 
+        # 如果正在显示分数屏，优先处理
+        if self.show_score_screen:
+            self._handle_score_screen_event(event)
+            return
+
         if self.state == GameState.LOADING:
             self._handle_loading_event(event)
         elif self.state == GameState.MODE_SELECT:
@@ -1398,6 +1660,16 @@ class GameApp:
             if (dx * dx + dy * dy) <= self.faction_button_radius**2:
                 self._start_turn_based_game(human_country=country)
                 return
+
+    def _handle_score_screen_event(self, event: pg.event.Event) -> None:
+        """处理分数屏幕的事件"""
+        if event.type == pg.KEYDOWN:
+            if event.key == pg.K_ESCAPE:
+                # 关闭分数屏幕
+                self.show_score_screen = None
+                # 如果是游戏结束，按 ESC 后返回模式选择界面
+                if self.state == GameState.PLAYING and self.turn_game_finished:
+                    self._restart_game()
 
     def _handle_playing_event(self, event: pg.event.Event) -> None:
         """处理游戏中的事件"""
@@ -1950,11 +2222,12 @@ class GameApp:
             target.units.append(u)
 
         # 如果移动成功且有单位进入，占领该地
-
-        # 如果移动成功且有单位进入，占领该地
         if moving_units:
             target.country = self.player_country
             self.map_manager.invalidate_cache()
+            
+            # 检查是否达成"天下归心"胜利条件
+            self._check_tianxia_guixin_victory()
 
         # 移除选中状态
         self.clear_selection()
@@ -2938,6 +3211,58 @@ class GameApp:
 
         if movers > 0:
             self.map_manager.invalidate_cache()
+            
+            # 检查是否达成"天下归心"胜利条件
+            self._check_tianxia_guixin_victory()
+
+    def _check_tianxia_guixin_victory(self) -> None:
+        """
+        检查是否有势力达成"天下归心"胜利条件。
+        条件：民心等级达 5 级，且同时占领洛阳、成都、建邺。
+        如果达成，立即显示分数屏并结束游戏。
+        """
+        winner = self.score_manager.check_tianxia_guixin(
+            self.map_manager.provinces,
+            self.country_stats
+        )
+        
+        if winner:
+            # 达成天下归心胜利
+            self.turn_game_finished = True
+            self.player_country = None
+            self.card_manager = None
+            if self.card_panel:
+                self.card_panel.set_available_cards([])
+            
+            # 准备胜利信息
+            if not self.score_manager_initial_recorded:
+                self.score_manager.record_initial_scores(self.map_manager.provinces)
+                self.score_manager_initial_recorded = True
+            
+            record = self.score_manager.get_detailed_scores(
+                self.map_manager.provinces,
+                self.country_stats
+            )
+            
+            net_scores = {
+                "SHU": record.shu_score - record.shu_initial,
+                "WEI": record.wei_score - record.wei_initial,
+                "WU": record.wu_score - record.wu_initial,
+            }
+            
+            self.show_score_screen = {
+                "type": "game_over",
+                "record": record,
+                "net_scores": net_scores,
+                "tianxia_winner": winner,
+            }
+            
+            # 显示胜利消息
+            winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"{winner_names.get(winner, winner)} 达成「天下归心」胜利！"
+                )
 
     def _get_neighbors(self, unit_prov: object) -> List[object]:
         """获取邻居"""
@@ -2988,6 +3313,11 @@ class GameApp:
 
     def _render(self) -> None:
         """渲染总控：根据状态画对应的界面"""
+        # 如果正在显示分数屏，优先渲染
+        if self.show_score_screen:
+            self._render_score_screen()
+            return
+
         if self.state == GameState.LOADING:
             self._render_loading_screen()
         elif self.state == GameState.MODE_SELECT:
@@ -4443,6 +4773,8 @@ class GameApp:
                 c, {"people_support": 0, "political_points": 0}
             )
             stats["people_support"] = int(stats.get("people_support", 0)) + n
+            # 民心等级提升后，检查是否达成"天下归心"胜利条件
+            self._check_tianxia_guixin_victory()
 
         msg = f"「{card.name}」：{card.description}"
 
