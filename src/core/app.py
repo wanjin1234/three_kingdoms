@@ -103,11 +103,13 @@ class GameState(Enum):
     游戏状态枚举。
     游戏在任一时刻只能处于以下一种状态：
     - LOADING: 初始加载界面
-    - CHOOSING: 选择势力界面
+    - MODE_SELECT: 选择游戏模式界面
+    - CHOOSING: 选择势力界面（单人模式专用）
     - PLAYING: 正式游玩状态
     """
 
     LOADING = auto()
+    MODE_SELECT = auto()
     CHOOSING = auto()
     PLAYING = auto()
 
@@ -253,6 +255,7 @@ class GameApp:
 
         # 预加载各个界面的素材，防止游戏运行时卡顿
         self._build_loading_assets()
+        self._build_mode_select_assets()
         self._build_choosing_assets()
         self._build_play_assets()
 
@@ -1049,7 +1052,7 @@ class GameApp:
         self.major_round = 1
         self.minor_round = 1
         self.turn_game_finished = False
-        self.state = GameState.CHOOSING
+        self.state = GameState.MODE_SELECT
         logger.info("Game restarted.")
 
     def run(self) -> None:
@@ -1239,6 +1242,8 @@ class GameApp:
 
         if self.state == GameState.LOADING:
             self._handle_loading_event(event)
+        elif self.state == GameState.MODE_SELECT:
+            self._handle_mode_select_event(event)
         elif self.state == GameState.CHOOSING:
             self._handle_choosing_event(event)
         elif self.state == GameState.PLAYING:
@@ -1248,7 +1253,18 @@ class GameApp:
         """处理加载界面的事件（比如点击开始按钮）"""
         if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
             if self.start_button_rect.collidepoint(event.pos):
-                self.state = GameState.CHOOSING
+                self.state = GameState.MODE_SELECT
+
+    def _handle_mode_select_event(self, event: pg.event.Event) -> None:
+        """处理选择游戏模式界面的事件"""
+        if event.type != pg.MOUSEBUTTONDOWN or event.button != 1:
+            return
+        if self.mode_single_rect.collidepoint(event.pos):
+            # 单人游戏：跳到选择势力界面
+            self.state = GameState.CHOOSING
+        elif self.mode_multi_rect.collidepoint(event.pos):
+            # 三人游戏：直接开始，所有国家均由玩家操控
+            self._start_turn_based_game(human_country=None)
 
     def _handle_choosing_event(self, event: pg.event.Event) -> None:
         """处理选择势力界面的事件"""
@@ -2725,6 +2741,8 @@ class GameApp:
         """渲染总控：根据状态画对应的界面"""
         if self.state == GameState.LOADING:
             self._render_loading_screen()
+        elif self.state == GameState.MODE_SELECT:
+            self._render_mode_select_screen()
         elif self.state == GameState.CHOOSING:
             self._render_choosing_screen()
         else:
@@ -2738,6 +2756,19 @@ class GameApp:
         self.window.blit(self.loading_title_surface, self.loading_title_pos)
         pg.draw.rect(self.window, pg.Color("yellow"), self.start_button_rect)
         self.window.blit(self.loading_button_surface, self.loading_button_pos)
+
+    def _render_mode_select_screen(self) -> None:
+        """画选择游戏模式界面"""
+        self.window.fill(pg.Color("white"))
+        self.window.blit(self.loading_image_right, self.loading_image_right_pos)
+        self.window.blit(self.loading_image_left, self.loading_image_left_pos)
+        self.window.blit(self.mode_select_title_surface, self.mode_select_title_pos)
+        # 单人游戏按钮
+        pg.draw.rect(self.window, pg.Color("#f0c040"), self.mode_single_rect, border_radius=12)
+        self.window.blit(self.mode_single_surface, self.mode_single_text_pos)
+        # 三人游戏按钮
+        pg.draw.rect(self.window, pg.Color("#80c0f0"), self.mode_multi_rect, border_radius=12)
+        self.window.blit(self.mode_multi_surface, self.mode_multi_text_pos)
 
     def _render_choosing_screen(self) -> None:
         """画选择势力界面"""
@@ -3737,6 +3768,47 @@ class GameApp:
 
     # --- 资源构建辅助方法 (Asset Builders) -------------------------------------------------
     # 这些方法负责在游戏开始前把图片、文字预先处理好存入内存
+
+    def _build_mode_select_assets(self) -> None:
+        """准备选择游戏模式界面的文字和按钮"""
+        height = self.screen_height
+        width = self.screen_width
+
+        self.mode_select_title_surface = self._render_text(
+            "STLITI.TTF", int(width * 0.08), "选择模式"
+        )
+        self.mode_select_title_pos = (int(width * 0.32), 0)
+
+        btn_w = int(width * 0.28)
+        btn_h = int(height * 0.12)
+        btn_y = int(height * 0.65)
+
+        self.mode_single_rect = pg.Rect(
+            int(width * 0.18), btn_y, btn_w, btn_h
+        )
+        self.mode_multi_rect = pg.Rect(
+            int(width * 0.54), btn_y, btn_w, btn_h
+        )
+
+        self.mode_single_surface = self._render_text(
+            "STXINGKA.TTF", int(height * 0.08), "单人游戏"
+        )
+        self.mode_multi_surface = self._render_text(
+            "STXINGKA.TTF", int(height * 0.08), "三人游戏"
+        )
+
+        sw = self.mode_single_surface.get_width()
+        sh = self.mode_single_surface.get_height()
+        self.mode_single_text_pos = (
+            self.mode_single_rect.centerx - sw // 2,
+            self.mode_single_rect.centery - sh // 2,
+        )
+        mw = self.mode_multi_surface.get_width()
+        mh = self.mode_multi_surface.get_height()
+        self.mode_multi_text_pos = (
+            self.mode_multi_rect.centerx - mw // 2,
+            self.mode_multi_rect.centery - mh // 2,
+        )
 
     def _build_loading_assets(self) -> None:
         """准备加载界面的图片和文字"""
