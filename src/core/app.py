@@ -159,7 +159,7 @@ class GameApp:
         # 初始状态设为 LOADING
         self.state = GameState.LOADING
         self.player_country: str | None = None  # 当前行动的国家
-        self.human_country: str | None = None   # 玩家选择控制的国家
+        self.human_country: str | None = None  # 玩家选择控制的国家
 
         # 定义三个国家的标签和颜色
         self.country_labels: Dict[str, str] = {"SHU": "蜀", "WU": "吴", "WEI": "魏"}
@@ -838,8 +838,12 @@ class GameApp:
         # --- 阶段1：大回合加点（如果还未选择） ---
         if self.major_round_choice_pending:
             for c in list(self.turn_order):
+                # 只代替 AI 国家自动选择，玩家国家必须等玩家手动点击
+                if c == self.human_country:
+                    continue
                 if not self.major_round_choice_done.get(c, False):
                     self._apply_major_round_choice(c, "support")
+            # 若玩家还未选择，等待玩家操作，暂不继续 AI 行动
             if self.major_round_choice_pending:
                 self._ai_turn_timer = pg.time.get_ticks() + 300
                 return
@@ -849,7 +853,7 @@ class GameApp:
         border_ids = {p.province_id for p in border_provs}
 
         # 收集所有己方有行动力的单位，按"是否在边境"分两组
-        border_units = []   # (province, slot_idx, unit_state)
+        border_units = []  # (province, slot_idx, unit_state)
         inland_units = []
 
         for province in self.map_manager.provinces:
@@ -911,7 +915,9 @@ class GameApp:
                     break
 
         # --- 阶段5：结束本国回合 ---
-        self._finish_country_action(f"AI({country})行动", keep_info_message=action_taken)
+        self._finish_country_action(
+            f"AI({country})行动", keep_info_message=action_taken
+        )
 
     def _ai_pick_attack_target(self, province, unit_state):
         """AI 选择攻击目标：优先选血量最少（单位数最少）的相邻敌省。"""
@@ -1274,7 +1280,7 @@ class GameApp:
             cx, cy = button["center"]
             dx = event.pos[0] - cx
             dy = event.pos[1] - cy
-            if (dx * dx + dy * dy) <= self.faction_button_radius ** 2:
+            if (dx * dx + dy * dy) <= self.faction_button_radius**2:
                 self._start_turn_based_game(human_country=country)
                 return
 
@@ -2764,10 +2770,14 @@ class GameApp:
         self.window.blit(self.loading_image_left, self.loading_image_left_pos)
         self.window.blit(self.mode_select_title_surface, self.mode_select_title_pos)
         # 单人游戏按钮
-        pg.draw.rect(self.window, pg.Color("#f0c040"), self.mode_single_rect, border_radius=12)
+        pg.draw.rect(
+            self.window, pg.Color("#f0c040"), self.mode_single_rect, border_radius=12
+        )
         self.window.blit(self.mode_single_surface, self.mode_single_text_pos)
         # 三人游戏按钮
-        pg.draw.rect(self.window, pg.Color("#80c0f0"), self.mode_multi_rect, border_radius=12)
+        pg.draw.rect(
+            self.window, pg.Color("#80c0f0"), self.mode_multi_rect, border_radius=12
+        )
         self.window.blit(self.mode_multi_surface, self.mode_multi_text_pos)
 
     def _render_choosing_screen(self) -> None:
@@ -3783,12 +3793,8 @@ class GameApp:
         btn_h = int(height * 0.12)
         btn_y = int(height * 0.65)
 
-        self.mode_single_rect = pg.Rect(
-            int(width * 0.18), btn_y, btn_w, btn_h
-        )
-        self.mode_multi_rect = pg.Rect(
-            int(width * 0.54), btn_y, btn_w, btn_h
-        )
+        self.mode_single_rect = pg.Rect(int(width * 0.18), btn_y, btn_w, btn_h)
+        self.mode_multi_rect = pg.Rect(int(width * 0.54), btn_y, btn_w, btn_h)
 
         self.mode_single_surface = self._render_text(
             "STXINGKA.TTF", int(height * 0.08), "单人游戏"
