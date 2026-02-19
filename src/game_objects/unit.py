@@ -2,6 +2,7 @@
 这个文件负责加载和管理所有的“兵种”数据，以及把它们画在屏幕上。
 你可以把这里想象成兵营的“人事部”和“美工部”。
 """
+
 from __future__ import annotations
 
 import json
@@ -21,19 +22,23 @@ class UnitState:
     单个作战单位的实时状态。
     包含：类型、血量、是否混乱、本回合攻击次数等。
     """
+
     unit_type: str
     hp: int = 2
     is_confused: bool = False
     confusion_count: int = 0  # 连续混乱次数
     attack_count: int = 0
     mp: int = 0  # Action Points / Movement Points
-    temp_river_immunity: bool = False   # 本大回合跨河惩罚免疫
-    temp_terrain_immunity: bool = False # 本大回合山地惩罚免疫
-    temp_dice_bonus: int = 0            # 本大回合战斗骰点加成
-    
+    temp_river_immunity: bool = False  # 本大回合跨河惩罚免疫
+    temp_terrain_immunity: bool = False  # 本大回合山地惩罚免疫
+    temp_dice_bonus: int = 0  # 本大回合战斗骰点加成
+    attack_bonus: int = 0  # 永久攻击力加成（由事件卡挟帝发令等给予）
+    defense_bonus: int = 0  # 永久防御力加成（由事件卡江东铁壁等给予）
+
     @property
     def is_injured(self) -> bool:
         return self.hp < 2
+
 
 @dataclass(frozen=True)
 class UnitDefinition:
@@ -41,13 +46,14 @@ class UnitDefinition:
     定义一个兵种的数据结构。
     比如：步兵跑得慢、攻击力多少、防御力多少。
     """
-    unit_type: str         # 兵种代号，如 "infantry"
-    move: int              # 移动力
-    attack: int            # 攻击力
-    defense: int           # 防御力
-    range: int             # 射程
-    country: str | None    # 专属国家，如果是 None 表示通用兵种
-    icon_path: Path        # 图标文件的路径
+
+    unit_type: str  # 兵种代号，如 "infantry"
+    move: int  # 移动力
+    attack: int  # 攻击力
+    defense: int  # 防御力
+    range: int  # 射程
+    country: str | None  # 专属国家，如果是 None 表示通用兵种
+    icon_path: Path  # 图标文件的路径
 
 
 class UnitRepository:
@@ -62,10 +68,10 @@ class UnitRepository:
         # 打开兵种配置文件 (units.json)
         with json_file.open("r", encoding="utf-8") as fh:
             payload = json.load(fh)
-        
+
         self._definitions: Dict[str, UnitDefinition] = {}
         self._raw_icons: Dict[str, pg.Surface] = {}
-        
+
         # 遍历每一个兵种配置，创建 UnitDefinition 对象
         for entry in payload:
             unit_type = entry["type"]
@@ -76,10 +82,10 @@ class UnitRepository:
                 defense=entry["defense"],
                 range=entry["range"],
                 country=entry["country"],
-                icon_path=asset_root / entry["icon"], # 拼出图标的完整路径
+                icon_path=asset_root / entry["icon"],  # 拼出图标的完整路径
             )
             self._definitions[unit_type] = definition
-            
+
             # 这里直接读取图片并缓存起来，避免每次画图都读硬盘
             # 增加自动后缀检测：如果指定的 icon 不存在，尝试找 .png 或 .jpg
             icon_path = definition.icon_path
@@ -92,7 +98,7 @@ class UnitRepository:
                     if alt_path.exists():
                         icon_path = alt_path
                         break
-            
+
             try:
                 self._raw_icons[unit_type] = pg.image.load(icon_path).convert_alpha()
             except Exception as e:
@@ -126,7 +132,7 @@ class UnitRenderer:
         self._repository = repository
         self._slot_factor = slot_factor  # 图标缩放比例
         self._icon_size = 0  # 图标在屏幕上的实际大小（像素），稍后计算
-        self._scaled_icons: Dict[str, pg.Surface] = {} # 缓存缩放后的图片
+        self._scaled_icons: Dict[str, pg.Surface] = {}  # 缓存缩放后的图片
 
     def on_hex_side_changed(self, hex_side: float) -> None:
         """
@@ -136,27 +142,35 @@ class UnitRenderer:
         # 计算图标大小：大约是格子边长的一定比例
         self._icon_size = max(1, int(hex_side * self._slot_factor))
         self._scaled_icons.clear()
-        
+
         # 重新生成所有缩放后的图片
         for unit_type, surface in self._repository.iter_icon_surfaces():
-            scaled = pg.transform.smoothscale(surface, (self._icon_size, self._icon_size))
+            scaled = pg.transform.smoothscale(
+                surface, (self._icon_size, self._icon_size)
+            )
 
             # 特殊处理: 将 解烦兵 (JIEFAN_infantry) 的图标变为黑色轮廓（实心黑色），以便在浅色地图上具有更好对比
             if unit_type == "JIEFAN_infantry":
                 try:
                     mask = pg.mask.from_surface(scaled)
-                    bw = mask.to_surface(setcolor=(0, 0, 0, 255), unsetcolor=(0, 0, 0, 0))
+                    bw = mask.to_surface(
+                        setcolor=(0, 0, 0, 255), unsetcolor=(0, 0, 0, 0)
+                    )
                     bw = bw.convert_alpha()
                     self._scaled_icons[unit_type] = bw
                 except Exception:
                     # 如果 mask 方法在某些环境失败，退回到简单填充黑色的方法
-                    fallback = pg.Surface((self._icon_size, self._icon_size), pg.SRCALPHA)
+                    fallback = pg.Surface(
+                        (self._icon_size, self._icon_size), pg.SRCALPHA
+                    )
                     fallback.fill((0, 0, 0, 255))
                     self._scaled_icons[unit_type] = fallback
             else:
                 self._scaled_icons[unit_type] = scaled
 
-    def draw_units(self, surface: pg.Surface, center: Tuple[int, int], units: Sequence[UnitState]) -> None:
+    def draw_units(
+        self, surface: pg.Surface, center: Tuple[int, int], units: Sequence[UnitState]
+    ) -> None:
         """
         画兵的主函数。
         surface: 画布（屏幕）
@@ -165,7 +179,7 @@ class UnitRenderer:
         """
         if not units or not self._icon_size:
             return
-        
+
         # 遍历每个兵，算出它的位置，然后画上去
         for idx, unit_state in enumerate(units):
             icon = self._scaled_icons.get(unit_state.unit_type)
@@ -174,7 +188,7 @@ class UnitRenderer:
             # 计算第 idx 个兵应该放在格子的哪个小角落
             pos = self._slot_position(center, idx)
             surface.blit(icon, pos)
-            
+
             # 状态标记：统一画在图标正中心，并适当放大
             cx, cy = pos[0] + self._icon_size // 2, pos[1] + self._icon_size // 2
             status_radius = max(4, self._icon_size // 7)
@@ -184,7 +198,9 @@ class UnitRenderer:
             elif unit_state.is_injured:
                 pg.draw.circle(surface, pg.Color("red"), (cx, cy), status_radius)
 
-    def selection_rects(self, center: Tuple[int, int], unit_count: int) -> List[pg.Rect]:
+    def selection_rects(
+        self, center: Tuple[int, int], unit_count: int
+    ) -> List[pg.Rect]:
         """
         计算点击区域。
         返回一组矩形区域，用来检测鼠标点击了哪个兵。
@@ -208,17 +224,17 @@ class UnitRenderer:
         """
         cx, cy = center
         # icon_size 大约是半个格子的边长
-        offset = int(self._icon_size) 
-        
+        offset = int(self._icon_size)
+
         # 定义四个可能的槽位坐标（这里存的是绘图时的左上角坐标）
         slots = [
-            (cx, cy - offset),      # 兵1：右上角
-            (cx, cy),               # 兵2：右下角
-            (cx - offset, cy),      # 兵3：左下角
+            (cx, cy - offset),  # 兵1：右上角
+            (cx, cy),  # 兵2：右下角
+            (cx - offset, cy),  # 兵3：左下角
         ]
-        
+
         # 防止兵太多溢出，如果超出了3个，就都叠在最后一个位置上
         if slot_index >= len(slots):
             return slots[-1]
-            
+
         return slots[slot_index]

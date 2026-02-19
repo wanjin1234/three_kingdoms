@@ -3,6 +3,7 @@
 这里集中管理了所有不可变的“游戏设定”，比如屏幕每秒刷多少次（FPS），图片存在哪个文件夹里。
 把配置都写在这里，以后想修改游戏的基本设置（比如窗口标题）就不用去翻代码了。
 """
+
 from __future__ import annotations
 
 import sys
@@ -34,6 +35,7 @@ class Settings:
     kingdoms_file: Path  # 国家定义的 JSON 文件路径
     units_file: Path  # 兵种定义的 JSON 文件路径
     cards_file: Path  # 卡牌定义的 JSON 文件路径
+    event_cards_file: Path  # 事件卡定义的 JSON 文件路径
     fonts_dir: Path  # 字体文件夹
     graphics_dir: Path  # 图片文件夹
     window_title: str = "三足鼎立"  # 游戏窗口的标题
@@ -64,6 +66,7 @@ SETTINGS = Settings(
     kingdoms_file=ASSET_ROOT / "data" / "kingdoms.json",
     units_file=ASSET_ROOT / "data" / "units.json",
     cards_file=ASSET_ROOT / "data" / "cards.json",
+    event_cards_file=ASSET_ROOT / "data" / "event_cards.json",
     fonts_dir=ASSET_ROOT / "fonts",
     graphics_dir=ASSET_ROOT / "graphics",
 )

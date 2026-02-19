@@ -25,6 +25,7 @@ from src.core.combat import (
 from src.core.events import EventManager
 from src.game_objects.card import CardManager, CardRepository
 from src.game_objects.card_effects import CardEffectManager
+from src.game_objects.event_card import EventCardDeck, EventCardDef
 from src.game_objects.kingdom import KingdomRepository
 from src.game_objects.unit import UnitRenderer, UnitRepository, UnitState
 from src.map.geometry import hex_vertices
@@ -149,9 +150,16 @@ class GameApp:
         )
         pg.display.set_caption(settings.window_title)
 
-        # 设置窗口图标 (可选，让 Alt+Tab 时显示漂亮的图标)
-        # icon = pg.image.load(settings.graphics_dir / "icon.jpg")
-        # pg.display.set_icon(icon)
+        # 设置窗口图标（任务栏 / Alt+Tab 显示）
+        try:
+            from settings import BASE_DIR
+
+            _icon_path = BASE_DIR / "icon.ico"
+            if _icon_path.exists():
+                _icon_surf = pg.image.load(str(_icon_path))
+                pg.display.set_icon(_icon_surf)
+        except Exception:
+            pass
 
         # 计算六边形格子的边长，使其刚好能铺满屏幕高度的一部分
         self.hex_side = self.screen_height * 2 / (19 * SQRT3)
@@ -230,6 +238,58 @@ class GameApp:
         }
         self.card_manager: CardManager | None = None
         self.card_effect_manager = CardEffectManager()  # 卡牌效果管理器
+
+        # ====================================================================
+        # 事件卡系统
+        # ====================================================================
+        self.event_card_deck = EventCardDeck(settings.event_cards_file)
+
+        # 抽卡按钮（每帧由 render 重建）
+        self.draw_event_btn_rect: pg.Rect | None = None
+
+        # 事件卡展示覆盖层（None = 未展示）
+        # 结构: {"card": EventCardDef, "drawer": str, "safe": bool}
+        self.event_card_overlay: dict | None = None
+        self.evt_overlay_ok_btn: pg.Rect | None = None
+
+        # 事件卡单位/地块目标选择
+        self.selecting_evt_target: bool = False
+        self.pending_evt_card_id: str | None = None
+        self.pending_evt_drawer: str | None = None
+
+        # ---- 小回合级别标志（_advance_country_turn 时清除） ----
+        self.evt_flag_liukang: bool = False  # 联刘抗曹：SHU/WU 本小回合不互攻
+        self.evt_flag_she_hushu: bool = False  # 舍身护主：吴防御时全部+1
+        self.evt_flag_hu_recruit: bool = False  # 胡人袭扰：魏本小回合禁止招募
+        self.evt_flag_wuwei: bool = False  # 吴魏媾和：东吴本小回合不能攻魏
+        self.evt_temp_pp: Dict[str, int] = {}  # 老骥伏枥：临时政治点数（key=country）
+
+        # ---- 大回合级别标志（_end_full_round 时清除） ----
+        self.evt_flag_hefei: bool = False  # 合肥十万：吴攻魏骰点-1
+        self.evt_flag_all_attack: bool = False  # 奖率三军：全军进攻骰点+1
+
+        # ---- 五子良将 ----
+        self.evt_wuzi_rounds: int = 0  # 剩余生效小回合数
+        self.evt_wuzi_bonus: int = 0  # 当前累积骰点加成（max 3）
+
+        # ---- 跨次抽卡标志 ----
+        self.evt_xingluo_active: bool = (
+            False  # 星落秋风已触发（等下次隆中定计额外+1 PP）
+        )
+        self.evt_laomaikuai_active: bool = False  # 老迈昏聩已触发（下次江东才俊无效）
+
+        # ---- 会话级持久技能标志 ----
+        self.evt_lonzhong_skill: int = 0  # 蜀汉"隆中定计"攻吴骰+N（可叠加）
+        self.evt_jingzhu_skill: int = 0  # 东吴"荆州之主"攻蜀骰+N（可叠加）
+        self.evt_yishen_skill: bool = False  # 蜀汉"一身是胆"技能（全局唯一）
+        self.evt_yishen_used: bool = False  # 一身是胆本次战斗是否已使用
+
+        # 不懈于内：下次抽卡若负效果无效
+        self.evt_draw_again_safe: bool = False
+
+        # 事件卡抽取阶段（每个小回合开始时的强制阶段）
+        self.evt_draw_phase: bool = False  # True = 当前处于抽取阶段，禁止调兵
+        self.evt_skip_draw_btn_rect: pg.Rect | None = None  # 「跳过」按钮区域
 
         # 卡牌目标选择状态
         self.selecting_card_target = False  # 是否正在选择卡牌目标
@@ -692,11 +752,17 @@ class GameApp:
                 self.info_panel.show_message(
                     f"第{self.major_round}大回合加点完成：三国均已选择"
                 )
+            # 加点完成后，第一个行动国进入事件卡抽取阶段
+            self._enter_evt_draw_phase_if_needed()
 
     def _end_full_round(self) -> None:
         """三个国家都行动完后触发：清理回合效果并复位行动力。"""
         self.card_effect_manager.clear_all_effects()
         self._replenish_action_points()
+        # 大回合级事件标志清除
+        self.evt_flag_hefei = False
+        self.evt_flag_all_attack = False
+        self.evt_yishen_used = False  # 一身是胆使用标志重置（每大回合重置）
 
     def _clear_for_turn_switch(self, keep_info_message: bool = False) -> None:
         """切换国家前清理交互状态，可选保留信息面板内容（用于保留战果）。"""
@@ -734,6 +800,20 @@ class GameApp:
         self.pending_attacker = None
         self.selecting_card_target = False
         self.selected_card_for_effect = None
+        # 小回合级事件标志清除
+        self.evt_flag_liukang = False
+        self.evt_flag_she_hushu = False
+        self.evt_flag_hu_recruit = False
+        self.evt_flag_wuwei = False
+        self.evt_temp_pp = {}  # 临时政治点数回合结束消失
+        self.selecting_evt_target = False
+        self.pending_evt_card_id = None
+        self.pending_evt_drawer = None
+        # 五子良将递减计数
+        if self.evt_wuzi_rounds > 0:
+            self.evt_wuzi_rounds -= 1
+            if self.evt_wuzi_rounds == 0:
+                self.evt_wuzi_bonus = 0
         self._clear_for_turn_switch(keep_info_message=keep_info_message)
 
         self.turn_index += 1
@@ -766,6 +846,9 @@ class GameApp:
         self.player_country = self.turn_order[self.turn_index]
         self.card_manager = self.card_managers[self.player_country]
         self._update_card_panel()
+
+        # 进入事件卡抽取阶段（若为人类玩家且有政治点数）
+        self._enter_evt_draw_phase_if_needed()
 
         # 若当前轮到的是 AI 国家，延迟触发 AI 行动
         if (
@@ -1058,6 +1141,38 @@ class GameApp:
         self.major_round = 1
         self.minor_round = 1
         self.turn_game_finished = False
+        # 4.5 重置三国政治点数和民心
+        self.country_stats = {
+            country: {"people_support": 0, "political_points": 0}
+            for country in self.turn_order
+        }
+        # 5. 重置事件卡系统（重新开局）
+        from settings import SETTINGS as settings_module
+
+        self.event_card_deck = EventCardDeck(settings_module.event_cards_file)
+        self.event_card_overlay = None
+        self.evt_overlay_ok_btn = None
+        self.selecting_evt_target = False
+        self.pending_evt_card_id = None
+        self.pending_evt_drawer = None
+        self.evt_flag_liukang = False
+        self.evt_flag_she_hushu = False
+        self.evt_flag_hu_recruit = False
+        self.evt_flag_wuwei = False
+        self.evt_temp_pp = {}
+        self.evt_flag_hefei = False
+        self.evt_flag_all_attack = False
+        self.evt_wuzi_rounds = 0
+        self.evt_wuzi_bonus = 0
+        self.evt_xingluo_active = False
+        self.evt_laomaikuai_active = False
+        self.evt_lonzhong_skill = 0
+        self.evt_jingzhu_skill = 0
+        self.evt_yishen_skill = False
+        self.evt_yishen_used = False
+        self.evt_draw_again_safe = False
+        self.evt_draw_phase = False
+        self.evt_skip_draw_btn_rect = None
         self.state = GameState.MODE_SELECT
         logger.info("Game restarted.")
 
@@ -1303,6 +1418,14 @@ class GameApp:
                 self._play_selected_card()
         elif event.type == pg.MOUSEBUTTONDOWN:
             if event.button == 1:
+                # ---- 事件卡覆盖层：优先处理（模态） ----
+                if self.event_card_overlay:
+                    if self.evt_overlay_ok_btn and self.evt_overlay_ok_btn.collidepoint(
+                        event.pos
+                    ):
+                        self._confirm_event_card()
+                    return
+
                 # 0.0 检查功能按钮
                 for btn in getattr(self, "control_btns", []):
                     if btn["rect"].collidepoint(event.pos):
@@ -1327,6 +1450,26 @@ class GameApp:
 
                     if self.info_panel:
                         self.info_panel.show_message("请在三国面板中完成加点选择")
+                    return
+
+                # 0.0y 事件卡抽取阶段：仅允许「抽取」和「跳过」，阻挡所有其他操作
+                if self.evt_draw_phase:
+                    if (
+                        self.evt_skip_draw_btn_rect
+                        and self.evt_skip_draw_btn_rect.collidepoint(event.pos)
+                    ):
+                        self._exit_evt_draw_phase()
+                        return
+                    if (
+                        self.draw_event_btn_rect
+                        and self.draw_event_btn_rect.collidepoint(event.pos)
+                    ):
+                        self._trigger_draw_event_card(self.player_country)
+                        self._check_evt_draw_phase_pp()
+                        return
+                    # 点击到其他区域：提示玩家
+                    if self.info_panel:
+                        self.info_panel.show_message("请先完成事件卡阶段（抽取或跳过）")
                     return
 
                 # 0. 优先处理顶部的战斗按钮
@@ -1439,6 +1582,36 @@ class GameApp:
                         ):
                             self.waiting_defender_response = False
                             self.combat_callback()
+                    return
+
+                # 0.05 事件卡目标选择
+                if self.selecting_evt_target and self.pending_evt_card_id:
+                    card_def = self.event_card_deck.get_definition(
+                        self.pending_evt_card_id
+                    )
+                    if card_def and card_def.target_type == "unit":
+                        target_unit = self._get_unit_slot_at(event.pos)
+                        if target_unit:
+                            prov_id, slot_idx = target_unit
+                            self._apply_evt_target_unit(prov_id, slot_idx)
+                        else:
+                            if self.info_panel:
+                                self.info_panel.show_message("请点击一个单位（己方）")
+                        return
+                    elif card_def and card_def.target_type == "province":
+                        prov = self._get_province_at(event.pos)
+                        if prov and prov.country == self.player_country:
+                            self._apply_evt_target_province(prov.province_id)
+                        else:
+                            if self.info_panel:
+                                self.info_panel.show_message("请点击己方地块")
+                        return
+
+                # 0.06 抽事件卡按钮
+                if self.draw_event_btn_rect and self.draw_event_btn_rect.collidepoint(
+                    event.pos
+                ):
+                    self._trigger_draw_event_card(self.player_country)
                     return
 
                 # 0.1 检查“解除混乱”按钮
@@ -1822,6 +1995,10 @@ class GameApp:
         atk = float(definition.attack)
         dfs = float(definition.defense)
 
+        # 事件卡永久加成（挟帝发令 / 江东铁壁 / 愿打愿挨）
+        atk += getattr(unit_state, "attack_bonus", 0)
+        dfs += getattr(unit_state, "defense_bonus", 0)
+
         # 受伤减半
         if unit_state.is_injured:
             atk *= INJURY_PENALTY
@@ -2010,6 +2187,23 @@ class GameApp:
 
     def _handle_combat(self, target: object) -> None:  # target: Province
         """处理战斗逻辑"""
+        # ---- 事件卡进攻禁令检查 ----
+        atk_c = self.player_country
+        def_c = target.country
+        # 联刘抗曹：蜀汉和东吴本小回合不能互相攻击
+        if self.evt_flag_liukang:
+            if (atk_c == "SHU" and def_c == "WU") or (atk_c == "WU" and def_c == "SHU"):
+                if self.info_panel:
+                    self.info_panel.show_message(
+                        "「联刘抗曹」：本回合蜀汉与东吴不能互相攻击"
+                    )
+                return
+        # 吴魏媾和：东吴本小回合不能进攻曹魏
+        if self.evt_flag_wuwei and atk_c == "WU" and def_c == "WEI":
+            if self.info_panel:
+                self.info_panel.show_message("「吴魏媾和」：本回合东吴不能进攻曹魏")
+            return
+
         if self.pending_post_move_attack and self.pending_attacker:
             if (
                 len(self.selected_units) != 1
@@ -2101,6 +2295,9 @@ class GameApp:
         if target.units:
             for u in target.units:
                 _, dfs = self._calculate_unit_powers(u, target.province_id)
+                # 舍身护主：吴防御时每单位+1
+                if target.country == "WU" and self.evt_flag_she_hushu:
+                    dfs += 1
                 total_defense += dfs
         elif self._is_fort_or_city(target):
             # 关隘/城市空城守备：默认有防御力2
@@ -2273,6 +2470,9 @@ class GameApp:
         if target_province.units:
             for u in target_province.units:
                 _, dfs = self._calculate_unit_powers(u, target_province.province_id)
+                # 舍身护主：吴国防御时每个单位防御+1
+                if target_province.country == "WU" and self.evt_flag_she_hushu:
+                    dfs += 1
                 total_defense += dfs
         elif self._is_fort_or_city(target_province):
             total_defense = 2.0
@@ -2366,6 +2566,49 @@ class GameApp:
             defender_dice_bonus = max(
                 defender_dice_bonus, getattr(u, "temp_dice_bonus", 0)
             )
+
+        # ---- 事件卡战斗骰点修正 ----
+        atk_country = self.player_country  # 进攻方国家
+        def_country = target_province.country  # 防守方国家
+
+        # 奖率三军：所有进攻骰点+1（大回合级）
+        if self.evt_flag_all_attack:
+            attacker_dice_bonus += 1
+
+        # 五子良将：魏国进攻时骰点+evt_wuzi_bonus（小回合递减）
+        if (
+            atk_country == "WEI"
+            and self.evt_wuzi_bonus > 0
+            and self.evt_wuzi_rounds > 0
+        ):
+            attacker_dice_bonus += self.evt_wuzi_bonus
+
+        # 合肥十万：东吴进攻曹魏时骰点-1
+        if atk_country == "WU" and def_country == "WEI" and self.evt_flag_hefei:
+            attacker_dice_bonus -= 1
+
+        # 隆中定计：蜀汉进攻东吴时骰点+N
+        if atk_country == "SHU" and def_country == "WU" and self.evt_lonzhong_skill > 0:
+            attacker_dice_bonus += self.evt_lonzhong_skill
+
+        # 荆州之主：东吴进攻蜀汉时骰点+N
+        if atk_country == "WU" and def_country == "SHU" and self.evt_jingzhu_skill > 0:
+            attacker_dice_bonus += self.evt_jingzhu_skill
+
+        # 一身是胆：蜀汉被进攻且档位低于1:1时，强制按1:1计算（自动生效）
+        if (
+            def_country == "SHU"
+            and self.evt_yishen_skill
+            and not self.evt_yishen_used
+            and col_index < 1
+        ):
+            col_index = 1
+            self.evt_yishen_skill = False  # 一次性消耗
+            self.evt_yishen_used = True
+            if self.info_panel:
+                self.info_panel.show_message(
+                    "蜀汉使用「一身是胆」：按1:1档位计算！", duration=2.0
+                )
 
         # 江东止啼：防守方即时选择"使用"后生效（一次性），进攻方骰点-2
         if use_jiangdong and target_province.country == "WEI":
@@ -2895,6 +3138,9 @@ class GameApp:
         # 4.5 常态显示三国“民心/政治点数”
         self._draw_country_stats_overlay()
 
+        # 4.6 绘制「抽事件卡」按钮
+        self._render_draw_event_btn()
+
         # 5. 画当前玩家国家标签
         if self.player_country:
             tag_surface = self.country_tag_surfaces[self.player_country]
@@ -3196,11 +3442,16 @@ class GameApp:
                         skip_surf, skip_surf.get_rect(center=btn_rect.center)
                     )
 
-            # 卡牌 tooltip 始终在卡牌面板最顶层绘制（不受江东止啼条件限制）
-            self.card_panel.draw_tooltip(self.window)
+            # 卡牌 tooltip 始终在卡牌面板最顶层绘制（不受江东止啼条件限制；事件卡覆盖层激活时跳过）
+            if not self.event_card_overlay:
+                self.card_panel.draw_tooltip(self.window)
 
-        # 9. 画鼠标悬停提示 (Tooltip)
-        self._draw_hover_tooltip()
+        # 8.5 事件卡覆盖层（最顶层，覆盖一切）
+        self._render_event_card_overlay()
+
+        # 9. 画鼠标悬停提示 (Tooltip)：事件卡覆盖层激活时跳过
+        if not self.event_card_overlay:
+            self._draw_hover_tooltip()
 
     def _get_map_bounds_rect(self) -> pg.Rect:
         """基于六边形中心与边长，计算地图像素包围盒。"""
@@ -4063,3 +4314,579 @@ class GameApp:
         """使用指定字体和大小渲染一段文字，返回图片表面"""
         font = self._font(filename, size)
         return font.render(text, True, pg.Color(color))
+
+    # ====================================================================
+    # 事件卡系统 — 抽卡、效果应用、渲染
+    # ====================================================================
+
+    def _can_draw_event_card(self, country: str) -> bool:
+        """判断 country 当前是否可以消耗 1 政治点数抽取事件卡"""
+        if self.state != GameState.PLAYING:
+            return False
+        if self.turn_game_finished:
+            return False
+        if self.major_round_choice_pending:
+            return False
+        if self.show_combat_ui:
+            return False
+        if self.pending_post_move_attack:
+            return False
+        if self.selecting_evt_target or self.event_card_overlay:
+            return False
+        stats = self.country_stats.get(country, {})
+        # 临时政治点数可用于抽卡
+        total_pp = int(stats.get("political_points", 0)) + self.evt_temp_pp.get(
+            country, 0
+        )
+        return total_pp >= 1
+
+    def _spend_pp(self, country: str, amount: int = 1) -> bool:
+        """消耗政治点数（优先消耗普通 PP，再消耗临时 PP）"""
+        stats = self.country_stats.setdefault(
+            country, {"people_support": 0, "political_points": 0}
+        )
+        pp = int(stats.get("political_points", 0))
+        temp = self.evt_temp_pp.get(country, 0)
+        total = pp + temp
+        if total < amount:
+            return False
+        # 先消耗普通 PP
+        if pp >= amount:
+            stats["political_points"] = pp - amount
+        else:
+            need_temp = amount - pp
+            stats["political_points"] = 0
+            self.evt_temp_pp[country] = temp - need_temp
+        return True
+
+    def _trigger_draw_event_card(self, country: str) -> None:
+        """尝试让 country 消耗 1 政治点数抽取一张事件卡"""
+        if not self._can_draw_event_card(country):
+            if self.info_panel:
+                self.info_panel.show_message("政治点数不足或当前不可抽卡")
+            return
+        if not self._spend_pp(country, 1):
+            return
+        card = self.event_card_deck.draw(country)
+        if not card:
+            if self.info_panel:
+                self.info_panel.show_message("事件卡牌堆已空")
+            return
+
+        # "不懈于内"安全抽卡模式：若负效果则无效
+        is_negative = self._is_negative_event(card, country)
+        safe_draw = self.evt_draw_again_safe
+        self.evt_draw_again_safe = False  # 消耗一次
+
+        if safe_draw and is_negative:
+            # 抽到了负效果卡，无效，但仍消耗了抽卡机会（放入弃牌堆已完成）
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"「不懈于内」：抽到「{card.name}」但效果无效", duration=3.0
+                )
+            return
+
+        # 展示覆盖层
+        self.event_card_overlay = {"card": card, "drawer": country, "safe": safe_draw}
+
+    def _is_negative_event(self, card, country: str) -> bool:
+        """判定事件卡对抽卡方 country 是否为负面效果（用于'不懈于内'）"""
+        et = card.effect_type
+        ev = card.effect_value
+        # 解析实际目标国（PUBLIC 卡作用于 drawer，其余作用于其所属国）
+        tc = country if card.target_country == "DRAWER" else card.deck
+        if tc == country and et in ("pp", "morale") and ev < 0:
+            return True
+        # 特定负效果旗帜（仅当影响抽卡方时算负面）
+        negative_flags = {
+            "flag_xingluo": "SHU",
+            "flag_hu_recruit": "WEI",
+            "flag_hefei": "WU",
+        }
+        flag_country = negative_flags.get(et)
+        if flag_country and flag_country == country:
+            return True
+        return False
+
+    def _confirm_event_card(self) -> None:
+        """玩家点击了「确认」，执行事件卡效果"""
+        if not self.event_card_overlay:
+            return
+        card: EventCardDef = self.event_card_overlay["card"]
+        drawer: str = self.event_card_overlay["drawer"]
+        self.event_card_overlay = None
+        self.evt_overlay_ok_btn = None
+
+        self._apply_event_card(card, drawer)
+        # 不需要点击目标的卡：立即检查是否退出抽卡阶段
+        if not card.needs_target:
+            self._check_evt_draw_phase_pp()
+
+    def _apply_event_card(self, card, drawer: str) -> None:
+        """执行事件卡效果"""
+        et = card.effect_type
+        ev = card.effect_value
+
+        # 确定目标国家
+        tc = card.target_country
+        if tc == "DRAWER":
+            tc = drawer
+
+        def add_pp(c: str, n: int) -> None:
+            stats = self.country_stats.setdefault(
+                c, {"people_support": 0, "political_points": 0}
+            )
+            stats["political_points"] = int(stats.get("political_points", 0)) + n
+
+        def add_morale(c: str, n: int) -> None:
+            stats = self.country_stats.setdefault(
+                c, {"people_support": 0, "political_points": 0}
+            )
+            stats["people_support"] = int(stats.get("people_support", 0)) + n
+
+        msg = f"「{card.name}」：{card.description}"
+
+        if et == "pp":
+            # 老迈昏聩：若下次抽到"江东才俊"则无效
+            if card.id == "evt_jiangdong_cai" and self.evt_laomaikuai_active:
+                self.evt_laomaikuai_active = False
+                if self.info_panel:
+                    self.info_panel.show_message(
+                        f"「老迈昏聩」使「{card.name}」效果无效", duration=3.0
+                    )
+                return
+            add_pp(tc, ev)
+
+        elif et == "morale":
+            add_morale(tc, ev)
+
+        elif et == "pp_temp":
+            self.evt_temp_pp[tc] = self.evt_temp_pp.get(tc, 0) + ev
+            msg = f"「{card.name}」：获得 {ev} 点临时政治点数（本小回合内有效）"
+
+        elif et == "flag_xingluo":
+            add_pp(tc, ev)
+            self.evt_xingluo_active = True
+
+        elif et == "conditional_lonzhong":
+            # 荆州（ID=35）是否属于蜀汉
+            jingzhou = self.map_manager.get_by_id(35)
+            if jingzhou and jingzhou.country == "SHU":
+                self.evt_lonzhong_skill += 1
+                if self.evt_xingluo_active:
+                    add_pp("SHU", 1)
+                    self.evt_xingluo_active = False
+                msg = f"「{card.name}」：荆州属于蜀汉！蜀汉获得进攻东吴骰点+1（累计 {self.evt_lonzhong_skill}）"
+            else:
+                if self.evt_xingluo_active:
+                    add_pp("SHU", 1)
+                    self.evt_xingluo_active = False
+                msg = f"「{card.name}」：荆州不属于蜀汉，无效（但「星落秋风」补偿触发）"
+
+        elif et == "conditional_jingzhu":
+            jingzhou = self.map_manager.get_by_id(35)
+            if jingzhou and jingzhou.country == "WU":
+                self.evt_jingzhu_skill += 1
+                msg = f"「{card.name}」：荆州属于东吴！东吴获得进攻蜀汉骰点+1（累计 {self.evt_jingzhu_skill}）"
+            else:
+                msg = f"「{card.name}」：荆州不属于东吴，无效"
+
+        elif et == "conditional_ruzhong":
+            hanzhong = self.map_manager.get_by_id(17)
+            if hanzhong and hanzhong.country == "WEI":
+                add_pp("WEI", ev)
+                msg = f"「{card.name}」：汉中属于曹魏！曹魏政治点数+{ev}"
+            else:
+                msg = f"「{card.name}」：汉中不属于曹魏，无效"
+
+        elif et == "draw_again_safe":
+            self.evt_draw_again_safe = True
+            msg = f"「{card.name}」：额外免费抽一张，若为负效果则无效"
+            # 立即触发免费再抽一张（不消耗 PP）
+            next_card = self.event_card_deck.draw(drawer)
+            if next_card:
+                ni = self._is_negative_event(next_card, drawer)
+                if ni:
+                    self.evt_draw_again_safe = False
+                    msg += (
+                        f"\n再抽到「{next_card.name}」，为负效果——已被「不懈于内」免除"
+                    )
+                else:
+                    self.evt_draw_again_safe = False
+                    self.event_card_overlay = {
+                        "card": next_card,
+                        "drawer": drawer,
+                        "safe": False,
+                    }
+                    if self.info_panel:
+                        self.info_panel.show_message(msg, duration=2.0)
+                    return
+            else:
+                msg += "\n（牌堆已空，未能再次抽卡）"
+
+        elif et == "evt_skill_yishen":
+            self.evt_yishen_skill = True
+            msg = (
+                f"「{card.name}」：蜀汉持有「一身是胆」（下次被进攻低于1:1时自动触发）"
+            )
+
+        elif et == "flag_liukang":
+            self.evt_flag_liukang = True
+
+        elif et == "flag_hefei":
+            self.evt_flag_hefei = True
+
+        elif et == "flag_she_hushu":
+            self.evt_flag_she_hushu = True
+
+        elif et == "flag_hu_recruit":
+            self.evt_flag_hu_recruit = True
+
+        elif et == "flag_wuwei":
+            add_pp("WU", ev)
+            self.evt_flag_wuwei = True
+
+        elif et == "flag_all_attack":
+            self.evt_flag_all_attack = True
+
+        elif et == "flag_laomaikuai":
+            self.evt_laomaikuai_active = True
+
+        elif et == "flag_wuzi":
+            self.evt_wuzi_rounds = 5
+            self.evt_wuzi_bonus = min(3, self.evt_wuzi_bonus + 1)
+            msg = f"「{card.name}」：曹魏进攻骰点+{self.evt_wuzi_bonus}（剩余 {self.evt_wuzi_rounds} 小回合）"
+
+        elif et in (
+            "unit_mp_plus",
+            "unit_dice_perm_def_minus",
+            "unit_atk_plus",
+            "unit_dice_bonus",
+        ):
+            # 需要玩家点击目标单位
+            self.selecting_evt_target = True
+            self.pending_evt_card_id = card.id
+            self.pending_evt_drawer = drawer
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"「{card.name}」：请点击目标单位（己方）", duration=-1
+                )
+            return
+
+        elif et == "province_def_plus":
+            # 需要玩家点击目标地块
+            self.selecting_evt_target = True
+            self.pending_evt_card_id = card.id
+            self.pending_evt_drawer = drawer
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"「{card.name}」：请点击目标地块（己方部队）", duration=-1
+                )
+            return
+
+        if self.info_panel:
+            self.info_panel.show_message(msg, duration=4.0)
+
+    def _apply_evt_target_unit(self, prov_id: int, slot: int) -> None:
+        """完成需要点击单位的事件卡效果"""
+        card_id = self.pending_evt_card_id
+        drawer = self.pending_evt_drawer
+        self.selecting_evt_target = False
+        self.pending_evt_card_id = None
+        self.pending_evt_drawer = None
+
+        prov = self.map_manager.get_by_id(prov_id)
+        if not prov or slot >= len(prov.units):
+            if self.info_panel:
+                self.info_panel.show_message("目标无效，事件卡取消")
+            return
+        unit = prov.units[slot]
+        card = self.event_card_deck.get_definition(card_id)
+
+        if card_id == "evt_wangshen":  # 忘身于外：单位本大回合 MP+1
+            unit.mp = min(unit.mp + card.effect_value, unit.mp + card.effect_value)
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"「{card.name}」：{unit.unit_type} 本大回合行动力+{card.effect_value}"
+                )
+
+        elif card_id == "evt_yuda":  # 愿打愿挨：本大回合骰点+1，永久防御-1
+            unit.temp_dice_bonus += 1
+            unit.defense_bonus = getattr(unit, "defense_bonus", 0) - 1
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"「{card.name}」：本回合骰点+1，永久防御-1"
+                )
+
+        elif card_id == "evt_xiedie":  # 挟帝发令：永久攻击+1
+            unit.attack_bonus = getattr(unit, "attack_bonus", 0) + card.effect_value
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"「{card.name}」：{unit.unit_type} 永久攻击力+{card.effect_value}"
+                )
+
+        elif card_id == "evt_libing":  # 厉兵秣马：本大回合骰点+1
+            unit.temp_dice_bonus += card.effect_value
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"「{card.name}」：{unit.unit_type} 本大回合骰点+{card.effect_value}"
+                )
+
+        # 目标选择完成，检查是否退出抽卡阶段
+        self._check_evt_draw_phase_pp()
+
+    def _apply_evt_target_province(self, prov_id: int) -> None:
+        """完成需要点击地块的事件卡效果（江东铁壁）"""
+        card_id = self.pending_evt_card_id
+        self.selecting_evt_target = False
+        self.pending_evt_card_id = None
+        self.pending_evt_drawer = None
+
+        card = self.event_card_deck.get_definition(card_id)
+        prov = self.map_manager.get_by_id(prov_id)
+        if not prov or not prov.units:
+            if self.info_panel:
+                self.info_panel.show_message("该地块无己方部队，事件卡取消")
+            return
+
+        for unit in prov.units:
+            unit.defense_bonus = getattr(unit, "defense_bonus", 0) + card.effect_value
+        if self.info_panel:
+            self.info_panel.show_message(
+                f"「{card.name}」：{prov.name} 上 {len(prov.units)} 个单位永久防御+{card.effect_value}"
+            )
+        # 目标选择完成，检查是否退出抽卡阶段
+        self._check_evt_draw_phase_pp()
+
+    # ====================================================================
+    # 事件卡覆盖层渲染
+    # ====================================================================
+
+    def _render_event_card_overlay(self) -> None:
+        """绘制事件卡展示面板（模态覆盖层）"""
+        if not self.event_card_overlay:
+            return
+        card = self.event_card_overlay["card"]
+        drawer = self.event_card_overlay["drawer"]
+
+        font_title = self.country_stat_title_font
+        font_body = self.country_stat_font
+
+        # ---- 预渲染所有文本，用于计算动态高度 ----
+        title_h = font_title.get_height()
+        body_h = font_body.get_height()
+
+        # 描述文字按面板宽度分行（约 24 字/行）
+        panel_w = max(520, int(self.screen_width * 0.38))
+        chunk_size = 24
+        desc_lines: list[str] = []
+        raw = card.description
+        while raw:
+            desc_lines.append(raw[:chunk_size])
+            raw = raw[chunk_size:]
+
+        # 各区域高度
+        padding = 16
+        bar_h = title_h + padding  # 顶部国家色条高度（自适应字体）
+        card_name_h = title_h + padding  # 卡牌名称区
+        desc_total_h = len(desc_lines) * (body_h + 4) + padding
+        btn_section_h = body_h + padding * 3  # 确认按钮区
+
+        panel_h = bar_h + card_name_h + desc_total_h + btn_section_h
+        panel_x = (self.screen_width - panel_w) // 2
+        panel_y = (self.screen_height - panel_h) // 2
+
+        # 半透明背景遮罩
+        overlay = pg.Surface((self.screen_width, self.screen_height), pg.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.window.blit(overlay, (0, 0))
+
+        # 卡牌面板底色
+        panel_rect = pg.Rect(panel_x, panel_y, panel_w, panel_h)
+        pg.draw.rect(self.window, pg.Color("#FFF8E7"), panel_rect, border_radius=12)
+        pg.draw.rect(
+            self.window, pg.Color("#8B4513"), panel_rect, width=3, border_radius=12
+        )
+
+        # ---- 顶部国家颜色标签条 ----
+        # 公共卡（DRAWER）显示抽取方；其余显示实际生效国
+        display_country = (
+            drawer if card.target_country == "DRAWER" else card.target_country
+        )
+        country_color = self.country_button_colors.get(
+            display_country, pg.Color("gray")
+        )
+        tag_rect = pg.Rect(panel_x, panel_y, panel_w, bar_h)
+        pg.draw.rect(self.window, country_color, tag_rect, border_radius=12)
+        pg.draw.rect(
+            self.window,
+            country_color,
+            pg.Rect(panel_x, panel_y + bar_h // 2, panel_w, bar_h // 2),
+        )
+
+        drawer_label = (
+            f"{self.country_labels.get(display_country, display_country)} — 事件卡"
+        )
+        tag_surf = font_title.render(drawer_label, True, pg.Color("white"))
+        self.window.blit(
+            tag_surf,
+            tag_surf.get_rect(center=(panel_x + panel_w // 2, panel_y + bar_h // 2)),
+        )
+
+        # ---- 卡牌名称 ----
+        cur_y = panel_y + bar_h + padding // 2
+        name_surf = font_title.render(card.name, True, pg.Color("#4B2800"))
+        self.window.blit(
+            name_surf, name_surf.get_rect(centerx=panel_x + panel_w // 2, top=cur_y)
+        )
+        cur_y += title_h + padding
+
+        # ---- 分隔线 ----
+        pg.draw.line(
+            self.window,
+            pg.Color("#C8A87A"),
+            (panel_x + 24, cur_y - padding // 2),
+            (panel_x + panel_w - 24, cur_y - padding // 2),
+            1,
+        )
+
+        # ---- 描述文字 ----
+        for dl in desc_lines:
+            ds = font_body.render(dl, True, pg.Color("#333333"))
+            self.window.blit(ds, ds.get_rect(centerx=panel_x + panel_w // 2, top=cur_y))
+            cur_y += body_h + 4
+
+        # ---- 确认按钮 ----
+        btn_w = max(140, font_body.size("确认生效")[0] + 40)
+        btn_h = body_h + padding
+        btn_x = panel_x + (panel_w - btn_w) // 2
+        btn_y = panel_y + panel_h - btn_h - padding
+        btn_rect = pg.Rect(btn_x, btn_y, btn_w, btn_h)
+        self.evt_overlay_ok_btn = btn_rect
+
+        btn_color = pg.Color("#8B4513")
+        if btn_rect.collidepoint(pg.mouse.get_pos()):
+            btn_color = pg.Color("#A0522D")
+        pg.draw.rect(self.window, btn_color, btn_rect, border_radius=8)
+        ok_surf = font_body.render("确认生效", True, pg.Color("white"))
+        self.window.blit(ok_surf, ok_surf.get_rect(center=btn_rect.center))
+
+    # ====================================================================
+    # 事件卡抽取阶段管理
+    # ====================================================================
+
+    def _enter_evt_draw_phase_if_needed(self) -> None:
+        """若当前为人类玩家且有政治点数，进入事件卡抽取阶段"""
+        if not self.player_country:
+            return
+        if self.major_round_choice_pending:
+            return
+        # AI 回合不进入抽卡阶段
+        if self.human_country is not None and self.player_country != self.human_country:
+            return
+        stats = self.country_stats.get(self.player_country, {})
+        pp = int(stats.get("political_points", 0)) + self.evt_temp_pp.get(
+            self.player_country, 0
+        )
+        if pp >= 1:
+            self.evt_draw_phase = True
+            label = self.country_labels.get(self.player_country, self.player_country)
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"【事件卡阶段】{label} 请选择：抽取事件卡 或 跳过"
+                )
+
+    def _exit_evt_draw_phase(self) -> None:
+        """退出事件卡抽取阶段，进入正常行动阶段"""
+        self.evt_draw_phase = False
+        self.evt_skip_draw_btn_rect = None
+        if self.info_panel:
+            self.info_panel.show_properties("")
+
+    def _check_evt_draw_phase_pp(self) -> None:
+        """确认/目标完成后，若 PP 耗尽则自动退出抽卡阶段"""
+        if not self.evt_draw_phase:
+            return
+        if not self.player_country:
+            self.evt_draw_phase = False
+            return
+        stats = self.country_stats.get(self.player_country, {})
+        pp = int(stats.get("political_points", 0)) + self.evt_temp_pp.get(
+            self.player_country, 0
+        )
+        if pp < 1:
+            self._exit_evt_draw_phase()
+            if self.info_panel:
+                self.info_panel.show_message("政治点数耗尽，进入行动阶段", duration=2.0)
+
+    def _render_draw_event_btn(self) -> None:
+        """事件卡抽取阶段按钮组：「抽事件卡」+ 「跳过」"""
+        if self.state != GameState.PLAYING:
+            self.draw_event_btn_rect = None
+            self.evt_skip_draw_btn_rect = None
+            return
+        if self.turn_game_finished or not self.player_country:
+            self.draw_event_btn_rect = None
+            self.evt_skip_draw_btn_rect = None
+            return
+        # 仅在事件卡抽取阶段显示按钮
+        if not self.evt_draw_phase:
+            self.draw_event_btn_rect = None
+            self.evt_skip_draw_btn_rect = None
+            return
+
+        font = self.combat_ui_font
+        top_area_h = int(self.screen_height * 0.15)
+        tag_x = self.country_tag_pos[0]
+        mouse_pos = pg.mouse.get_pos()
+
+        # 以「跳过」按钮为锚点，紧贴国家标签左侧
+        skip_label = "跳过抽卡"
+        skip_surf = font.render(skip_label, True, pg.Color("white"))
+        btn_h = skip_surf.get_height() + 10
+        btn_y = (top_area_h - btn_h) // 2
+        skip_w = skip_surf.get_width() + 20
+        skip_x = tag_x - skip_w - 10
+        skip_rect = pg.Rect(skip_x, btn_y, skip_w, btn_h)
+        self.evt_skip_draw_btn_rect = skip_rect
+        skip_color = (
+            pg.Color("#2E6E30")
+            if not skip_rect.collidepoint(mouse_pos)
+            else pg.Color("#3D9140")
+        )
+        pg.draw.rect(self.window, skip_color, skip_rect, border_radius=6)
+        self.window.blit(skip_surf, skip_surf.get_rect(center=skip_rect.center))
+
+        # 「抽事件卡」按钮：仅在 PP >= 1 时显示，位于跳过按钮左侧
+        if self._can_draw_event_card(self.player_country):
+            draw_label = "抽事件卡(-1PP)"
+            draw_surf = font.render(draw_label, True, pg.Color("white"))
+            draw_w = draw_surf.get_width() + 20
+            draw_x = skip_x - draw_w - 10
+            draw_rect = pg.Rect(draw_x, btn_y, draw_w, btn_h)
+            self.draw_event_btn_rect = draw_rect
+            draw_color = (
+                pg.Color("#6B4226")
+                if not draw_rect.collidepoint(mouse_pos)
+                else pg.Color("#8B5E3C")
+            )
+            pg.draw.rect(self.window, draw_color, draw_rect, border_radius=6)
+            self.window.blit(draw_surf, draw_surf.get_rect(center=draw_rect.center))
+        else:
+            self.draw_event_btn_rect = None
+            draw_x = skip_x
+
+        # 阶段提示文字
+        phase_surf = font.render("▶ 事件卡阶段", True, pg.Color("#FFD700"))
+        left_edge = (
+            self.draw_event_btn_rect.left if self.draw_event_btn_rect else draw_x
+        )
+        phase_x = left_edge - phase_surf.get_width() - 14
+        phase_y = btn_y + (btn_h - phase_surf.get_height()) // 2
+        self.window.blit(phase_surf, (phase_x, phase_y))
+
+    def _tag_w_cache(self) -> int:
+        """返回国家标签宽度（粗略估算）"""
+        if self.player_country and self.player_country in self.country_tag_surfaces:
+            return self.country_tag_surfaces[self.player_country].get_width()
+        return 60
