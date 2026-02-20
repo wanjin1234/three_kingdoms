@@ -431,6 +431,9 @@ class GameApp:
         # 民心按钮专用浮窗字体（更小，防止超出屏幕）
         morale_tt_size = max(10, int(self.screen_height * 0.014))
         self.morale_tt_font = self._font("msyh.ttc", morale_tt_size)
+        # 控制台字体
+        console_font_size = max(14, int(self.screen_height * 0.022))
+        self.console_font = self._font("msyh.ttc", console_font_size)
 
         # 初始化 CardPanel
         # 垂直位置 60% - 85%，水平同 InfoPanel
@@ -474,6 +477,13 @@ class GameApp:
         # 战斗结果显示 (Top UI area)
         self.combat_result_title: str | None = None  # e.g. "1:1 · 骰6 · A1"
         self.combat_result_timer: float = 0.0  # 显示倒计时
+
+        # ====================================================================
+        # 控制台状态（按 ` 键调出，输入指令后回车执行）
+        # ====================================================================
+        self.console_visible: bool = False  # 控制台是否可见
+        self.console_input: str = ""  # 当前输入的文字
+        self.console_message: str = ""  # 上一条执行结果反馈
 
         # 初始填充行动力
         self._replenish_action_points()
@@ -2027,6 +2037,16 @@ class GameApp:
             self.stop()
             return
 
+        # ` 键（反引号）切换控制台显示/隐藏
+        if event.type == pg.KEYDOWN and event.key == pg.K_BACKQUOTE:
+            self._toggle_console()
+            return
+
+        # 控制台打开时，所有后续事件交由控制台处理，不传递给游戏逻辑
+        if self.console_visible:
+            self._handle_console_event(event)
+            return
+
         # 如果正在显示分数屏，优先处理
         if self.show_score_screen:
             self._handle_score_screen_event(event)
@@ -2040,6 +2060,105 @@ class GameApp:
             self._handle_choosing_event(event)
         elif self.state == GameState.PLAYING:
             self._handle_playing_event(event)
+
+    # ====================================================================
+    # 控制台系统
+    # ====================================================================
+
+    def _toggle_console(self) -> None:
+        """切换控制台显示状态"""
+        self.console_visible = not self.console_visible
+        if self.console_visible:
+            self.console_input = ""
+            self.console_message = ""
+
+    def _handle_console_event(self, event: pg.event.Event) -> None:
+        """控制台输入事件处理"""
+        if event.type != pg.KEYDOWN:
+            return
+        if event.key == pg.K_ESCAPE:
+            # Esc 关闭控制台
+            self.console_visible = False
+            self.console_input = ""
+        elif event.key in (pg.K_RETURN, pg.K_KP_ENTER):
+            # 回车确认命令
+            cmd = self.console_input.strip().lower()
+            self._process_console_command(cmd)
+            self.console_input = ""
+            self.console_visible = False
+        elif event.key == pg.K_BACKSPACE:
+            self.console_input = self.console_input[:-1]
+        else:
+            ch = event.unicode
+            if ch and ch.isprintable():
+                self.console_input += ch
+
+    def _process_console_command(self, cmd: str) -> None:
+        """解析并执行控制台命令（cmd 已统一转为小写，大小写不敏感）"""
+        logger.info("控制台命令：%s", cmd)
+        if cmd == "observe":
+            self._enable_observe_mode()
+        elif cmd.startswith("tag "):
+            target = cmd[4:].strip()
+            self._tag_command(target)
+        else:
+            self.console_message = f"未知命令: {cmd}"
+            logger.info("未知控制台命令: %s", cmd)
+
+    def _enable_observe_mode(self) -> None:
+        """激活观察者模式：所有三个国家均由 AI 接管"""
+        if self.state != GameState.PLAYING:
+            self.console_message = "请先进入游戏再使用 observe"
+            return
+        if self.human_country == "OBSERVE":
+            self.console_message = "已处于观察者模式"
+            return
+        self.human_country = "OBSERVE"
+        logger.info("已激活观察者模式，所有国家由 AI 接管")
+        # 若当前回合没有 AI 计时器（即之前是人类回合），立即触发 AI 接管
+        if (
+            self.player_country
+            and not self.turn_game_finished
+            and self._ai_turn_timer is None
+        ):
+            self._ai_turn_timer = pg.time.get_ticks() + 600
+        if self.info_panel:
+            self.info_panel.show_message(
+                "已进入观察者模式：三国均由 AI 接管", duration=3.0
+            )
+        self.console_message = "观察者模式已激活"
+
+    def _tag_command(self, target: str) -> None:
+        """tag 指令：切换玩家控制的国家（shu/wu/wei）。"""
+        mapping = {"shu": "SHU", "wu": "WU", "wei": "WEI"}
+        if target not in mapping:
+            self.console_message = f"用法: tag shu / tag wu / tag wei"
+            return
+        if self.state != GameState.PLAYING:
+            self.console_message = "请先进入游戏再使用 tag"
+            return
+        new_country = mapping[target]
+        label = self.country_labels.get(new_country, new_country)
+        old_human = self.human_country
+        self.human_country = new_country
+        logger.info("控制台切换玩家国家: %s -> %s", old_human, new_country)
+
+        if self.player_country == new_country:
+            # 当前回合恰好是新接管的国家，取消 AI 计时器（由玩家手动操作）
+            self._ai_turn_timer = None
+            if self.info_panel:
+                self.info_panel.show_message(
+                    f"已切换：现在控制{label}（当前正是{label}回合）", duration=3.0
+                )
+        else:
+            # 当前回合不是新玩家国家，若没有 AI 计时器则补触发（继续当前 AI 回合）
+            if self._ai_turn_timer is None and not self.turn_game_finished:
+                self._ai_turn_timer = pg.time.get_ticks() + 600
+            if self.info_panel:
+                self.info_panel.show_message(f"已切换：现在控制{label}", duration=3.0)
+        self.console_message = f"已切换至{label}"
+
+    # ====================================================================
 
     def _handle_loading_event(self, event: pg.event.Event) -> None:
         """处理加载界面的事件（比如点击开始按钮）"""
@@ -4146,6 +4265,7 @@ class GameApp:
         # 如果正在显示分数屏，优先渲染
         if self.show_score_screen:
             self._render_score_screen()
+            self._render_console()
             return
 
         if self.state == GameState.LOADING:
@@ -4156,6 +4276,37 @@ class GameApp:
             self._render_choosing_screen()
         else:
             self._render_gameplay()
+
+        # 控制台浮层始终渲染在最顶层
+        self._render_console()
+
+    def _render_console(self) -> None:
+        """渲染控制台浮层（位于屏幕底部，按 ` 键开关）"""
+        if not self.console_visible:
+            return
+        w = self.screen_width
+        bar_h = max(32, int(self.screen_height * 0.048))
+        y = self.screen_height - bar_h - 2
+        # 半透明背景条
+        overlay = pg.Surface((w, bar_h), pg.SRCALPHA)
+        overlay.fill((0, 0, 0, 200))
+        self.window.blit(overlay, (0, y))
+        # 提示符 + 当前输入 + 光标
+        prompt = "> " + self.console_input + "_"
+        text_surf = self.console_font.render(prompt, True, pg.Color("#e8e8e8"))
+        self.window.blit(text_surf, (12, y + (bar_h - text_surf.get_height()) // 2))
+        # 右侧显示上一条命令的反馈
+        if self.console_message:
+            hint_surf = self.console_font.render(
+                self.console_message, True, pg.Color("#aaffaa")
+            )
+            self.window.blit(
+                hint_surf,
+                (
+                    w - hint_surf.get_width() - 12,
+                    y + (bar_h - hint_surf.get_height()) // 2,
+                ),
+            )
 
     def _render_loading_screen(self) -> None:
         """画加载/开始界面"""
