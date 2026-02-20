@@ -1339,12 +1339,23 @@ class GameApp:
             if province.center_cache
             else province.compute_center(self.hex_side)
         )
+        atk_c = province.country
         best = None
         best_score = float("inf")
         for target in self.map_manager.provinces:
             if target.country == province.country:
                 continue
             if not target.units and not self._is_fort_or_city(target):
+                continue
+            def_c = target.country
+            # 联刘抗曹：蜀汉与东吴本小回合不能互相攻击
+            if self.evt_flag_liukang:
+                if (atk_c == "SHU" and def_c == "WU") or (
+                    atk_c == "WU" and def_c == "SHU"
+                ):
+                    continue
+            # 吴魏媾和：东吴本小回合不能进攻曹魏
+            if self.evt_flag_wuwei and atk_c == "WU" and def_c == "WEI":
                 continue
             t_center = (
                 target.center_cache
@@ -5012,9 +5023,12 @@ class GameApp:
 
         # 记录本小回合该国已生效事件卡（老迈昏聩无效化的卡除外）
         if not (card.id == "evt_jiangdong_cai" and self.evt_laomaikuai_active):
-            self.evt_applied_this_round.setdefault(tc, []).append(
-                (card.name, card.description)
-            )
+            # "ALL" 目标国（如奖率三军）对每个国家都显示
+            _record_countries = self.turn_order if tc == "ALL" else [tc]
+            for _rc in _record_countries:
+                self.evt_applied_this_round.setdefault(_rc, []).append(
+                    (card.name, card.description)
+                )
 
         if et == "pp":
             # 老迈昏聩：若下次抽到"江东才俊"则无效
@@ -5051,10 +5065,14 @@ class GameApp:
                     self.evt_xingluo_active = False
                 msg = f"「{card.name}」：荆州属于蜀汉！蜀汉获得进攻东吴骰点+1（累计 {self.evt_lonzhong_skill}）"
             else:
+                _xingluo_fired = self.evt_xingluo_active
                 if self.evt_xingluo_active:
                     add_pp("SHU", 1)
                     self.evt_xingluo_active = False
-                msg = f"「{card.name}」：荆州不属于蜀汉，无效（但「星落秋风」补偿触发）"
+                if _xingluo_fired:
+                    msg = f"「{card.name}」：荆州不属于蜀汉，无效（但「星落秋风」补偿触发，蜀汉获得+1政治点数）"
+                else:
+                    msg = f"「{card.name}」：荆州不属于蜀汉，无效"
 
         elif et == "conditional_jingzhu":
             jingzhou = self.map_manager.get_by_id(35)
@@ -5240,7 +5258,7 @@ class GameApp:
         card = self.event_card_deck.get_definition(card_id)
 
         if card_id == "evt_wangshen":  # 忘身于外：单位本大回合 MP+1
-            unit.mp = min(unit.mp + card.effect_value, unit.mp + card.effect_value)
+            unit.mp += card.effect_value
             if self.info_panel:
                 self.info_panel.show_message(
                     f"「{card.name}」：{unit.unit_type} 本大回合行动力+{card.effect_value}"
