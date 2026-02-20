@@ -172,6 +172,51 @@ class MapManager:
 
         return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
 
+    def find_path(self, start_id: int, target_id: int) -> list[int]:
+        """返回从 start_id 到 target_id 的最短路径（省ID列表，含首尾）。
+        路径不存在时返回空列表。代价规则与 find_path_cost 相同。"""
+        if start_id == target_id:
+            return [start_id]
+
+        start_prov = self.get_by_id(start_id)
+        if not start_prov:
+            return []
+
+        start_t = start_prov.terrain.lower() if start_prov.terrain else ""
+        start_is_mtn = start_t in ("hill", "mountain", "hills", "mountains")
+        initial_cost = 1 if start_is_mtn else 0
+
+        import heapq
+
+        queue = [(initial_cost, start_id, [start_id])]
+        min_costs: dict[int, int] = {start_id: initial_cost}
+
+        while queue:
+            curr_total, curr_id, path = heapq.heappop(queue)
+
+            if curr_total > min_costs.get(curr_id, float("inf")):
+                continue
+
+            if curr_id == target_id:
+                return path
+
+            for next_id in self._adjacency.get(curr_id, []):
+                next_prov = self.get_by_id(next_id)
+                if not next_prov:
+                    continue
+                step_cost = 1
+                nxt_t = next_prov.terrain.lower() if next_prov.terrain else ""
+                if nxt_t in ("hill", "mountain", "hills", "mountains"):
+                    step_cost += 1
+                if self._river_crossing_edges.get((curr_id, next_id), False):
+                    step_cost += 1
+                new_total = curr_total + step_cost
+                if new_total < min_costs.get(next_id, float("inf")):
+                    min_costs[next_id] = new_total
+                    heapq.heappush(queue, (new_total, next_id, path + [next_id]))
+
+        return []
+
     def find_path_cost(self, start_id: int, target_id: int) -> int:
         """
         计算移动消耗 (Dijkstra 变体)。

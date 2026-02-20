@@ -360,6 +360,12 @@ class GameApp:
         # 改回使用默认的 Arial 字体，因为中文字体 (msyh) 的垂直基线会导致数字无法垂直居中
         self.selection_overlay = SelectionOverlay()
         self.selected_units: List[SelectionEntry] = []
+        # 本小回合移动高亮：移出格和移入格，值为执行动作的国家（用于取对应颜色）
+        self.move_src_provs: dict = {}  # province_id -> country
+        self.move_dst_provs: dict = {}  # province_id -> country
+        # 对应的槽位索引记录，只框住实际移动/招募的那个单位
+        self.move_src_slots: dict = {}  # province_id -> list[int]
+        self.move_dst_slots: dict = {}  # province_id -> list[int]
 
         self.camera = Camera()
         self.event_manager = EventManager(self)
@@ -843,6 +849,11 @@ class GameApp:
 
         self.card_effect_manager.clear_all_effects()
         self._replenish_action_points()
+        # 新局重置移动高亮
+        self.move_src_provs = {}
+        self.move_dst_provs = {}
+        self.move_src_slots = {}
+        self.move_dst_slots = {}
 
         # 记录开局分数（在游戏真正开始时）
         self.score_manager.record_initial_scores(self.map_manager.provinces)
@@ -864,11 +875,14 @@ class GameApp:
         self.major_round_choice_pending = True
         self.major_round_choice_done = {country: False for country in self.turn_order}
         self.country_stat_choice_btns = {}
-        # AI 国家立即自动完成加点（默认选 support）
+        # AI 国家立即自动完成加点：
+        # 策略 — PP 为 0 时选政治点数（保证能抽卡/招募），否则选民心
         if self.human_country is not None:
             for _c in list(self.turn_order):
                 if _c != self.human_country:
-                    self._apply_major_round_choice(_c, "support")
+                    _ai_pp = self._get_total_pp(_c)
+                    _auto_choice = "politics" if _ai_pp == 0 else "support"
+                    self._apply_major_round_choice(_c, _auto_choice)
 
     def _apply_major_round_choice(self, country: str, choice: str) -> None:
         """应用国家在大回合开始时的加点选择。"""
@@ -1258,6 +1272,28 @@ class GameApp:
                 return
 
         self.player_country = self.turn_order[self.turn_index]
+        # 该国开始自己的回合时，清除移动高亮：
+        # 若是人类玩家的回合，清除全部高亮（避免 AI 回合遗留的框在人类回合开始时仍然显示）
+        _new_c = self.player_country
+        if _new_c == self.human_country:
+            self.move_src_provs = {}
+            self.move_dst_provs = {}
+            self.move_src_slots = {}
+            self.move_dst_slots = {}
+        else:
+            self.move_src_provs = {
+                k: v for k, v in self.move_src_provs.items() if v != _new_c
+            }
+            self.move_dst_provs = {
+                k: v for k, v in self.move_dst_provs.items() if v != _new_c
+            }
+            # 同步清理对应槽位记录
+            self.move_src_slots = {
+                k: v for k, v in self.move_src_slots.items() if k in self.move_src_provs
+            }
+            self.move_dst_slots = {
+                k: v for k, v in self.move_dst_slots.items() if k in self.move_dst_provs
+            }
         self.card_manager = self.card_managers[self.player_country]
         self._update_card_panel()
 
@@ -1285,46 +1321,99 @@ class GameApp:
     # ---------------------------------------------------------------
 
     def _ai_get_border_provinces(self, country: str):
-        """返回己方的边境省列表：与敌方省份相邻（距离 <= 1格）的己方省份，
-        按其到最近敌省的像素距离升序排列（越靠前越接近敌方）。"""
-        unit_stride = SQRT3 * self.hex_side
+        """返回己方的边境省列表：在邻接图中与敌方省份直接相连（可通行边）的己方省份，
+        按其到最近直接相邻敌省的像素距离升序排列。
+        使用邻接图而非像素距离，确保蜀吴之间不可通行的山地带不被误判为边境。"""
         border = []
         for prov in self.map_manager.provinces:
             if prov.country != country:
                 continue
             p_center = prov.center_cache or prov.compute_center(self.hex_side)
             min_d = float("inf")
-            for enemy in self.map_manager.provinces:
-                if enemy.country == country or not enemy.country:
+            for nbr_id in self.map_manager._adjacency.get(prov.province_id, []):
+                nbr = self.map_manager.get_by_id(nbr_id)
+                if nbr is None or nbr.country == country or not nbr.country:
                     continue
-                e_center = enemy.center_cache or enemy.compute_center(self.hex_side)
+                # 邻接图中直接相连 => 可通行边界
+                e_center = nbr.center_cache or nbr.compute_center(self.hex_side)
                 d = dist(p_center, e_center)
                 if d < min_d:
                     min_d = d
-            # 1.1 格范围内有敌省即视为边境
-            if min_d <= unit_stride * 1.1:
+            if min_d < float("inf"):
                 border.append((min_d, prov))
         border.sort(key=lambda x: x[0])
         return [p for _, p in border]
 
     def _ai_get_main_threat_country(self, country: str) -> str | None:
-        """返回在AI边境线对面兵力最多的敌国。
-        统计与AI领土相邻（1.1格内）的所有敌省的兵力，按国家累加，取最多的那个。"""
-        unit_stride = SQRT3 * self.hex_side
-        own_provs = [p for p in self.map_manager.provinces if p.country == country]
+        """返回在AI边境线对面（邻接图直接相邻可通行网格）兵力最多的敌国。
+        仅统计与己方省份在邻接图中直接相连的敌方省份，排除不可通行地带隔开的省份。"""
+        own_prov_ids = {
+            p.province_id for p in self.map_manager.provinces if p.country == country
+        }
         threat: dict[str, int] = {}
-        for prov in self.map_manager.provinces:
-            if prov.country == country or not prov.country:
-                continue
-            p_center = prov.center_cache or prov.compute_center(self.hex_side)
-            for own in own_provs:
-                o_center = own.center_cache or own.compute_center(self.hex_side)
-                if dist(p_center, o_center) <= unit_stride * 1.1:
-                    threat[prov.country] = threat.get(prov.country, 0) + len(prov.units)
-                    break  # 每个敌省只计一次
+        counted: set[int] = set()  # 每个敌省只计一次
+        for prov_id in own_prov_ids:
+            for nbr_id in self.map_manager._adjacency.get(prov_id, []):
+                if nbr_id in counted:
+                    continue
+                nbr = self.map_manager.get_by_id(nbr_id)
+                if nbr is None or nbr.country == country or not nbr.country:
+                    continue
+                threat[nbr.country] = threat.get(nbr.country, 0) + len(nbr.units)
+                counted.add(nbr_id)
         if not threat:
             return None
         return max(threat, key=lambda c: threat[c])
+
+    def _ai_use_summon_card(self, country: str, card_id: str, target_prov) -> bool:
+        """AI 专用：直接使用召唤锦囊卡，在目标省召唤单位。
+        绕过 _apply_card_to_province 中针对人类玩家的 player_country 检查。
+        """
+        cm = self.card_managers.get(country)
+        if cm is None or cm.is_card_used(card_id):
+            return False
+        card_def = self.card_repository.get_definition(card_id)
+        if card_def is None:
+            return False
+        if len(target_prov.units) >= MAX_UNIT_STACK:
+            return False
+
+        _SUMMON_MAP = {
+            "card_qilin_qishu": ("WUDANG_archer", "SHU", "无当飞军"),
+            "card_guanmu_xiangkan": ("JIEFAN_infantry", "WU", "解烦兵"),
+        }
+        entry = _SUMMON_MAP.get(card_id)
+        if entry is None:
+            return False
+        unit_type, required_country, unit_name = entry
+        if target_prov.country != required_country:
+            return False
+
+        try:
+            unit_def = self.unit_repository.get_definition(unit_type)
+            new_unit = UnitState(unit_type)
+            new_unit.mp = unit_def.move
+            target_prov.units.append(new_unit)
+            self.map_manager.invalidate_cache()
+            # 招募高亮
+            self.move_dst_provs[target_prov.province_id] = country
+            self.move_dst_slots[target_prov.province_id] = [len(target_prov.units) - 1]
+        except Exception:
+            logger.exception("AI 召唤 %s 失败", unit_name)
+            return False
+
+        cm.use_card(card_id)
+        self.info_panel.show_message(
+            f"在{target_prov.name}召唤了{unit_name}", duration=2.0
+        )
+        logger.info(
+            "AI [%s] 使用 %s，在 %s 召唤了 %s",
+            country,
+            card_id,
+            target_prov.name,
+            unit_name,
+        )
+        return True
 
     def _ai_execute_combat(self, province, slot_idx, target):
         """AI 直接执行战斗（跳过 UI 交互）。返回是否成功发起。"""
@@ -1344,12 +1433,23 @@ class GameApp:
 
     def _run_ai_turn(self) -> None:
         """AI 行动：自动完成大回合加点选择 + 移动/攻击，然后结束本国回合。
-        策略：先将所有内陆部队调往边境，全部到位后再发动进攻。"""
+        策略：先将所有内陆部队整省调往边境，全部到位后再发动进攻。
+        同时会抽取事件卡、使用锦囊卡、招募部队、解除混乱。"""
         if self.turn_game_finished:
             return
         country = self.player_country
         if country is None or country == self.human_country:
             return
+
+        # 最优先：若有残留的未确认事件卡覆盖层（如 draw_again_safe 的第二张牌），立即确认
+        if self.event_card_overlay:
+            _tmp_drawer = self.event_card_overlay.get("drawer", "")
+            if _tmp_drawer != self.human_country:
+                self._confirm_event_card()
+            # 确认后若仍有覆盖层或目标选择, 等下一帧
+            if self.event_card_overlay or self.selecting_evt_target:
+                self._ai_turn_timer = pg.time.get_ticks() + 300
+                return
 
         # --- 民心等级效果（AI自动处理）---
         _ai_support = self._get_people_support_level(country)
@@ -1360,7 +1460,6 @@ class GameApp:
             and self.morale_lv2_used.get(country, 0) != self.major_round
         ):
             border_provs_lv2 = self._ai_get_border_provinces(country)
-            _did_free_move = False
             for _bp in border_provs_lv2:
                 if not _bp.units:
                     continue
@@ -1375,9 +1474,7 @@ class GameApp:
                     self.morale_free_move_mode = True
                     self.selected_units = [(_bp.province_id, 0)]
                     self._handle_movement(_dest)
-                    _did_free_move = True
                     break
-            # 无论是否找到目标都消耗额度（避免无限尝试）
             self.morale_lv2_used[country] = self.major_round
             self.morale_free_move_mode = False
 
@@ -1393,18 +1490,15 @@ class GameApp:
                     self.morale_lv3_used[country] = self.major_round
                     break
             else:
-                self.morale_lv3_used[country] = (
-                    self.major_round
-                )  # no units, still consume
+                self.morale_lv3_used[country] = self.major_round
 
         # 民心4级（军容严整）：大回合结束时解除混乱 - 在 _advance_country_turn 中处理
 
-        # --- 阶段0：处理事件卡目标选择（needs_target 类卡牌的 AI 自动选择） ---
+        # --- 阶捩0：处理事件卡目标选择（needs_target 类卡牌的 AI 自动选择） ---
         if self.selecting_evt_target and self.pending_evt_card_id:
             card_def = self.event_card_deck.get_definition(self.pending_evt_card_id)
             if card_def:
                 if card_def.target_type == "unit":
-                    # AI 策略：优先选边境有部队的省，再退而求其次选任意己方单位
                     chosen_prov = None
                     chosen_slot = 0
                     border_provs = self._ai_get_border_provinces(country)
@@ -1424,13 +1518,11 @@ class GameApp:
                             chosen_prov.province_id, chosen_slot
                         )
                     else:
-                        # 无可用单位，直接清除状态
                         self.selecting_evt_target = False
                         self.pending_evt_card_id = None
                         self.pending_evt_drawer = None
                         self._check_evt_draw_phase_pp()
                 elif card_def.target_type == "province":
-                    # AI 策略：选单位最多的己方省
                     chosen_prov = max(
                         (
                             p
@@ -1455,26 +1547,49 @@ class GameApp:
             # 目标选择完毕，本帧 AI 行动结束，等待下一帧正常行动
             return
 
-        # --- 阶段1：大回合加点（如果还未选择） ---
+        # --- 阶捩1：大回合加点（如果还未选择） ---
         if self.major_round_choice_pending:
             for c in list(self.turn_order):
                 # 只代替 AI 国家自动选择，玩家国家必须等玩家手动点击
                 if c == self.human_country:
                     continue
                 if not self.major_round_choice_done.get(c, False):
-                    self._apply_major_round_choice(c, "support")
+                    # 智能选择：PP为0时加政治点数增加抽卡机会，否则加民心
+                    _ai_pp_now = self._get_total_pp(c)
+                    _choice = "politics" if _ai_pp_now == 0 else "support"
+                    self._apply_major_round_choice(c, _choice)
             # 若玩家还未选择，等待玩家操作，暂不继续 AI 行动
             if self.major_round_choice_pending:
                 self._ai_turn_timer = pg.time.get_ticks() + 300
                 return
 
-        # 预计算本国边境省集合
+        # --- 阶捩1.5：事件卡抽取（AI 主动消耗 PP 抽卡，每回合最多1次） ---
+        _evt_loop = 0
+        while _evt_loop < 1 and self._can_draw_event_card(country):
+            _evt_loop += 1
+            self._trigger_draw_event_card(country)
+            # 自动确认事件卡覆盖层
+            if self.event_card_overlay:
+                _overlay_drawer = self.event_card_overlay.get("drawer", country)
+                if _overlay_drawer != self.human_country:
+                    self._confirm_event_card()
+            # 若触发了需要目标选择，立即处理
+            if self.selecting_evt_target and self.pending_evt_card_id:
+                self._ai_auto_select_evt_target(country)
+            # 若仍有覆盖层或目标选择，下一帧继续
+            if self.event_card_overlay or self.selecting_evt_target:
+                self._ai_turn_timer = pg.time.get_ticks() + 200
+                return
+
+        # ―― 预计算边境省集合 ――
         border_provs = self._ai_get_border_provinces(country)
         border_ids = {p.province_id for p in border_provs}
 
-        # 收集所有己方有行动力的单位，按"是否在边境"分两组
-        border_units = []  # (province, slot_idx, unit_state)
-        inland_units = []
+        # 收集所有己方有行动力的单位，按省分组
+        # inland_by_prov: { province_id: (province, [(slot_idx, unit_state), ...]) }
+        # border_by_prov: same structure
+        inland_by_prov: dict = {}
+        border_by_prov: dict = {}
 
         for province in self.map_manager.provinces:
             if province.country != country:
@@ -1482,58 +1597,131 @@ class GameApp:
             for slot_idx, unit_state in enumerate(province.units):
                 if unit_state.mp <= 0:
                     continue
-                if province.province_id in border_ids:
-                    border_units.append((province, slot_idx, unit_state))
+                key = province.province_id
+                if key in border_ids:
+                    if key not in border_by_prov:
+                        border_by_prov[key] = (province, [])
+                    border_by_prov[key][1].append((slot_idx, unit_state))
                 else:
-                    inland_units.append((province, slot_idx, unit_state))
+                    if key not in inland_by_prov:
+                        inland_by_prov[key] = (province, [])
+                    inland_by_prov[key][1].append((slot_idx, unit_state))
+
+        # 平铺的边境单位列表（供攻击逻辑使用）
+        border_units = [
+            (prov, slot_idx, unit_state)
+            for prov, slots in border_by_prov.values()
+            for slot_idx, unit_state in slots
+        ]
 
         action_taken = False
 
-        # 计算本国的主要威胁方，让边境单位优先面向该国行动
+        # 计算本国的主要威胁方
         _main_threat = self._ai_get_main_threat_country(country)
 
         def _border_threat_key(item):
-            """优先选与主威胁国相邻的边境省"""
+            """优先选与主威胁国在邻接图中直接相邻的边境省（排除不可通行隔断）"""
             prov, _, _ = item
-            p_c = prov.center_cache or prov.compute_center(self.hex_side)
-            unit_stride = SQRT3 * self.hex_side
-            for ep in self.map_manager.provinces:
-                if ep.country == _main_threat:
-                    ec = ep.center_cache or ep.compute_center(self.hex_side)
-                    if dist(p_c, ec) <= unit_stride * 1.1:
-                        return 0  # 与主威胁国相邻 → 最高优先
+            for nbr_id in self.map_manager._adjacency.get(prov.province_id, []):
+                nbr = self.map_manager.get_by_id(nbr_id)
+                if nbr is not None and nbr.country == _main_threat:
+                    return 0
             return 1
 
         border_units.sort(key=_border_threat_key)
 
-        # --- 阶段2（最高优先级）：内陆单位向边境线移动 ---
-        # 只要还有内陆单位能移动，就优先集结，不发动攻击
-        if inland_units:
-            # 按距最近边境省由近到远排序，离边境最近的先动
-            def _inland_priority(item):
-                prov, _, _ = item
-                p_c = prov.center_cache or prov.compute_center(self.hex_side)
-                min_d = float("inf")
-                for bp in border_provs:
-                    b_c = bp.center_cache or bp.compute_center(self.hex_side)
-                    d = dist(p_c, b_c)
-                    if d < min_d:
-                        min_d = d
-                return min_d
+        # ―― 辅助：计算省到目标的路径代价 ――
+        def _calc_path_cost(src_prov, tgt_prov, lead_unit):
+            src_eff = self.card_effect_manager.get_effect(str(src_prov.province_id))
+            ign = bool(getattr(lead_unit, "temp_terrain_immunity", False))
+            if src_eff and src_eff.terrain_immunity:
+                ign = True
+            if ign:
+                return self._find_path_cost_ignore_mountain(
+                    src_prov.province_id, tgt_prov.province_id
+                )
+            return self.map_manager.find_path_cost(
+                src_prov.province_id, tgt_prov.province_id
+            )
 
-            inland_units.sort(key=_inland_priority)
+        # --- 阶捩2：内陆单位整省向边境线移动 ---
+        if inland_by_prov:
 
-            for province, slot_idx, unit_state in inland_units:
-                dest = self._ai_pick_move_target(province, unit_state, border_provs)
-                if dest is not None:
-                    self.selected_units = [(province.province_id, slot_idx)]
-                    self._handle_movement(dest)
-                    # 检查回合是否已推进（_handle_movement 内部可能静默失败而不调用 _finish_country_action）
-                    if self.player_country != country:
-                        return  # 移动成功，回合已推进
-                    # 移动失败（如堆叠满员），继续尝试下一个单位
+            def _inland_prov_priority(item):
+                province, _ = item
+                p_c = province.center_cache or province.compute_center(self.hex_side)
+                if not border_provs:
+                    return float("inf")
+                return min(
+                    dist(p_c, bp.center_cache or bp.compute_center(self.hex_side))
+                    for bp in border_provs
+                )
 
-        # --- 阶段3：所有单位均已在边境（或内陆无法移动），发动攻击 ---
+            sorted_inland = sorted(inland_by_prov.values(), key=_inland_prov_priority)
+
+            for province, slots in sorted_inland:
+                lead_unit = slots[0][1]
+                dest = self._ai_pick_move_target(province, lead_unit, border_provs)
+                if dest is None:
+                    continue
+                pc = _calc_path_cost(province, dest, lead_unit)
+                if pc > 100:
+                    continue
+                # 只选行动力足够的单位，整省一次移动
+                valid_slots = [(idx, u) for idx, u in slots if u.mp >= pc]
+                if not valid_slots:
+                    continue
+                self.selected_units = [
+                    (province.province_id, idx) for idx, _ in valid_slots
+                ]
+                self._handle_movement(dest)
+                if self.player_country != country:
+                    return  # 移动成功，回合已推进
+
+        # --- 阶捩2.5：进攻前激活进攻锦囊卡，并使用召唤卡（七擒七纵/刮目相看）---
+        _cm = self.card_managers.get(country)
+        if _cm:
+            for _card in list(_cm.get_available_cards()):
+                # 进攻卡直接激活
+                if _card.category == "offensive" and _card.id in (
+                    "card_zhenjing_huaxia_shu",
+                    "card_huoshao_lianying",
+                ):
+                    if self.card_effect_manager.activate_offensive_card(_card.id):
+                        _cm.use_card(_card.id)
+                        action_taken = True
+
+                # 召唤卡：七擒七纵（SHU）/ 刮目相看（WU）
+                # 优先选有部队的边境省（未满员），次选任意己方未满员省
+                elif _card.category == "summon" and _card.id in (
+                    "card_qilin_qishu",
+                    "card_guanmu_xiangkan",
+                ):
+                    _summon_tgt = None
+                    # 第一轮：有部队且未满员的边境省
+                    for _rp in self.map_manager.provinces:
+                        if (
+                            _rp.country == country
+                            and _rp.units
+                            and len(_rp.units) < MAX_UNIT_STACK
+                            and _rp.province_id in border_ids
+                        ):
+                            _summon_tgt = _rp
+                            break
+                    # 第二轮：任意己方未满员省
+                    if _summon_tgt is None:
+                        for _rp in self.map_manager.provinces:
+                            if (
+                                _rp.country == country
+                                and len(_rp.units) < MAX_UNIT_STACK
+                            ):
+                                _summon_tgt = _rp
+                                break
+                    if _summon_tgt is not None:
+                        if self._ai_use_summon_card(country, _card.id, _summon_tgt):
+                            action_taken = True
+
+        # --- 阶捩3：所有单位均已在边境（或内陆无法移动），发动攻击 ---
         for province, slot_idx, unit_state in border_units:
             if self._has_attackable_target_for_unit(province, unit_state):
                 target = self._ai_pick_attack_target(province, unit_state)
@@ -1542,22 +1730,58 @@ class GameApp:
                         # _execute_combat 已调用 _finish_country_action，直接返回
                         return
 
-        # --- 阶段4：无法攻击，边境单位向敌省压进 ---
-        for province, slot_idx, unit_state in border_units:
-            dest = self._ai_pick_move_target(province, unit_state, None)
-            if dest is not None:
-                self.selected_units = [(province.province_id, slot_idx)]
-                self._handle_movement(dest)
-                # 检查回合是否已推进（_handle_movement 内部可能静默失败而不调用 _finish_country_action）
-                if self.player_country != country:
-                    return  # 移动成功，回合已推进
-                # 移动失败（如堆叠满员），继续尝试下一个单位
+        # --- 阶捩4：无法攻击，边境省整体向敌省压进 ---
+        for prov_id, (province, slots) in border_by_prov.items():
+            lead_unit = slots[0][1]
+            dest = self._ai_pick_move_target(province, lead_unit, None)
+            if dest is None:
+                continue
+            pc = _calc_path_cost(province, dest, lead_unit)
+            if pc > 100:
+                continue
+            valid_slots = [(idx, u) for idx, u in slots if u.mp >= pc]
+            if not valid_slots:
+                continue
+            self.selected_units = [
+                (province.province_id, idx) for idx, _ in valid_slots
+            ]
+            self._handle_movement(dest)
+            if self.player_country != country:
+                return  # 移动成功，回合已推进
 
-        # --- 阶段4.5：移动/攻击都无法进行时，才考虑使用政治点数（PP）---
-        # 治疗优先，其次才招募新兵；不抢占移动/攻击机会
+        # --- 阶捩4.3：使用增益锦囊卡（整省加成边境有部队的格子） ---
+        # 注：召唤卡已在阶捩2.5中提前处理
+        if _cm:
+            _border_ids_set = {
+                p.province_id for p in self._ai_get_border_provinces(country)
+            }
+            for _card in list(_cm.get_available_cards()):
+                if _card.category == "buff":
+                    # 优先选有部队且未满员的边境格子，次选任意己方有部队的省
+                    _tgt = None
+                    for _rp in self.map_manager.provinces:
+                        if (
+                            _rp.country == country
+                            and _rp.units
+                            and len(_rp.units) < MAX_UNIT_STACK
+                            and _rp.province_id in _border_ids_set
+                        ):
+                            _tgt = _rp
+                            break
+                    if _tgt is None:
+                        for _rp in self.map_manager.provinces:
+                            if _rp.country == country and _rp.units:
+                                _tgt = _rp
+                                break
+                    if _tgt is not None:
+                        if self._apply_card_to_province(_card.id, _tgt.province_id):
+                            action_taken = True
+
+        # --- 阶捩4.5：移动/攻击都无法进行时，才考虑使用政治点数（PP） ---
+        # 治症优先，其次才招募新兵；不抢占移动/攻击机会
         _ai_pp_used = False
         if self._pp_can_use(country):
-            # 1) 治疗伤兵
+            # 1) 治症伤兵
             for _prov in self.map_manager.provinces:
                 if _prov.country != country:
                     continue
@@ -1601,11 +1825,31 @@ class GameApp:
                         new_u.hp = 1
                         self._spend_pp(country, 1)
                     _recruit_target.units.append(new_u)
+                    self.map_manager.invalidate_cache()
+                    # 招募高亮
+                    self.move_dst_provs[_recruit_target.province_id] = country
+                    self.move_dst_slots[_recruit_target.province_id] = [
+                        len(_recruit_target.units) - 1
+                    ]
                     _ai_pp_used = True
             if _ai_pp_used:
                 action_taken = True
 
-        # --- 阶段5：结束本国回合 ---
+        # --- 阶捩4.7：主动解除混乱单位（消耗本回合行动） ---
+        if self._has_confused_units_for_country(country):
+            # 找第一个混乱单位并解除（与玩家操作等价）
+            for _prov in self.map_manager.provinces:
+                if _prov.country != country:
+                    continue
+                for _u in _prov.units:
+                    if _u.is_confused:
+                        _u.is_confused = False
+                        self._finish_country_action(
+                            f"AI({country})解除混乱", keep_info_message=True
+                        )
+                        return
+
+        # --- 阶捩5：结束本国回合 ---
         self._finish_country_action(
             f"AI({country})行动", keep_info_message=action_taken
         )
@@ -1680,15 +1924,14 @@ class GameApp:
                     continue
                 bc = bp.center_cache or bp.compute_center(self.hex_side)
                 d = dist(p_center, bc)
-                # 检查该边境省是否与主威胁国相邻
+                # 检查该边境省是否与主威胁国相邻（使用邻接图，排除不可通行隔断）
                 is_facing_threat = False
                 if main_threat:
-                    for ep in self.map_manager.provinces:
-                        if ep.country == main_threat:
-                            ec = ep.center_cache or ep.compute_center(self.hex_side)
-                            if dist(bc, ec) <= unit_stride * 1.1:
-                                is_facing_threat = True
-                                break
+                    for nbr_id in self.map_manager._adjacency.get(bp.province_id, []):
+                        nbr = self.map_manager.get_by_id(nbr_id)
+                        if nbr is not None and nbr.country == main_threat:
+                            is_facing_threat = True
+                            break
                 if is_facing_threat and d < best_d_threat:
                     best_d_threat = d
                     anchor_threat = bc
@@ -1698,7 +1941,8 @@ class GameApp:
             anchor_center = anchor_threat or anchor_any
 
         if anchor_center is None:
-            # 回退：以最近敌省为锚，优先瞄准主威胁国
+            # 回退：以最近可达敌省为锚，优先瞄准主威胁国
+            # 只考虑从本省出发路径代价 < 9999 的敌省（排除不可通行地带对面的省）
             main_threat = self._ai_get_main_threat_country(province.country)
             best_d = float("inf")
             best_d_fallback = float("inf")
@@ -1706,6 +1950,14 @@ class GameApp:
             anchor_center_fallback = None
             for target in self.map_manager.provinces:
                 if target.country == province.country or not target.country:
+                    continue
+                # 验证从本省到该敌省存在可通行路径
+                if (
+                    self.map_manager.find_path_cost(
+                        province.province_id, target.province_id
+                    )
+                    >= 9999
+                ):
                     continue
                 tc = target.center_cache or target.compute_center(self.hex_side)
                 d = dist(p_center, tc)
@@ -1909,8 +2161,15 @@ class GameApp:
         # 如果还有选中单位，恢复显示选中单位的信息
         self._update_selection_info()
 
-    def add_selection(self, province_id: int, slot_index: int) -> None:
-        """添加一个选中单位"""
+    def add_selection(
+        self,
+        province_id: int,
+        slot_index: int,
+        allow_cross_province: bool = False,
+    ) -> None:
+        """添加一个选中单位。
+        allow_cross_province=True 时（Shift+点击）允许跨格子多选，否则强制同格操作。
+        """
         # 只要发生了新的选择操作，肯定要清空上一轮战斗的残留结果
         self.combat_result_title = None
         self.combat_result_timer = 0
@@ -1921,7 +2180,8 @@ class GameApp:
             return
 
         # 若已有选中单位且来自不同格子，先清空再选新格子（强制同格操作）
-        if self.selected_units:
+        # Shift+点击时跳过此限制，允许跨格子多选
+        if not allow_cross_province and self.selected_units:
             existing_pids = {pid for pid, _ in self.selected_units}
             if province_id not in existing_pids:
                 self.selected_units.clear()
@@ -2532,6 +2792,13 @@ class GameApp:
                                             _nu.mp = _udef.move
                                             _tprov.units.append(_nu)
                                             self.map_manager.invalidate_cache()
+                                            # 招募高亮
+                                            self.move_dst_provs[_tprov.province_id] = (
+                                                self.player_country
+                                            )
+                                            self.move_dst_slots[_tprov.province_id] = [
+                                                len(_tprov.units) - 1
+                                            ]
                                             _remain = self._get_total_pp(
                                                 self.player_country
                                             )
@@ -2812,7 +3079,13 @@ class GameApp:
                     if (prov_id, slot_idx) in self.selected_units:
                         self.remove_selection(prov_id, slot_idx)
                     else:
-                        self.add_selection(prov_id, slot_idx)
+                        # Shift+点击：允许追加选中其他格子上的单位
+                        shift_held = bool(pg.key.get_mods() & pg.KMOD_SHIFT)
+                        self.add_selection(
+                            prov_id,
+                            slot_idx,
+                            allow_cross_province=shift_held,
+                        )
                     return
                 else:
                     # 如果点了空地，是否取消所有选择？
@@ -3018,6 +3291,80 @@ class GameApp:
             self.info_panel.show_message("无法到达")
             return
 
+        # 路径拦截：逐步模拟行军，空的非己方格子可继续穿越（并占领），
+        # 遇到有敌方单位的格子才停下发起进攻。
+        _intermediate_to_occupy = []  # 路径上需要占领的中间空格（不含最终目的地）
+        if not self.morale_free_move_mode:
+            if ignore_mountain:
+                _full_path = self._find_path_ignore_mountain(
+                    source.province_id, target.province_id
+                )
+            else:
+                _full_path = self.map_manager.find_path(
+                    source.province_id, target.province_id
+                )
+
+            if _full_path and len(_full_path) >= 2:
+                # 起点地形惩罚（与 find_path_cost 保持一致）
+                if ignore_mountain:
+                    _cumulative = 0
+                else:
+                    _src_t = (source.terrain or "").lower()
+                    _cumulative = (
+                        1 if _src_t in ("hill", "mountain", "hills", "mountains") else 0
+                    )
+                _unit_mp = selected_unit.mp
+                _intercept_prov = None
+                _effective_target = target
+                _effective_cost = path_cost
+
+                for _i in range(1, len(_full_path)):
+                    _prev_id = _full_path[_i - 1]
+                    _curr_id = _full_path[_i]
+                    # 计算这一步的消耗
+                    _sc = 1
+                    if not ignore_mountain:
+                        _nxt_p = self.map_manager.get_by_id(_curr_id)
+                        _nxt_t = (_nxt_p.terrain or "").lower() if _nxt_p else ""
+                        if _nxt_t in ("hill", "mountain", "hills", "mountains"):
+                            _sc += 1
+                    if self._is_river_crossing(_prev_id, _curr_id):
+                        _sc += 1
+                    _cumulative += _sc
+
+                    if _cumulative > _unit_mp:
+                        break  # 行动力不足，止步于此
+
+                    _curr_prov = self.map_manager.get_by_id(_curr_id)
+                    if _curr_prov.country != self.player_country:
+                        if _curr_prov.units:
+                            # 遇到有敌方单位的格子，触发进攻（留在原地）
+                            _intercept_prov = _curr_prov
+                            break
+                        else:
+                            # 空的非己方格子：记录穿越，继续前进
+                            _effective_target = _curr_prov
+                            _effective_cost = _cumulative
+                            _intermediate_to_occupy.append(_curr_prov)
+                    else:
+                        # 己方格子，正常通过
+                        _effective_target = _curr_prov
+                        _effective_cost = _cumulative
+
+                if _intercept_prov is not None:
+                    self._handle_combat(_intercept_prov)
+                    return
+
+                # 更新目的地和路径代价
+                target = _effective_target
+                path_cost = _effective_cost
+                # 从待占领列表中去掉最终目的地（它由 moving_units 逻辑负责占领）
+                _intermediate_to_occupy = [
+                    p
+                    for p in _intermediate_to_occupy
+                    if p.province_id != target.province_id
+                ]
+
         # 令行禁止自由移动：只能移动到直接相邻的格子（不受地形代价限制）
         if self.morale_free_move_mode:
             _lxjz_neighbors = self.map_manager._adjacency.get(source.province_id, [])
@@ -3060,6 +3407,7 @@ class GameApp:
         )
 
         # 4. 执行移动
+        _orig_src_count = len(source.units)  # 移动前出发格的单位数
         new_source_list = []
         # 将未移动的单位保留在原地
         moved_indices = set(selected_indices)
@@ -3077,6 +3425,23 @@ class GameApp:
         if moving_units:
             target.country = self.player_country
             self.map_manager.invalidate_cache()
+            # 记录移动高亮：出发省记录空出的尾部槽位（单位移走后剩余单位左移，末尾N个槽位变空）
+            _n_moved = len(moving_units)
+            _src_slots = list(range(_orig_src_count - _n_moved, _orig_src_count))
+            _dst_start = len(target.units) - len(moving_units)
+            _dst_slots = list(range(_dst_start, len(target.units)))
+            self.move_src_provs[source_id] = self.player_country
+            self.move_src_slots[source_id] = _src_slots
+            self.move_dst_provs[target.province_id] = self.player_country
+            self.move_dst_slots[target.province_id] = _dst_slots
+
+            # 占领路径上的中间空格（不包含最终目的地）
+            for _occ in _intermediate_to_occupy:
+                _occ.country = self.player_country
+                self.move_dst_provs[_occ.province_id] = self.player_country
+                self.move_dst_slots[_occ.province_id] = []  # 无单位停驻，不画框
+            if _intermediate_to_occupy:
+                self.map_manager.invalidate_cache()
 
             # 检查是否达成"天下归心"胜利条件
             self._check_tianxia_guixin_victory()
@@ -3304,6 +3669,36 @@ class GameApp:
                     heapq.heappush(queue, (new_total, next_id))
 
         return 9999
+
+    def _find_path_ignore_mountain(self, start_id: int, target_id: int) -> list:
+        """返回忽略山地消耗的最短路径（省ID列表，含首尾）。"""
+        if start_id == target_id:
+            return [start_id]
+
+        import heapq
+
+        queue = [(0, start_id, [start_id])]
+        min_costs: dict = {start_id: 0}
+
+        while queue:
+            curr_total, curr_id, path = heapq.heappop(queue)
+
+            if curr_total > min_costs.get(curr_id, float("inf")):
+                continue
+
+            if curr_id == target_id:
+                return path
+
+            for next_id in self.map_manager._adjacency.get(curr_id, []):
+                step_cost = 1
+                if self._is_river_crossing(curr_id, next_id):
+                    step_cost += 1
+                new_total = curr_total + step_cost
+                if new_total < min_costs.get(next_id, float("inf")):
+                    min_costs[next_id] = new_total
+                    heapq.heappush(queue, (new_total, next_id, path + [next_id]))
+
+        return []
 
     def _try_apply_gexu_guard(
         self, province: object, units: List[UnitState], pre_hp_map: Dict[int, int]
@@ -4141,24 +4536,29 @@ class GameApp:
         target.units = [u for u in target.units if u.hp > 0]
 
     def _advance_after_combat(self, attackers: List, target: object) -> None:
-        """进占: 派出至多2个单位"""
-        # 简单策略：移动前两个还能动的进攻单位
+        """进占: 按选择顺序派出至多2个**相邻**的进攻单位。
+        只有与目标格直接相邻的省的单位才可以占领；非相邻单位留在原地。
+        """
         movers = 0
         limit = 2
 
-        # 必须是未死亡的
-        # 为了避免 modify list while iterating, we query current state
-        # attackers links to (prov, unit_state)
+        # 目标格的邻接省集合（省ID）
+        adjacent_ids: set = set(self.map_manager._adjacency.get(target.province_id, []))
 
         for prov, unit in attackers:
             if movers >= limit:
                 break
-            if unit.hp > 0 and unit in prov.units:  # 确保还在原格子里（有的可能死了）
-                prov.units.remove(unit)
-                target.units.append(unit)
-                # 占领变更
-                target.country = self.player_country
-                movers += 1
+            # 必须存活且仍在原格子
+            if unit.hp <= 0 or unit not in prov.units:
+                continue
+            # 只有与目标格相邻的省可以占领
+            if prov.province_id not in adjacent_ids:
+                continue
+            prov.units.remove(unit)
+            target.units.append(unit)
+            # 占领变更
+            target.country = self.player_country
+            movers += 1
 
         if movers > 0:
             self.map_manager.invalidate_cache()
@@ -4259,6 +4659,24 @@ class GameApp:
         ):
             self._ai_turn_timer = None
             self._run_ai_turn()
+
+        # 兜底：若有未确认的 AI 事件卡覆盖层（例如 draw_again_safe 触发的第二张牌），
+        # 且没有定时器在跑，则直接自动确认，无需等待鼠标点击
+        if (
+            self.event_card_overlay
+            and self._ai_turn_timer is None
+            and not self.turn_game_finished
+            and self.state == GameState.PLAYING
+        ):
+            _evt_drawer = self.event_card_overlay.get("drawer")
+            if _evt_drawer and _evt_drawer != self.human_country:
+                self._confirm_event_card()
+                # 确认后若还有覆盖层/目标选择，下一帧再处理
+                if self.event_card_overlay or self.selecting_evt_target:
+                    self._ai_turn_timer = pg.time.get_ticks() + 300
+                elif self.player_country and self.player_country != self.human_country:
+                    # 当前 AI 国家可能还需要继续行动
+                    self._ai_turn_timer = pg.time.get_ticks() + 400
 
     def _render(self) -> None:
         """渲染总控：根据状态画对应的界面"""
@@ -4365,7 +4783,49 @@ class GameApp:
             )
             self.unit_renderer.draw_units(self.window, center, province.units)
 
-        # 2.5 画当前战斗目标的金色描边 Hex Outline
+        # 2.5 给移动/招募的单位图标加彩色边框，颜色跟随对应国家
+        # 出发格：只框住实际移动的那几个槽位（原始位置）
+        for _src_id, _src_c in self.move_src_provs.items():
+            _sp = self.map_manager.get_by_id(_src_id)
+            if not _sp:
+                continue
+            _sc = (
+                _sp.center_cache
+                if _sp.center_cache
+                else _sp.compute_center(self.hex_side)
+            )
+            _col = self.country_button_colors.get(_src_c, pg.Color("white"))
+            _slots = self.move_src_slots.get(_src_id, [0])
+            _all_rects = self.unit_renderer.selection_rects(_sc, 3)
+            for _i in _slots:
+                if _i < len(_all_rects):
+                    _fr = _all_rects[_i].inflate(4, 4)
+                    pg.draw.rect(self.window, _col, _fr, 2)
+        # 目的格/招募格：只框住实际移入/招募的那几个槽位
+        for _dst_id, _dst_c in self.move_dst_provs.items():
+            _dp = self.map_manager.get_by_id(_dst_id)
+            if not _dp:
+                continue
+            _dc = (
+                _dp.center_cache
+                if _dp.center_cache
+                else _dp.compute_center(self.hex_side)
+            )
+            _col = self.country_button_colors.get(_dst_c, pg.Color("white"))
+            _slots = self.move_dst_slots.get(_dst_id)
+            if _slots is None:
+                # 兼容旧数据：框住所有单位
+                _slots = list(range(len(_dp.units)))
+            if not _slots or not _dp.units:
+                continue
+            _all_rects = self.unit_renderer.selection_rects(_dc, len(_dp.units))
+            for _i in _slots:
+                if _i < len(_all_rects):
+                    _fr = _all_rects[_i].inflate(6, 6)
+                    pg.draw.rect(self.window, _col, _fr, 4)
+                    pg.draw.rect(self.window, pg.Color("white"), _fr.inflate(-4, -4), 1)
+
+        # 2.6 画当前战斗目标的金色描边 Hex Outline
         if self.combat_target:
             # 安全获取 Province 对象
             target_prov = self.combat_target
