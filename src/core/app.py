@@ -309,6 +309,7 @@ class GameApp:
         self.morale_lv2_btn_rect: pg.Rect | None = None
         self.morale_lv3_btn_rect: pg.Rect | None = None
         self.morale_lv4_btn_rect: pg.Rect | None = None
+        self.combat_table_btn_rect: pg.Rect | None = None  # 战斗判定表按鈕
 
         # ---- 使用政治点数（PP）行动系统 ----
         self.pp_spend_mode: bool = False  # 进入PP行动模式
@@ -385,6 +386,10 @@ class GameApp:
         )
         self._morale_lv4_btn_surf = self.combat_ui_font.render(
             "军容严整", True, pg.Color("white")
+        )
+        # 战斗判定表按钮预渲染
+        self._combat_table_btn_surf = self.combat_ui_font.render(
+            "战斗判定表", True, pg.Color("white")
         )
         # PP行动按钮预渲染
         self._pp_btn_surf = self.combat_ui_font.render(
@@ -4669,6 +4674,22 @@ class GameApp:
         if self.info_panel:
             self.info_panel.draw(self.window)
 
+        # 8.0 战斗判定表按鈕（右下角，按鈕本体低层渲染，不遮卡牌）
+        _ct_s = self._combat_table_btn_surf
+        _ct_bw = _ct_s.get_width() + 20
+        _ct_bh = _ct_s.get_height() + 10
+        _ct_bx = self.screen_width - _ct_bw - 20
+        _ct_by = self.screen_height - _ct_bh - 150
+        self.combat_table_btn_rect = pg.Rect(_ct_bx, _ct_by, _ct_bw, _ct_bh)
+        _mx, _my = pg.mouse.get_pos()
+        _ct_hovered = self.combat_table_btn_rect.collidepoint(_mx, _my)
+        _ct_col = pg.Color("#4A6FA5") if not _ct_hovered else pg.Color("#6B9FD4")
+        pg.draw.rect(self.window, _ct_col, self.combat_table_btn_rect, border_radius=5)
+        self.window.blit(
+            _ct_s, _ct_s.get_rect(center=self.combat_table_btn_rect.center)
+        )
+        # 浮窗表格在 8.4 节高层渲染，第一次记录坐标供后用
+
         # 8. 绘制卡牌面板（卡牌不占用回合动作次数）
         self.skip_jiangdong_card_btn_rect = None
         if self.card_panel:
@@ -4711,6 +4732,84 @@ class GameApp:
 
         # 8.3 召唤子面板（PP系统）：绘制在最顶层，覆盖卡牌等UI
         self._render_pp_summon_panel()
+
+        # 8.4 战斗判定表浮窗表格（高层，覆盖卡牌面板）
+        if self.combat_table_btn_rect and self.combat_table_btn_rect.collidepoint(
+            pg.mouse.get_pos()
+        ):
+            _ct_bx = self.combat_table_btn_rect.left
+            _ct_by = self.combat_table_btn_rect.top
+            _tt_ft = self.morale_tt_font
+            _ct_headers = ["骰点", "1:2", "1:1", "2:1", "3:1", "4:1", "5:1"]
+            _ct_rows = [
+                ["1", "攻损2", "攻损1", "攻损1", "无效", "无效", "防乱"],
+                ["2", "攻损1", "攻乱", "双乱", "防乱", "防乱", "防乱"],
+                ["3", "攻乱", "双乱", "无效", "防乱", "防退", "防退"],
+                ["4", "攻乱", "无效", "防乱", "防退", "防退", "防退"],
+                ["5", "无效", "防乱", "防退", "防退", "防损1", "防损1"],
+                ["6", "防乱", "防退", "防损1", "防损1", "防损1", "防损1退"],
+            ]
+            _all_rows = [_ct_headers] + _ct_rows
+            _col_widths = []
+            for _ci in range(7):
+                _max_w = max(_tt_ft.size(_all_rows[_ri][_ci])[0] for _ri in range(7))
+                _col_widths.append(_max_w + 14)
+            _row_h = _tt_ft.get_height() + 8
+            _tbl_w = sum(_col_widths) + 2
+            _tbl_h = len(_all_rows) * _row_h + 2
+            _tbl_x = max(0, min(_ct_bx, self.screen_width - _tbl_w - 4))
+            _tbl_y = max(0, _ct_by - _tbl_h - 6)
+            _tbl_bg = pg.Surface((_tbl_w, _tbl_h), pg.SRCALPHA)
+            _tbl_bg.fill((12, 20, 40, 220))
+            self.window.blit(_tbl_bg, (_tbl_x, _tbl_y))
+            pg.draw.rect(
+                self.window,
+                pg.Color("#00FFCC"),
+                pg.Rect(_tbl_x, _tbl_y, _tbl_w, _tbl_h),
+                1,
+                border_radius=4,
+            )
+            _cx_start = _tbl_x + 1
+            _cy = _tbl_y + 1
+            for _ri, _row_data in enumerate(_all_rows):
+                _is_header = _ri == 0
+                _cx = _cx_start
+                if _is_header:
+                    _hdr_bg = pg.Surface((sum(_col_widths), _row_h), pg.SRCALPHA)
+                    _hdr_bg.fill((30, 60, 100, 180))
+                    self.window.blit(_hdr_bg, (_cx, _cy))
+                for _ci, _cell in enumerate(_row_data):
+                    _tc = pg.Color("#FFD700") if _is_header else pg.Color("#E0FFFF")
+                    if not _is_header and _ci > 0:
+                        if _cell in ("攻损2", "攻损1", "攻乱", "双乱"):
+                            _tc = pg.Color("#FF8080")
+                        elif _cell in ("防退", "防损1", "防损1退"):
+                            _tc = pg.Color("#80FF80")
+                        elif _cell == "防乱":
+                            _tc = pg.Color("#AAFFCC")
+                        elif _cell == "无效":
+                            _tc = pg.Color("#888888")
+                    _cell_surf = _tt_ft.render(_cell, True, _tc)
+                    _cell_rect = _cell_surf.get_rect(
+                        centerx=_cx + _col_widths[_ci] // 2, centery=_cy + _row_h // 2
+                    )
+                    self.window.blit(_cell_surf, _cell_rect)
+                    if _ci < 6:
+                        pg.draw.line(
+                            self.window,
+                            pg.Color("#334466"),
+                            (_cx + _col_widths[_ci], _cy),
+                            (_cx + _col_widths[_ci], _cy + _row_h),
+                        )
+                    _cx += _col_widths[_ci]
+                if _ri < len(_all_rows) - 1:
+                    pg.draw.line(
+                        self.window,
+                        pg.Color("#334466"),
+                        (_cx_start, _cy + _row_h),
+                        (_cx_start + sum(_col_widths), _cy + _row_h),
+                    )
+                _cy += _row_h
 
         # 8.5 事件卡覆盖层（最顶层，覆盖一切）
         self._render_event_card_overlay()
