@@ -310,6 +310,13 @@ class GameApp:
         self.morale_lv3_btn_rect: pg.Rect | None = None
         self.morale_lv4_btn_rect: pg.Rect | None = None
 
+        # ---- 使用政治点数（PP）行动系统 ----
+        self.pp_spend_mode: bool = False  # 进入PP行动模式
+        self.pp_summon_target_prov = None  # 待召唤目标省（Province | None）
+        self.pp_spend_end_btn_rect: pg.Rect | None = None  # "结束行动"按钮
+        self.pp_btn_rect: pg.Rect | None = None  # 顶部"使用政治点数"入口按钮
+        self.pp_summon_btns: list = []  # 召唤子面板按钮列表
+
         # 事件卡抽取阶段（每个小回合开始时的强制阶段）
         self.evt_draw_phase: bool = False  # True = 当前处于抽取阶段，禁止调兵
         self.evt_skip_draw_btn_rect: pg.Rect | None = None  # 「跳过」按钮区域
@@ -379,6 +386,13 @@ class GameApp:
         self._morale_lv4_btn_surf = self.combat_ui_font.render(
             "军容严整：解除混乱", True, pg.Color("white")
         )
+        # PP行动按钮预渲染
+        self._pp_btn_surf = self.combat_ui_font.render(
+            "使用政治点数", True, pg.Color("white")
+        )
+        self._pp_end_btn_surf = self.combat_ui_font.render(
+            "结束行动", True, pg.Color("white")
+        )
 
         # Tooltip Caching
         self._last_tooltip_data = None
@@ -447,6 +461,25 @@ class GameApp:
                     if u.is_confused:
                         return True
         return False
+
+    def _is_special_unit(self, unit_state) -> bool:
+        """判断是否为特殊兵种（虎豹骑/无当飞军/解烦兵）"""
+        t = (unit_state.unit_type or "").lower()
+        return "hubao" in t or "wudang" in t or "jiefan" in t
+
+    def _get_pp_heal_cost(self, unit_state) -> int:
+        """获取回复该单位1点血量的PP消耗：普通1PP，特殊2PP"""
+        return 2 if self._is_special_unit(unit_state) else 1
+
+    def _get_total_pp(self, country: str) -> int:
+        """获取国家当前可用PP总量（普通+临时）"""
+        pp = self.country_stats.get(country, {}).get("political_points", 0)
+        temp = self.evt_temp_pp.get(country, 0)
+        return pp + temp
+
+    def _pp_can_use(self, country: str) -> bool:
+        """PP是否满足最低使用门槛（≥1）"""
+        return self._get_total_pp(country) >= 1
 
     def _ai_cure_confused_unit(self, country: str) -> bool:
         """AI 自动解除该国第一个混乱单位的混乱状态（军容严整效果）。返回是否成功。"""
@@ -1106,6 +1139,10 @@ class GameApp:
         self.morale_free_move_mode = False
         self.morale_bonus_mp_mode = False
         self.morale_cure_mode = False
+        # PP行动模式清除
+        self.pp_spend_mode = False
+        self.pp_summon_target_prov = None
+        self.pp_summon_btns = []
 
         if not keep_info_message:
             self.combat_result_title = None
@@ -1297,6 +1334,63 @@ class GameApp:
                 )  # no units, still consume
 
         # 民心4级（军容严整）：大回合结束时解除混乱 - 在 _advance_country_turn 中处理
+
+        # --- 使用政治点数（PP）：AI自动治疗 + 召唤 ---
+        _ai_pp_used = False
+        if self._pp_can_use(country):
+            # 1) 优先治疗伤兵（特殊单位2PP，普通单位1PP）
+            for _prov in self.map_manager.provinces:
+                if _prov.country != country:
+                    continue
+                for _u in _prov.units:
+                    if _u.hp < 2:
+                        _cost = self._get_pp_heal_cost(_u)
+                        if self._get_total_pp(country) >= _cost:
+                            self._spend_pp(country, _cost)
+                            _u.hp += 1
+                            _ai_pp_used = True
+            # 2) 若还有PP≥1 且未被 evt_flag_hu_recruit 封锁，召唤新单位到单位最少的己方省
+            _can_recruit = not (
+                getattr(self, "evt_flag_hu_recruit", False) and country == "WEI"
+            )
+            if _can_recruit and self._get_total_pp(country) >= 1:
+                # 找有空位(< MAX_UNIT_STACK)的己方省，优先选已有单位的边境省
+                _recruit_target = None
+                _border_pset = {
+                    p.province_id for p in self._ai_get_border_provinces(country)
+                }
+                for _rp in self.map_manager.provinces:
+                    if _rp.country == country and len(_rp.units) < self.MAX_UNIT_STACK:
+                        if _rp.province_id in _border_pset:
+                            _recruit_target = _rp
+                            break
+                if _recruit_target is None:
+                    for _rp in self.map_manager.provinces:
+                        if (
+                            _rp.country == country
+                            and len(_rp.units) < self.MAX_UNIT_STACK
+                        ):
+                            _recruit_target = _rp
+                            break
+                if _recruit_target is not None:
+                    _pp_left = self._get_total_pp(country)
+                    if _pp_left >= 2:
+                        # 召唤满血普通步兵（2PP）
+                        new_u = UnitState("infantry")
+                        new_u.hp = 2
+                        self._spend_pp(country, 2)
+                    else:
+                        # 召唤1血普通步兵（1PP）
+                        new_u = UnitState("infantry")
+                        new_u.hp = 1
+                        self._spend_pp(country, 1)
+                    _recruit_target.units.append(new_u)
+                    _ai_pp_used = True
+
+            if _ai_pp_used:
+                _finish_pp_msg = f"{country} AI 使用PP（治疗/召唤）"
+                self._finish_country_action(_finish_pp_msg)
+                return
 
         # --- 阶段0：处理事件卡目标选择（needs_target 类卡牌的 AI 自动选择） ---
         if self.selecting_evt_target and self.pending_evt_card_id:
@@ -1627,6 +1721,10 @@ class GameApp:
         self.morale_free_move_mode = False
         self.morale_bonus_mp_mode = False
         self.morale_cure_mode = False
+        # PP行动系统重置
+        self.pp_spend_mode = False
+        self.pp_summon_target_prov = None
+        self.pp_summon_btns = []
         self.state = GameState.MODE_SELECT
         logger.info("Game restarted.")
 
@@ -1883,6 +1981,19 @@ class GameApp:
                     self.morale_cure_mode = False
                     if self.info_panel:
                         self.info_panel.show_message("已取消民心效果操作")
+                # 如果在PP召唤子面板中，先退回子面板；否则退出整个PP模式
+                elif self.pp_spend_mode:
+                    if self.pp_summon_target_prov is not None:
+                        self.pp_summon_target_prov = None
+                        self.pp_summon_btns = []
+                        if self.info_panel:
+                            self.info_panel.show_message("已取消召唤选择，可继续使用PP")
+                    else:
+                        self.pp_spend_mode = False
+                        if self.info_panel:
+                            self.info_panel.show_message(
+                                "已退出PP行动模式（回合未结束，可继续操作）"
+                            )
                 # 如果正在选择卡牌目标，取消目标选择
                 elif self.selecting_card_target:
                     self._cancel_card_target_selection()
@@ -2110,6 +2221,140 @@ class GameApp:
                 ):
                     self._trigger_draw_event_card(self.player_country)
                     return
+
+                # 0.07 使用政治点数（PP）系统
+                # -- 入口按钮 --
+                if self.pp_btn_rect and self.pp_btn_rect.collidepoint(event.pos):
+                    if self._pp_can_use(self.player_country):
+                        self.pp_spend_mode = True
+                        if self.info_panel:
+                            self.info_panel.show_message(
+                                "PP行动：左键点击受伤己方单位回血，右键点击己方地块召唤部队",
+                                duration=3.0,
+                            )
+                    else:
+                        self.info_panel.show_message("政治点数不足（需≥1才可使用）")
+                    return
+
+                # -- 模式内操作 --
+                if self.pp_spend_mode:
+                    # "结束行动"按钮
+                    if (
+                        self.pp_spend_end_btn_rect
+                        and self.pp_spend_end_btn_rect.collidepoint(event.pos)
+                    ):
+                        self.pp_spend_mode = False
+                        self.pp_summon_target_prov = None
+                        self.pp_summon_btns = []
+                        self._finish_country_action("使用政治点数")
+                        return
+
+                    # 召唤子面板按钮
+                    if self.pp_summon_target_prov is not None:
+                        for _sbtn in self.pp_summon_btns:
+                            if _sbtn["rect"].collidepoint(event.pos):
+                                if _sbtn["unit_type"] is None:
+                                    # 取消召唤
+                                    self.pp_summon_target_prov = None
+                                    self.pp_summon_btns = []
+                                    if self.info_panel:
+                                        self.info_panel.show_message("已取消召唤")
+                                elif _sbtn["enabled"]:
+                                    _tprov = self.pp_summon_target_prov
+                                    _utype = _sbtn["unit_type"]
+                                    _uhp = _sbtn["hp"]
+                                    _ucost = _sbtn["cost"]
+                                    if (
+                                        self.evt_flag_hu_recruit
+                                        and self.player_country == "WEI"
+                                    ):
+                                        if self.info_panel:
+                                            self.info_panel.show_message(
+                                                "胡人袭扰：本回合魏国不能召唤新部队"
+                                            )
+                                    elif len(_tprov.units) >= MAX_UNIT_STACK:
+                                        if self.info_panel:
+                                            self.info_panel.show_message(
+                                                "该地块部队已满（最多3支）"
+                                            )
+                                    elif self._spend_pp(self.player_country, _ucost):
+                                        try:
+                                            _udef = self.unit_repository.get_definition(
+                                                _utype
+                                            )
+                                            _nu = UnitState(_utype)
+                                            _nu.hp = _uhp
+                                            _nu.mp = _udef.move
+                                            _tprov.units.append(_nu)
+                                            self.map_manager.invalidate_cache()
+                                            _remain = self._get_total_pp(
+                                                self.player_country
+                                            )
+                                            _uname = {
+                                                "infantry": "步兵",
+                                                "cavalry": "骑兵",
+                                                "archer": "弓兵",
+                                            }.get(_utype, _utype)
+                                            if self.info_panel:
+                                                self.info_panel.show_message(
+                                                    f"在{_tprov.name}召唤了{_uname}（{_uhp}血），剩余PP：{_remain}"
+                                                )
+                                        except Exception as _e:
+                                            logger.exception("PP召唤失败")
+                                    else:
+                                        if self.info_panel:
+                                            self.info_panel.show_message("政治点数不足")
+                                else:
+                                    if self.info_panel:
+                                        self.info_panel.show_message(
+                                            "政治点数不足以执行此操作"
+                                        )
+                                # 关闭子面板（无论操作是否成功）
+                                self.pp_summon_target_prov = None
+                                self.pp_summon_btns = []
+                                return
+                        return  # 在召唤面板模式时，消耗掉所有点击
+
+                    # 无召唤面板时：左键点击己方受伤单位回血
+                    _unit_hit = self._get_unit_slot_at(event.pos)
+                    if _unit_hit:
+                        _hpid, _hslot = _unit_hit
+                        _hprov = self.map_manager.get_by_id(_hpid)
+                        if (
+                            _hprov
+                            and _hprov.country == self.player_country
+                            and _hslot < len(_hprov.units)
+                        ):
+                            _hu = _hprov.units[_hslot]
+                            if _hu.hp >= 2:
+                                if self.info_panel:
+                                    self.info_panel.show_message(
+                                        "该单位已满血，无需回复"
+                                    )
+                            else:
+                                _hcost = self._get_pp_heal_cost(_hu)
+                                if self._get_total_pp(self.player_country) < _hcost:
+                                    _utp = (
+                                        "特殊" if self._is_special_unit(_hu) else "普通"
+                                    )
+                                    if self.info_panel:
+                                        self.info_panel.show_message(
+                                            f"政治点数不足（{_utp}单位回血需{_hcost}PP）"
+                                        )
+                                elif self._spend_pp(self.player_country, _hcost):
+                                    _hu.hp += 1
+                                    _remain2 = self._get_total_pp(self.player_country)
+                                    _utp2 = (
+                                        "特殊" if self._is_special_unit(_hu) else "普通"
+                                    )
+                                    if self.info_panel:
+                                        self.info_panel.show_message(
+                                            f"{_utp2}单位回复1血（消耗{_hcost}PP），剩余PP：{_remain2}"
+                                        )
+                        else:
+                            if self.info_panel:
+                                self.info_panel.show_message("请点击己方受伤单位")
+                    return  # pp_spend_mode下，消耗掉所有左键点击
 
                 # 0.08 民心等级效果按钮（令行禁止 / 老乡指路 / 军容严整）
                 if self.morale_lv2_btn_rect and self.morale_lv2_btn_rect.collidepoint(
@@ -2391,6 +2636,27 @@ class GameApp:
 
     def _handle_game_right_click(self, pos: Tuple[int, int]) -> None:
         """处理游戏场景的右键逻辑"""
+        # PP行动模式：右键点击己方地块 → 打开召唤子面板
+        if self.pp_spend_mode and self.pp_summon_target_prov is None:
+            _rc_prov = self._get_province_at(pos)
+            if _rc_prov and _rc_prov.country == self.player_country:
+                if len(_rc_prov.units) >= MAX_UNIT_STACK:
+                    if self.info_panel:
+                        self.info_panel.show_message(
+                            "该地块部队已满（最多3支），无法召唤"
+                        )
+                elif self.evt_flag_hu_recruit and self.player_country == "WEI":
+                    if self.info_panel:
+                        self.info_panel.show_message(
+                            "胡人袭扰：本回合魏国不能召唤新部队"
+                        )
+                else:
+                    self.pp_summon_target_prov = _rc_prov
+            else:
+                if self.info_panel:
+                    self.info_panel.show_message("请右键点击己方地块来召唤部队")
+            return  # PP模式消耗右键点击
+
         if not self.selected_units:
             return
 
@@ -4109,6 +4375,105 @@ class GameApp:
                     )
                     self.window.blit(_hint_surf, _hint_rect)
 
+                # --- PP行动按钮 / PP模式渲染 ---
+                self.pp_btn_rect = None
+                self.pp_spend_end_btn_rect = None
+                _top_h = int(self.screen_height * 0.15)
+                _no_other_mode = (
+                    not self.morale_free_move_mode
+                    and not self.morale_bonus_mp_mode
+                    and not self.morale_cure_mode
+                )
+
+                if _no_other_mode and self.player_country:
+                    _pp_total = self._get_total_pp(self.player_country)
+
+                    if self.pp_spend_mode:
+                        # ---- 模式已激活：左侧显示"结束行动"按钮 + 当前PP + 提示 ----
+                        _end_s = self._pp_end_btn_surf
+                        _end_bw = _end_s.get_width() + 20
+                        _end_bh = _end_s.get_height() + 10
+                        _end_bx = 20
+                        _end_by = self.screen_height - _end_bh - 20
+                        self.pp_spend_end_btn_rect = pg.Rect(
+                            _end_bx, _end_by, _end_bw, _end_bh
+                        )
+                        _end_c = (
+                            pg.Color("#888888")
+                            if self.pp_spend_end_btn_rect.collidepoint(
+                                pg.mouse.get_pos()
+                            )
+                            else pg.Color("#555555")
+                        )
+                        pg.draw.rect(
+                            self.window,
+                            _end_c,
+                            self.pp_spend_end_btn_rect,
+                            border_radius=5,
+                        )
+                        self.window.blit(
+                            _end_s,
+                            _end_s.get_rect(center=self.pp_spend_end_btn_rect.center),
+                        )
+
+                        # 提示浮窗（悬浮在"结束行动"按钮正上方）
+                        if self.pp_summon_target_prov is None:
+                            _hint2 = f"PP行动：当前PP {_pp_total}　左键伤兵→回血　右键地块→召唤"
+                        else:
+                            _pn = getattr(self.pp_summon_target_prov, "name", "?")
+                            _hint2 = f"召唤地点：{_pn}　当前PP：{_pp_total}"
+                        _ft = self.tooltip_font
+                        _h2s = _ft.render(_hint2, True, pg.Color("#E0FFFF"))
+                        _pad_x, _pad_y = 10, 6
+                        _fw = _h2s.get_width() + _pad_x * 2
+                        _fh = _h2s.get_height() + _pad_y * 2
+                        # 浮窗定位：按钮正上方，左对齐按钮左边
+                        _fx = _end_bx
+                        _fy = _end_by - _fh - 6
+                        _frect = pg.Rect(_fx, _fy, _fw, _fh)
+                        # 半透明深色背景
+                        _fbg = pg.Surface((_fw, _fh), pg.SRCALPHA)
+                        _fbg.fill((15, 25, 45, 210))
+                        self.window.blit(_fbg, _frect.topleft)
+                        pg.draw.rect(
+                            self.window, pg.Color("#00FFCC"), _frect, 1, border_radius=5
+                        )
+                        self.window.blit(_h2s, (_fx + _pad_x, _fy + _pad_y))
+
+                        # ---- 召唤子面板由 _render_pp_summon_panel() 在最顶层绘制 ----
+                        self.pp_summon_btns = []  # 数据由顶层方法填充
+
+                    elif _pp_total >= 1 and not self.pending_post_move_attack:
+                        # ---- 尚未激活：显示"使用政治点数"入口按钮 ----
+                        _pp_s = self._pp_btn_surf
+                        _pp_bw = _pp_s.get_width() + 20
+                        _pp_bh = _pp_s.get_height() + 10
+                        _pp_bx = 20
+                        _pp_by = self.screen_height - _pp_bh - 20
+                        self.pp_btn_rect = pg.Rect(_pp_bx, _pp_by, _pp_bw, _pp_bh)
+                        _pp_col = (
+                            pg.Color("#DAA520")
+                            if self.pp_btn_rect.collidepoint(pg.mouse.get_pos())
+                            else pg.Color("#B8860B")
+                        )
+                        pg.draw.rect(
+                            self.window, _pp_col, self.pp_btn_rect, border_radius=5
+                        )
+                        self.window.blit(
+                            _pp_s, _pp_s.get_rect(center=self.pp_btn_rect.center)
+                        )
+                        # 旁边显示当前PP数值
+                        _ppv_s = self.combat_ui_font.render(
+                            f"({_pp_total}PP)", True, pg.Color("#FFD700")
+                        )
+                        self.window.blit(
+                            _ppv_s,
+                            (
+                                _pp_bx + _pp_bw + 5,
+                                _pp_by + (_pp_bh - _ppv_s.get_height()) // 2,
+                            ),
+                        )
+
             # --- 画战斗结果 (Top UI) ---
             # 如果 timer != 0，则显示 (timer<0 为永久，timer>0 为倒计时)
             if self.combat_result_title and self.combat_result_timer != 0:
@@ -4227,6 +4592,9 @@ class GameApp:
             if not self.event_card_overlay:
                 self.card_panel.draw_tooltip(self.window)
 
+        # 8.3 召唤子面板（PP系统）：绘制在最顶层，覆盖卡牌等UI
+        self._render_pp_summon_panel()
+
         # 8.5 事件卡覆盖层（最顶层，覆盖一切）
         self._render_event_card_overlay()
 
@@ -4234,6 +4602,107 @@ class GameApp:
         if not self.event_card_overlay:
             self._draw_hover_tooltip()
             self._draw_evt_info_tooltip()
+
+    def _render_pp_summon_panel(self) -> None:
+        """绘制PP召唤子面板（居中覆盖层），并填充 self.pp_summon_btns。
+        在 _render_gameplay 末尾、事件卡覆盖层之前调用，保证显示在最顶层。"""
+        if not (
+            self.pp_spend_mode
+            and self.pp_summon_target_prov is not None
+            and self.player_country
+        ):
+            return
+
+        _pp_total = self._get_total_pp(self.player_country)
+        _top_h = int(self.screen_height * 0.15)
+
+        _panel_w = int(self.screen_width * 0.55)
+        _btn_h = int(self.screen_height * 0.055)
+        _btn_gap = 8
+        _cols = 3
+        _btn_w = (_panel_w - (_cols + 1) * _btn_gap) // _cols
+        _panel_h = _btn_h * 2 + _btn_gap * 3 + 36
+        _panel_x = (self.screen_width - _panel_w) // 2
+        _panel_y = _top_h + 12
+
+        pg.draw.rect(
+            self.window,
+            pg.Color(20, 20, 40, 220),
+            pg.Rect(_panel_x, _panel_y, _panel_w, _panel_h),
+            border_radius=8,
+        )
+        pg.draw.rect(
+            self.window,
+            pg.Color("#00FFCC"),
+            pg.Rect(_panel_x, _panel_y, _panel_w, _panel_h),
+            2,
+            border_radius=8,
+        )
+
+        _unit_defs = [
+            ("infantry", "步兵"),
+            ("cavalry", "骑兵"),
+            ("archer", "弓兵"),
+        ]
+        _hp_defs = [(1, 1), (2, 2)]
+        _mouse = pg.mouse.get_pos()
+
+        self.pp_summon_btns = []
+        for ui, (utype, uname) in enumerate(_unit_defs):
+            col = ui % _cols
+            for hi, (hp_val, pp_cost) in enumerate(_hp_defs):
+                _bx2 = _panel_x + _btn_gap + col * (_btn_w + _btn_gap)
+                _by2 = _panel_y + 8 + hi * (_btn_h + _btn_gap)
+                _br2 = pg.Rect(_bx2, _by2, _btn_w, _btn_h)
+                _can = _pp_total >= pp_cost
+                _hover = _br2.collidepoint(_mouse)
+                if not _can:
+                    _bc2 = pg.Color("#444444")
+                elif _hover:
+                    _bc2 = pg.Color("#208850")
+                else:
+                    _bc2 = pg.Color("#145530")
+                pg.draw.rect(self.window, _bc2, _br2, border_radius=4)
+                _label = f"{uname} {hp_val}血 ({pp_cost}PP)"
+                _ls = self.combat_ui_font.render(
+                    _label,
+                    True,
+                    pg.Color("white") if _can else pg.Color("#888888"),
+                )
+                self.window.blit(_ls, _ls.get_rect(center=_br2.center))
+                self.pp_summon_btns.append(
+                    {
+                        "rect": _br2,
+                        "unit_type": utype,
+                        "hp": hp_val,
+                        "cost": pp_cost,
+                        "enabled": _can,
+                    }
+                )
+
+        # 取消按钮
+        _cancel_w = int(_panel_w * 0.25)
+        _cancel_x = _panel_x + (_panel_w - _cancel_w) // 2
+        _cancel_y = _panel_y + 8 + 2 * (_btn_h + _btn_gap)
+        _cancel_r = pg.Rect(_cancel_x, _cancel_y, _cancel_w, _btn_h)
+        _hover_cancel = _cancel_r.collidepoint(_mouse)
+        pg.draw.rect(
+            self.window,
+            pg.Color("#883322") if _hover_cancel else pg.Color("#552211"),
+            _cancel_r,
+            border_radius=4,
+        )
+        _cs = self.combat_ui_font.render("取消召唤", True, pg.Color("white"))
+        self.window.blit(_cs, _cs.get_rect(center=_cancel_r.center))
+        self.pp_summon_btns.append(
+            {
+                "rect": _cancel_r,
+                "unit_type": None,
+                "hp": 0,
+                "cost": 0,
+                "enabled": True,
+            }
+        )
 
     def _get_map_bounds_rect(self) -> pg.Rect:
         """基于六边形中心与边长，计算地图像素包围盒。"""
