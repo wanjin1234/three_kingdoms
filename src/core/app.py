@@ -301,7 +301,7 @@ class GameApp:
         # ====================================================================
         self.score_manager = ScoreManager()
         self.score_manager_initial_recorded = False
-        
+
         # 分数显示状态（None = 不显示）
         # 结构：{"type": "wei_turn" | "game_over", "record": ScoreRecord, "net_scores": Dict}
         self.show_score_screen: dict | None = None
@@ -716,11 +716,11 @@ class GameApp:
 
         self.card_effect_manager.clear_all_effects()
         self._replenish_action_points()
-        
+
         # 记录开局分数（在游戏真正开始时）
         self.score_manager.record_initial_scores(self.map_manager.provinces)
         self.score_manager_initial_recorded = True
-        
+
         self._start_major_round_choice_phase()
         self.clear_selection()
         self._update_card_panel()
@@ -782,48 +782,44 @@ class GameApp:
         self.evt_flag_all_attack = False
         self.evt_yishen_used = False  # 一身是胆使用标志重置（每大回合重置）
 
-
     def _show_score_screen(self, screen_type: str) -> None:
         """
         显示分数屏幕。
-        
+
         Args:
             screen_type: "wei_turn" (魏国行动完) 或 "game_over" (游戏结束)
         """
         # 获取详细分数信息
         record = self.score_manager.get_detailed_scores(
-            self.map_manager.provinces,
-            self.country_stats
+            self.map_manager.provinces, self.country_stats
         )
-        
+
         # 计算净得分
         net_scores = {
             "SHU": record.shu_score - record.shu_initial,
             "WEI": record.wei_score - record.wei_initial,
             "WU": record.wu_score - record.wu_initial,
         }
-        
+
         # 设置显示状态
         self.show_score_screen = {
             "type": screen_type,
             "record": record,
             "net_scores": net_scores,
         }
-        
+
         # 检查游戏结束时的胜利条件
         if screen_type == "game_over":
             # 检查"天下归心"
             tianxia_winner = self.score_manager.check_tianxia_guixin(
-                self.map_manager.provinces,
-                self.country_stats
+                self.map_manager.provinces, self.country_stats
             )
             if tianxia_winner:
                 self.show_score_screen["tianxia_winner"] = tianxia_winner
             else:
                 # 检查"一代枭雄"
                 winner, net = self.score_manager.get_winner_by_score(
-                    self.map_manager.provinces,
-                    self.country_stats
+                    self.map_manager.provinces, self.country_stats
                 )
                 self.show_score_screen["score_winner"] = winner
                 self.show_score_screen["net_scores"] = net
@@ -832,187 +828,203 @@ class GameApp:
         """渲染分数显示屏幕（白屏）"""
         if not self.show_score_screen:
             return
-        
+
         # 填充白色背景
         self.window.fill(pg.Color("white"))
-        
+
         record = self.show_score_screen["record"]
         net_scores = self.show_score_screen["net_scores"]
         screen_type = self.show_score_screen["type"]
-        
+
         # 字体设置
         title_size = int(self.screen_height * 0.05)
         body_size = int(self.screen_height * 0.035)
         small_size = int(self.screen_height * 0.025)
-        
+
         title_font = self._font("msyh.ttc", title_size)
         body_font = self._font("msyh.ttc", body_size)
         small_font = self._font("msyh.ttc", small_size)
-        
+
+        # 辅助：将文本按最大像素宽度自动换行，返回行列表
+        def wrap_text(text: str, font: pg.font.Font, max_w: int) -> list[str]:
+            words = list(text)  # 中文逐字分割
+            lines: list[str] = []
+            cur = ""
+            for ch in text:
+                test = cur + ch
+                if font.size(test)[0] <= max_w:
+                    cur = test
+                else:
+                    if cur:
+                        lines.append(cur)
+                    cur = ch
+            if cur:
+                lines.append(cur)
+            return lines if lines else [text]
+
+        # 特殊地点中文名映射
+        special_names_map = {
+            "Hanzhong": "汉中",
+            "Jingzhou": "荆州",
+            "Chengdu": "成都",
+            "Liangzhou": "凉州",
+            "Youzhou": "幽州",
+            "Xiangyang": "襄阳",
+            "Hefei": "合肥",
+            "Changan": "长安",
+            "Luoyang": "洛阳",
+            "Wuchang": "武昌",
+            "Changsha": "长沙",
+            "Jianye": "建业",
+        }
+
         # 标题
         if screen_type == "wei_turn":
             title_text = "魏国行动完毕 - 各国分数"
         else:
             title_text = "游戏结束 - 最终分数"
-        
+
         title_surf = title_font.render(title_text, True, pg.Color("black"))
         title_rect = title_surf.get_rect(centerx=self.screen_width // 2, top=40)
         self.window.blit(title_surf, title_rect)
-        
-        # 显示各国分数
+
         y_offset = title_rect.bottom + 40
-        
+
         countries = [
             ("SHU", "蜀汉", pg.Color("red")),
             ("WEI", "曹魏", pg.Color("blue")),
             ("WU", "孙吴", pg.Color("green")),
         ]
-        
-        # 计算每列的位置
+
         col_width = self.screen_width // 3
-        # 特殊地点名称映射
-        special_names_map = {
-            "Hanzhong": "汉中", "Jingzhou": "荆州", "Chengdu": "成都",
-            "Liangzhou": "凉州", "Youzhou": "幽州", "Xiangyang": "襄阳",
-            "Hefei": "合肥", "Changan": "长安", "Luoyang": "洛阳",
-            "Wuchang": "武昌", "Changsha": "长沙", "Jianye": "建业",
-        }
+        # 盒子宽度固定为列宽减去左右各 10px 边距
+        box_width = col_width - 20
+        inner_w = box_width - 30  # 文字可用宽度
+        line_gap = 4
+        section_gap = 12
 
-        # 先计算每个国家需要的最大宽度（根据特殊地点文字长度）
-        min_box_width = 320  # 最小宽度
-        max_box_width = int(self.screen_width * 0.9) // 3  # 最大宽度
-        
-        for country, cn_name, color in countries:
+        # ---- 第一遍：计算每个国家盒子的动态高度 ----
+        def calc_box_content(country):
+            """返回该国所有行的列表 [(text, font, color, is_section_start)]"""
+            rows = []
             if country == "SHU":
-                special = record.shu_special
+                current, initial, net = (
+                    record.shu_score,
+                    record.shu_initial,
+                    net_scores["SHU"],
+                )
+                support = record.shu_people_support
+                special, normal = record.shu_special, record.shu_normal
             elif country == "WEI":
-                special = record.wei_special
+                current, initial, net = (
+                    record.wei_score,
+                    record.wei_initial,
+                    net_scores["WEI"],
+                )
+                support = record.wei_people_support
+                special, normal = record.wei_special, record.wei_normal
             else:
-                special = record.wu_special
-            
-            if special:
-                special_names_str = ", ".join([special_names_map.get(n, n) for n in special])
-                special_text = f"特殊地点：{special_names_str}"
-                special_surf = small_font.render(special_text, True, pg.Color("black"))
-                needed_width = special_surf.get_width() + 30
-                min_box_width = max(min_box_width, needed_width)
+                current, initial, net = (
+                    record.wu_score,
+                    record.wu_initial,
+                    net_scores["WU"],
+                )
+                support = record.wu_people_support
+                special, normal = record.wu_special, record.wu_normal
 
-        box_width = min(min_box_width, max_box_width)
-        box_height = 360  # 增加高度以容纳所有内容
-        
+            sign = "+" if net >= 0 else ""
+            net_color = pg.Color("darkgreen") if net >= 0 else pg.Color("red")
+
+            rows.append((f"当前分数：{current:.1f}", small_font, pg.Color("black")))
+            rows.append((f"开局分数：{initial:.1f}", small_font, pg.Color("black")))
+            rows.append((f"净得分：{sign}{net:.1f}", small_font, net_color))
+            rows.append((f"民心等级：{support}", small_font, pg.Color("black")))
+
+            if special:
+                names_str = ", ".join([special_names_map.get(n, n) for n in special])
+                full_text = f"特殊地点：{names_str}"
+                for line in wrap_text(full_text, small_font, inner_w):
+                    rows.append((line, small_font, pg.Color("black")))
+            rows.append((f"普通地块：{normal}", small_font, pg.Color("black")))
+            return rows
+
+        # 收集所有国家内容，计算统一最大高度
+        all_rows = {c: calc_box_content(c) for c, _, _ in countries}
+
+        def rows_height(rows):
+            h = 0
+            for text, font, _ in rows:
+                h += font.get_height() + line_gap
+            return h
+
+        name_area = body_font.get_height() + 15 + section_gap
+        padding_bottom = 15
+        box_height = (
+            max(
+                rows_height(rows) + name_area + padding_bottom
+                for rows in all_rows.values()
+            )
+            + 20
+        )  # 统一所有盒子高度
+
+        # ---- 第二遍：绘制 ----
         for i, (country, cn_name, color) in enumerate(countries):
-            # 计算盒子位置（水平排列）
             box_x = i * col_width + (col_width - box_width) // 2
             box_y = y_offset
-            
-            # 绘制盒子背景
+
             box_rect = pg.Rect(box_x, box_y, box_width, box_height)
-            pg.draw.rect(self.window, pg.Color(250, 250, 250), box_rect, border_radius=10)
+            pg.draw.rect(
+                self.window, pg.Color(250, 250, 250), box_rect, border_radius=10
+            )
             pg.draw.rect(self.window, color, box_rect, 3, border_radius=10)
-            
+
             # 国家名称
             name_surf = body_font.render(cn_name, True, color)
-            name_rect = name_surf.get_rect(centerx=box_x + box_width // 2, top=box_y + 10)
+            name_rect = name_surf.get_rect(
+                centerx=box_x + box_width // 2, top=box_y + 10
+            )
             self.window.blit(name_surf, name_rect)
-            
-            # 分数信息
-            info_y = name_rect.bottom + 15
-            
-            # 当前分数
-            if country == "SHU":
-                current = record.shu_score
-                initial = record.shu_initial
-                net = net_scores["SHU"]
-            elif country == "WEI":
-                current = record.wei_score
-                initial = record.wei_initial
-                net = net_scores["WEI"]
-            else:
-                current = record.wu_score
-                initial = record.wu_initial
-                net = net_scores["WU"]
-            
-            current_surf = small_font.render(f"当前分数：{current:.1f}", True, pg.Color("black"))
-            self.window.blit(current_surf, (box_x + 15, info_y))
-            info_y += current_surf.get_height() + 5
-            
-            initial_surf = small_font.render(f"开局分数：{initial:.1f}", True, pg.Color("black"))
-            self.window.blit(initial_surf, (box_x + 15, info_y))
-            info_y += initial_surf.get_height() + 5
-            
-            # 净得分（用颜色区分正负）
-            net_color = pg.Color("darkgreen") if net >= 0 else pg.Color("red")
-            sign = "+" if net >= 0 else ""
-            net_surf = small_font.render(f"净得分：{sign}{net:.1f}", True, net_color)
-            self.window.blit(net_surf, (box_x + 15, info_y))
-            info_y += net_surf.get_height() + 15
-            
-            # 民心等级
-            if country == "SHU":
-                support = record.shu_people_support
-            elif country == "WEI":
-                support = record.wei_people_support
-            else:
-                support = record.wu_people_support
-            
-            support_surf = small_font.render(f"民心等级：{support}", True, pg.Color("black"))
-            self.window.blit(support_surf, (box_x + 15, info_y))
-            info_y += support_surf.get_height() + 15
-            
-            # 占领的特殊地点
-            if country == "SHU":
-                special = record.shu_special
-                normal = record.shu_normal
-            elif country == "WEI":
-                special = record.wei_special
-                normal = record.wei_normal
-            else:
-                special = record.wu_special
-                normal = record.wu_normal
-            
-            # 特殊地点名称映射
-            special_names = {
-                "Hanzhong": "汉中", "Jingzhou": "荆州", "Chengdu": "成都",
-                "Liangzhou": "凉州", "Youzhou": "幽州", "Xiangyang": "襄阳",
-                "Hefei": "合肥", "Changan": "长安", "Luoyang": "洛阳",
-                "Wuchang": "武昌", "Changsha": "长沙", "Jianye": "建业",
-            }
-            
-            if special:
-                special_names_str = ", ".join([special_names.get(n, n) for n in special])
-                special_surf = small_font.render(f"特殊地点：{special_names_str}", True, pg.Color("black"))
-                self.window.blit(special_surf, (box_x + 15, info_y))
-                info_y += special_surf.get_height() + 5
-            
-            normal_surf = small_font.render(f"普通地块：{normal}", True, pg.Color("black"))
-            self.window.blit(normal_surf, (box_x + 15, info_y))
-        
+
+            info_y = name_rect.bottom + section_gap
+            for text, font, txt_color in all_rows[country]:
+                surf = font.render(text, True, txt_color)
+                self.window.blit(surf, (box_x + 15, info_y))
+                info_y += font.get_height() + line_gap
+
         # 游戏结束时显示胜利者
         if screen_type == "game_over":
-            y_offset = y_offset + box_height + 60
-            
-            # 检查"天下归心"
+            winner_y = y_offset + box_height + 40
+
             if "tianxia_winner" in self.show_score_screen:
                 winner = self.show_score_screen["tianxia_winner"]
                 winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
-                winner_text = f"胜利：{winner_names.get(winner, winner)} 达成「天下归心」!"
+                winner_text = (
+                    f"胜利：{winner_names.get(winner, winner)} 达成「天下归心」!"
+                )
                 winner_surf = title_font.render(winner_text, True, pg.Color("gold"))
-                winner_rect = winner_surf.get_rect(centerx=self.screen_width // 2, top=y_offset)
-                self.window.blit(winner_surf, winner_rect)
+                self.window.blit(
+                    winner_surf,
+                    winner_surf.get_rect(centerx=self.screen_width // 2, top=winner_y),
+                )
             elif "score_winner" in self.show_score_screen:
                 winner = self.show_score_screen["score_winner"]
-                if winner:
-                    winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
-                    winner_text = f"胜利：{winner_names.get(winner, winner)} 获得「一代枭雄」!"
-                else:
-                    winner_text = "平局！"
+                winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
+                winner_text = (
+                    f"胜利：{winner_names.get(winner, winner)} 获得「一代枭雄」!"
+                    if winner
+                    else "平局！"
+                )
                 winner_surf = title_font.render(winner_text, True, pg.Color("gold"))
-                winner_rect = winner_surf.get_rect(centerx=self.screen_width // 2, top=y_offset)
-                self.window.blit(winner_surf, winner_rect)
-        
+                self.window.blit(
+                    winner_surf,
+                    winner_surf.get_rect(centerx=self.screen_width // 2, top=winner_y),
+                )
+
         # 底部提示
         hint_surf = small_font.render("按 ESC 退出", True, pg.Color("gray"))
-        hint_rect = hint_surf.get_rect(centerx=self.screen_width // 2, bottom=self.screen_height - 30)
+        hint_rect = hint_surf.get_rect(
+            centerx=self.screen_width // 2, bottom=self.screen_height - 30
+        )
         self.window.blit(hint_surf, hint_rect)
 
     def _clear_for_turn_switch(self, keep_info_message: bool = False) -> None:
@@ -1070,10 +1082,6 @@ class GameApp:
         self.turn_index += 1
         if self.turn_index >= len(self.turn_order):
             self.turn_index = 0
-
-            # 魏国行动完毕，显示分数
-            if self.state == GameState.PLAYING and not self.turn_game_finished:
-                self._show_score_screen("wei_turn")
 
             # 一个小回合（蜀->吴->魏）结束
             if self.minor_round < self.max_minor_rounds:
@@ -1173,6 +1181,62 @@ class GameApp:
             return
         country = self.player_country
         if country is None or country == self.human_country:
+            return
+
+        # --- 阶段0：处理事件卡目标选择（needs_target 类卡牌的 AI 自动选择） ---
+        if self.selecting_evt_target and self.pending_evt_card_id:
+            card_def = self.event_card_deck.get_definition(self.pending_evt_card_id)
+            if card_def:
+                if card_def.target_type == "unit":
+                    # AI 策略：优先选边境有部队的省，再退而求其次选任意己方单位
+                    chosen_prov = None
+                    chosen_slot = 0
+                    border_provs = self._ai_get_border_provinces(country)
+                    border_ids = {p.province_id for p in border_provs}
+                    for prov in self.map_manager.provinces:
+                        if prov.country == country and prov.units:
+                            if prov.province_id in border_ids:
+                                chosen_prov = prov
+                                break
+                    if chosen_prov is None:
+                        for prov in self.map_manager.provinces:
+                            if prov.country == country and prov.units:
+                                chosen_prov = prov
+                                break
+                    if chosen_prov:
+                        self._apply_evt_target_unit(
+                            chosen_prov.province_id, chosen_slot
+                        )
+                    else:
+                        # 无可用单位，直接清除状态
+                        self.selecting_evt_target = False
+                        self.pending_evt_card_id = None
+                        self.pending_evt_drawer = None
+                        self._check_evt_draw_phase_pp()
+                elif card_def.target_type == "province":
+                    # AI 策略：选单位最多的己方省
+                    chosen_prov = max(
+                        (
+                            p
+                            for p in self.map_manager.provinces
+                            if p.country == country and p.units
+                        ),
+                        key=lambda p: len(p.units),
+                        default=None,
+                    )
+                    if chosen_prov:
+                        self._apply_evt_target_province(chosen_prov.province_id)
+                    else:
+                        self.selecting_evt_target = False
+                        self.pending_evt_card_id = None
+                        self.pending_evt_drawer = None
+                        self._check_evt_draw_phase_pp()
+            else:
+                # 找不到卡定义，清除
+                self.selecting_evt_target = False
+                self.pending_evt_card_id = None
+                self.pending_evt_drawer = None
+            # 目标选择完毕，本帧 AI 行动结束，等待下一帧正常行动
             return
 
         # --- 阶段1：大回合加点（如果还未选择） ---
@@ -1706,6 +1770,9 @@ class GameApp:
                             self.stop()
                         elif action == "RESTART":
                             self._restart_game()
+                        elif action == "SCORE":
+                            if self.state == GameState.PLAYING:
+                                self._show_score_screen("wei_turn")
                         return
 
                 # 0.0x 大回合开始加点按钮（三国）
@@ -1725,7 +1792,8 @@ class GameApp:
                     return
 
                 # 0.0y 事件卡抽取阶段：仅允许「抽取」和「跳过」，阻挡所有其他操作
-                if self.evt_draw_phase:
+                # 例外：若正在等待玩家点选事件卡目标，放行到下方目标选择处理
+                if self.evt_draw_phase and not self.selecting_evt_target:
                     if (
                         self.evt_skip_draw_btn_rect
                         and self.evt_skip_draw_btn_rect.collidepoint(event.pos)
@@ -1737,7 +1805,10 @@ class GameApp:
                         and self.draw_event_btn_rect.collidepoint(event.pos)
                     ):
                         self._trigger_draw_event_card(self.player_country)
-                        self._check_evt_draw_phase_pp()
+                        # 若抽卡未弹出覆盖层（牌堆空/安全抽失败），立即检查并决定是否退出阶段
+                        # 若已弹出覆盖层，确认时由 _confirm_event_card → _check_evt_draw_phase_pp 处理
+                        if not self.event_card_overlay:
+                            self._check_evt_draw_phase_pp()
                         return
                     # 点击到其他区域：提示玩家
                     if self.info_panel:
@@ -1861,22 +1932,32 @@ class GameApp:
                     card_def = self.event_card_deck.get_definition(
                         self.pending_evt_card_id
                     )
+                    # 选择方 = pending_evt_drawer（卡牌所属国）
+                    selector = self.pending_evt_drawer or self.player_country
                     if card_def and card_def.target_type == "unit":
                         target_unit = self._get_unit_slot_at(event.pos)
                         if target_unit:
                             prov_id, slot_idx = target_unit
-                            self._apply_evt_target_unit(prov_id, slot_idx)
+                            prov = self.map_manager.get_by_id(prov_id)
+                            if prov and prov.country == selector:
+                                self._apply_evt_target_unit(prov_id, slot_idx)
+                            else:
+                                cn = self.country_labels.get(selector, selector)
+                                if self.info_panel:
+                                    self.info_panel.show_message(f"请点击{cn}的单位")
                         else:
                             if self.info_panel:
-                                self.info_panel.show_message("请点击一个单位（己方）")
+                                cn = self.country_labels.get(selector, selector)
+                                self.info_panel.show_message(f"请点击{cn}的单位")
                         return
                     elif card_def and card_def.target_type == "province":
                         prov = self._get_province_at(event.pos)
-                        if prov and prov.country == self.player_country:
+                        if prov and prov.country == selector:
                             self._apply_evt_target_province(prov.province_id)
                         else:
+                            cn = self.country_labels.get(selector, selector)
                             if self.info_panel:
-                                self.info_panel.show_message("请点击己方地块")
+                                self.info_panel.show_message(f"请点击{cn}的地块")
                         return
 
                 # 0.06 抽事件卡按钮
@@ -2225,7 +2306,7 @@ class GameApp:
         if moving_units:
             target.country = self.player_country
             self.map_manager.invalidate_cache()
-            
+
             # 检查是否达成"天下归心"胜利条件
             self._check_tianxia_guixin_victory()
 
@@ -3211,7 +3292,7 @@ class GameApp:
 
         if movers > 0:
             self.map_manager.invalidate_cache()
-            
+
             # 检查是否达成"天下归心"胜利条件
             self._check_tianxia_guixin_victory()
 
@@ -3222,10 +3303,9 @@ class GameApp:
         如果达成，立即显示分数屏并结束游戏。
         """
         winner = self.score_manager.check_tianxia_guixin(
-            self.map_manager.provinces,
-            self.country_stats
+            self.map_manager.provinces, self.country_stats
         )
-        
+
         if winner:
             # 达成天下归心胜利
             self.turn_game_finished = True
@@ -3233,30 +3313,29 @@ class GameApp:
             self.card_manager = None
             if self.card_panel:
                 self.card_panel.set_available_cards([])
-            
+
             # 准备胜利信息
             if not self.score_manager_initial_recorded:
                 self.score_manager.record_initial_scores(self.map_manager.provinces)
                 self.score_manager_initial_recorded = True
-            
+
             record = self.score_manager.get_detailed_scores(
-                self.map_manager.provinces,
-                self.country_stats
+                self.map_manager.provinces, self.country_stats
             )
-            
+
             net_scores = {
                 "SHU": record.shu_score - record.shu_initial,
                 "WEI": record.wei_score - record.wei_initial,
                 "WU": record.wu_score - record.wu_initial,
             }
-            
+
             self.show_score_screen = {
                 "type": "game_over",
                 "record": record,
                 "net_scores": net_scores,
                 "tianxia_winner": winner,
             }
-            
+
             # 显示胜利消息
             winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
             if self.info_panel:
@@ -3825,10 +3904,17 @@ class GameApp:
         panel_h = 0
         for country in self.turn_order:
             stats = self.country_stats.get(country, {})
+            temp_pp = self.evt_temp_pp.get(country, 0)
+            pp_display = stats.get("political_points", 0)
+            pp_text = (
+                f"政治点数：{pp_display}(+{temp_pp}临)"
+                if temp_pp > 0
+                else f"政治点数：{pp_display}"
+            )
             lines = [
                 self.country_labels.get(country, country),
                 f"民心点数：{stats.get('people_support', 0)}",
-                f"政治点数：{stats.get('political_points', 0)}",
+                pp_text,
             ]
             title_surf = title_font.render(lines[0], True, pg.Color("black"))
             line1_surf = body_font.render(lines[1], True, pg.Color("black"))
@@ -4503,8 +4589,8 @@ class GameApp:
         # 视觉顺序从左到右: [退出] [重开]
         btn_font = self._font("msyh.ttc", int(height * 0.025))
 
-        labels = ["重开一局", "退出游戏"]
-        actions = ["RESTART", "EXIT"]
+        labels = ["重开一局", "退出游戏", "当前各国分数"]
+        actions = ["RESTART", "EXIT", "SCORE"]
 
         self.control_btns = []
 
@@ -4522,13 +4608,16 @@ class GameApp:
 
             rect = pg.Rect(x, y, w, h)
 
+            btn_color = (
+                pg.Color("#1a5276") if action == "SCORE" else pg.Color("#444444")
+            )
             self.control_btns.append(
                 {
                     "rect": rect,
                     "surface": surf,
                     "text_pos": (x + 10, y + 5),
                     "action": action,
-                    "bg_color": pg.Color("#444444"),  # 深灰背景
+                    "bg_color": btn_color,
                     "border_color": pg.Color("white"),
                 }
             )
@@ -4671,7 +4760,7 @@ class GameApp:
         return total_pp >= 1
 
     def _spend_pp(self, country: str, amount: int = 1) -> bool:
-        """消耗政治点数（优先消耗普通 PP，再消耗临时 PP）"""
+        """消耗政治点数（优先消耗临时 PP，再消耗普通 PP）"""
         stats = self.country_stats.setdefault(
             country, {"people_support": 0, "political_points": 0}
         )
@@ -4680,13 +4769,14 @@ class GameApp:
         total = pp + temp
         if total < amount:
             return False
-        # 先消耗普通 PP
-        if pp >= amount:
-            stats["political_points"] = pp - amount
+        # 优先消耗临时 PP
+        if temp >= amount:
+            self.evt_temp_pp[country] = temp - amount
         else:
-            need_temp = amount - pp
-            stats["political_points"] = 0
-            self.evt_temp_pp[country] = temp - need_temp
+            # 临时 PP 不够，先全部用完，再从普通 PP 扣除
+            remaining = amount - temp
+            self.evt_temp_pp[country] = 0
+            stats["political_points"] = pp - remaining
         return True
 
     def _trigger_draw_event_card(self, country: str) -> None:
@@ -4744,13 +4834,29 @@ class GameApp:
             return
         card: EventCardDef = self.event_card_overlay["card"]
         drawer: str = self.event_card_overlay["drawer"]
+        # 记录本张牌是否为「不懈于内」的免费第二次抽取（不消耗 PP）
+        is_free_draw: bool = self.event_card_overlay.get("free_draw", False)
         self.event_card_overlay = None
         self.evt_overlay_ok_btn = None
 
         self._apply_event_card(card, drawer)
-        # 不需要点击目标的卡：立即检查是否退出抽卡阶段
+
+        # ── 若 _apply_event_card 期间又设置了新的覆盖层（draw_again_safe 的
+        #    免费第二张牌），则跳过本次 PP 阶段检查，等第二张牌确认后再评估。
+        if self.event_card_overlay:
+            return
+
         if not card.needs_target:
-            self._check_evt_draw_phase_pp()
+            # 免费第二张牌（不懈于内）：不消耗 PP，但仍按实际 PP 决定阶段
+            # 普通牌：效果执行后按实际 PP 决定阶段
+            _current_pp: int = int(
+                self.country_stats.get(drawer, {}).get("political_points", 0)
+            ) + self.evt_temp_pp.get(drawer, 0)
+            if _current_pp >= 1:
+                if not self.evt_draw_phase and drawer == self.player_country:
+                    self._enter_evt_draw_phase_if_needed()
+            else:
+                self._exit_evt_draw_phase()
 
     def _apply_event_card(self, card, drawer: str) -> None:
         """执行事件卡效果"""
@@ -4795,6 +4901,9 @@ class GameApp:
         elif et == "pp_temp":
             self.evt_temp_pp[tc] = self.evt_temp_pp.get(tc, 0) + ev
             msg = f"「{card.name}」：获得 {ev} 点临时政治点数（本小回合内有效）"
+            # 若抽卡阶段已因 PP 耗尽而退出，临时 PP 注入后应重新进入抽卡阶段
+            if not self.evt_draw_phase and tc == self.player_country:
+                self._enter_evt_draw_phase_if_needed()
 
         elif et == "flag_xingluo":
             add_pp(tc, ev)
@@ -4849,6 +4958,7 @@ class GameApp:
                         "card": next_card,
                         "drawer": drawer,
                         "safe": False,
+                        "free_draw": True,  # 不消耗政治点的免费第二次抽取
                     }
                     if self.info_panel:
                         self.info_panel.show_message(msg, duration=2.0)
@@ -4895,29 +5005,91 @@ class GameApp:
             "unit_atk_plus",
             "unit_dice_bonus",
         ):
-            # 需要玩家点击目标单位
+            # 目标选择方 = 卡牌所属国（tc），而非抽卡方
             self.selecting_evt_target = True
             self.pending_evt_card_id = card.id
-            self.pending_evt_drawer = drawer
+            self.pending_evt_drawer = tc  # tc 已经是解析后的实际目标国
+            # 若目标国为 AI，立即自动选择，不需玩家操作
+            if tc != self.human_country:
+                self._ai_auto_select_evt_target(tc)
+                return
             if self.info_panel:
                 self.info_panel.show_message(
-                    f"「{card.name}」：请点击目标单位（己方）", duration=-1
+                    f"「{card.name}」：请点击目标单位（{self.country_labels.get(tc, tc)}己方）",
+                    duration=-1,
                 )
             return
 
         elif et == "province_def_plus":
-            # 需要玩家点击目标地块
+            # 目标选择方 = 卡牌所属国（tc）
             self.selecting_evt_target = True
             self.pending_evt_card_id = card.id
-            self.pending_evt_drawer = drawer
+            self.pending_evt_drawer = tc
+            # 若目标国为 AI，立即自动选择
+            if tc != self.human_country:
+                self._ai_auto_select_evt_target(tc)
+                return
             if self.info_panel:
                 self.info_panel.show_message(
-                    f"「{card.name}」：请点击目标地块（己方部队）", duration=-1
+                    f"「{card.name}」：请点击目标地块（{self.country_labels.get(tc, tc)}己方部队）",
+                    duration=-1,
                 )
             return
 
         if self.info_panel:
             self.info_panel.show_message(msg, duration=4.0)
+
+    def _ai_auto_select_evt_target(self, selector_country: str) -> None:
+        """AI 立即为 needs_target 事件卡自动选择目标，不等待玩家点击"""
+        if not self.pending_evt_card_id:
+            return
+        card_def = self.event_card_deck.get_definition(self.pending_evt_card_id)
+        if not card_def:
+            self.selecting_evt_target = False
+            self.pending_evt_card_id = None
+            self.pending_evt_drawer = None
+            return
+
+        if card_def.target_type == "unit":
+            # 优先选边境有部队的省份，次选任意己方有部队省份
+            border_provs = self._ai_get_border_provinces(selector_country)
+            border_ids = {p.province_id for p in border_provs}
+            chosen_prov = None
+            for prov in self.map_manager.provinces:
+                if prov.country == selector_country and prov.units:
+                    if prov.province_id in border_ids:
+                        chosen_prov = prov
+                        break
+            if chosen_prov is None:
+                for prov in self.map_manager.provinces:
+                    if prov.country == selector_country and prov.units:
+                        chosen_prov = prov
+                        break
+            if chosen_prov:
+                self._apply_evt_target_unit(chosen_prov.province_id, 0)
+            else:
+                self.selecting_evt_target = False
+                self.pending_evt_card_id = None
+                self.pending_evt_drawer = None
+                self._check_evt_draw_phase_pp()
+
+        elif card_def.target_type == "province":
+            chosen_prov = max(
+                (
+                    p
+                    for p in self.map_manager.provinces
+                    if p.country == selector_country and p.units
+                ),
+                key=lambda p: len(p.units),
+                default=None,
+            )
+            if chosen_prov:
+                self._apply_evt_target_province(chosen_prov.province_id)
+            else:
+                self.selecting_evt_target = False
+                self.pending_evt_card_id = None
+                self.pending_evt_drawer = None
+                self._check_evt_draw_phase_pp()
 
     def _apply_evt_target_unit(self, prov_id: int, slot: int) -> None:
         """完成需要点击单位的事件卡效果"""
@@ -5041,10 +5213,8 @@ class GameApp:
         )
 
         # ---- 顶部国家颜色标签条 ----
-        # 公共卡（DRAWER）显示抽取方；其余显示实际生效国
-        display_country = (
-            drawer if card.target_country == "DRAWER" else card.target_country
-        )
+        # 公共卡（deck=="PUBLIC"）始终显示抽取方；其余显示实际生效国
+        display_country = drawer if card.deck == "PUBLIC" else card.target_country
         country_color = self.country_button_colors.get(
             display_country, pg.Color("gray")
         )
@@ -5152,7 +5322,7 @@ class GameApp:
                 self.info_panel.show_message("政治点数耗尽，进入行动阶段", duration=2.0)
 
     def _render_draw_event_btn(self) -> None:
-        """事件卡抽取阶段按钮组：「抽事件卡」+ 「跳过」"""
+        """事件卡抽取阶段按钮组：「抽事件卡」+ 「跳过」；等待目标选择时显示提示"""
         if self.state != GameState.PLAYING:
             self.draw_event_btn_rect = None
             self.evt_skip_draw_btn_rect = None
@@ -5165,6 +5335,25 @@ class GameApp:
         if not self.evt_draw_phase:
             self.draw_event_btn_rect = None
             self.evt_skip_draw_btn_rect = None
+            return
+
+        # 若正在等待玩家点选事件卡目标，隐藏抽卡/跳过按钮，显示「请选择生效目标」提示
+        if self.selecting_evt_target:
+            self.draw_event_btn_rect = None
+            self.evt_skip_draw_btn_rect = None
+            font = self.combat_ui_font
+            top_area_h = int(self.screen_height * 0.15)
+            tag_x = self.country_tag_pos[0]
+            hint_surf = font.render("▶ 请选择生效目标", True, pg.Color("#FFD700"))
+            hint_y = (top_area_h - hint_surf.get_height()) // 2
+            hint_x = tag_x - hint_surf.get_width() - 20
+            # 半透明背景衬底
+            bg = pg.Surface(
+                (hint_surf.get_width() + 16, hint_surf.get_height() + 8), pg.SRCALPHA
+            )
+            bg.fill((0, 0, 0, 120))
+            self.window.blit(bg, (hint_x - 8, hint_y - 4))
+            self.window.blit(hint_surf, (hint_x, hint_y))
             return
 
         font = self.combat_ui_font
