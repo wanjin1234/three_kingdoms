@@ -3972,12 +3972,12 @@ class GameApp:
             status_msgs.append("防退")
         status_line = " · ".join(status_msgs) if status_msgs else None
 
-        # 最终组合：把所有非空行用换行符连起来
+        # 最终组合：把所有非空行用 " · " 拼接成单行，避免多行展示和其他 UI 重叠
         title_lines = [title_line, summary_line]
         if status_line:
             title_lines.append(status_line)
 
-        full_title_str = "\n".join(title_lines)
+        full_title_str = " · ".join(title_lines)
 
         # 详细列表日志 (只保留具体单位状态)
         logs = []
@@ -4911,73 +4911,36 @@ class GameApp:
                             ),
                         )
 
-            # --- 画战斗结果 (Top UI) ---
-            # 如果 timer != 0，则显示 (timer<0 为永久，timer>0 为倒计时)
+            # --- 画战斗结果 (Top UI 第1行：顶部区域上三分之一) ---
+            # timer != 0 时显示; combat_result_title 始终为单行
             if self.combat_result_title and self.combat_result_timer != 0:
                 font = self.combat_ui_font
-
-                # 总高度区域
                 top_area_height = int(self.screen_height * 0.15)
-                # 以国家标签为参考点
                 tag_x = self.country_tag_pos[0]
-
-                # 获取所有行
-                lines = self.combat_result_title.split("\n")
-
-                # 倒序渲染行，确保最上面一行在最上面，但我们从下往上排？
-                # 或者从上往下排？因为这块区域在 header
-                # 之前是 centered vertical.
-                # 由于是多行，我们先算总高度
-                line_height = font.get_height()
-                total_text_h = (
-                    len(lines) * line_height + (len(lines) - 1) * 5
-                )  # 5px 行间距
-
-                # 第1行：战斗结果位于顶部区域上三分之一
-                start_y = max(2, top_area_height // 6 - total_text_h // 2)
-
-                for line_idx, line in enumerate(lines):
-                    # 对每一行执行之前的“从右向左渲染”逻辑
-                    parts = line.split(" · ")
-
-                    # 当前行的 Y 坐标
-                    current_y_center = (
-                        start_y + line_idx * (line_height + 5) + line_height // 2
+                y_center = top_area_height // 6
+                parts = self.combat_result_title.split(" · ")
+                current_right_x = tag_x - 30
+                for i, part in enumerate(reversed(parts)):
+                    color = pg.Color("blue") if "骰" in part else pg.Color("black")
+                    surf = font.render(part, True, color)
+                    w = surf.get_width()
+                    self.window.blit(
+                        surf, (current_right_x - w, y_center - surf.get_height() // 2)
                     )
+                    current_right_x -= w
+                    if i < len(parts) - 1:
+                        current_right_x -= 5
+                        sep_surf = font.render("·", True, pg.Color("black"))
+                        self.window.blit(
+                            sep_surf,
+                            (
+                                current_right_x - sep_surf.get_width(),
+                                y_center - sep_surf.get_height() // 2,
+                            ),
+                        )
+                        current_right_x -= sep_surf.get_width() + 5
 
-                    # 从右向左渲染，起始位置在 Tag 左边 30px
-                    current_right_x = tag_x - 30
-
-                    # 倒序遍历: A1, 骰6, 1:1
-                    reversed_parts = list(reversed(parts))
-
-                    for i, part in enumerate(reversed_parts):
-                        # 1. 绘制部件
-                        color = pg.Color("blue") if "骰" in part else pg.Color("black")
-                        surf = font.render(part, True, color)
-                        w, h_surf = surf.get_width(), surf.get_height()
-                        y = current_y_center - h_surf // 2
-
-                        self.window.blit(surf, (current_right_x - w, y))
-                        current_right_x -= w
-
-                        # 2. 绘制分隔符 (只要不是最后一个部件)
-                        if i < len(reversed_parts) - 1:
-                            # 右边距
-                            current_right_x -= 5
-
-                            sep_surf = font.render("·", True, pg.Color("black"))
-                            sep_sw = sep_surf.get_width()
-                            sep_y = current_y_center - sep_surf.get_height() // 2
-                            self.window.blit(
-                                sep_surf, (current_right_x - sep_sw, sep_y)
-                            )
-
-                            current_right_x -= sep_sw
-                            # 左边距
-                            current_right_x -= 5
-
-        # 6. 画选中框（覆盖在最上层）
+                # 6. 画选中框（覆盖在最上层）
         self.selection_overlay.draw(
             surface=self.window,
             selections=self.selected_units,
@@ -6881,12 +6844,11 @@ class GameApp:
             top_area_h = int(self.screen_height * 0.15)
             tag_x = self.country_tag_pos[0]
             hint_surf = font.render("▶ 请选择生效目标", True, pg.Color("#FFD700"))
-            hint_y = (top_area_h - hint_surf.get_height()) // 2
+            hint_h = hint_surf.get_height()
+            hint_y = top_area_h // 2 - hint_h // 2
             hint_x = tag_x - hint_surf.get_width() - 20
             # 半透明背景衬底
-            bg = pg.Surface(
-                (hint_surf.get_width() + 16, hint_surf.get_height() + 8), pg.SRCALPHA
-            )
+            bg = pg.Surface((hint_surf.get_width() + 16, hint_h + 8), pg.SRCALPHA)
             bg.fill((0, 0, 0, 120))
             self.window.blit(bg, (hint_x - 8, hint_y - 4))
             self.window.blit(hint_surf, (hint_x, hint_y))
@@ -6901,7 +6863,7 @@ class GameApp:
         skip_label = "跳过抽卡"
         skip_surf = font.render(skip_label, True, pg.Color("white"))
         btn_h = skip_surf.get_height() + 10
-        btn_y = (top_area_h - btn_h) // 2
+        btn_y = top_area_h // 2 - btn_h // 2
         skip_w = skip_surf.get_width() + 20
         skip_x = tag_x - skip_w - 10
         skip_rect = pg.Rect(skip_x, btn_y, skip_w, btn_h)
