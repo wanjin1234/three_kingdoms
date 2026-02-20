@@ -23,6 +23,7 @@ from src.core.combat import (
     resolve_combat,
 )
 from src.core.events import EventManager
+from src.core.music_manager import MUSIC_END_EVENT, MusicManager
 from src.core.score_manager import ScoreManager
 from src.game_objects.card import CardManager, CardRepository
 from src.game_objects.card_effects import CardEffectManager
@@ -162,11 +163,22 @@ class GameApp:
         except Exception:
             pass
 
+        # 初始化背景音乐管理器
+        try:
+            from settings import BASE_DIR as _BASE_DIR
+
+            self.music_manager = MusicManager(_BASE_DIR / "src" / "music")
+        except Exception as _e:
+            logger.warning("背景音乐初始化失败：%s", _e)
+            self.music_manager = None
+
         # 计算六边形格子的边长，使其刚好能铺满屏幕高度的一部分
         self.hex_side = self.screen_height * 2 / (19 * SQRT3)
 
         # 初始状态设为 LOADING
         self.state = GameState.LOADING
+        if self.music_manager:
+            self.music_manager.play_menu()
         self.player_country: str | None = None  # 当前行动的国家
         self.human_country: str | None = None  # 玩家选择控制的国家
 
@@ -821,6 +833,8 @@ class GameApp:
         self.clear_selection()
         self._update_card_panel()
         self.state = GameState.PLAYING
+        if self.music_manager:
+            self.music_manager.play_game()
 
         # 如果第一个行动国是 AI，安排延迟触发
         if self.human_country is not None and self.player_country != self.human_country:
@@ -903,6 +917,10 @@ class GameApp:
             "record": record,
             "net_scores": net_scores,
         }
+
+        # 游戏结束时切换到结算音乐
+        if screen_type == "game_over" and self.music_manager:
+            self.music_manager.play_score()
 
         # 检查游戏结束时的胜利条件
         if screen_type == "game_over":
@@ -1799,6 +1817,8 @@ class GameApp:
         self.pp_summon_target_prov = None
         self.pp_summon_btns = []
         self.state = GameState.MODE_SELECT
+        if self.music_manager:
+            self.music_manager.play_menu()
         logger.info("Game restarted.")
 
     def run(self) -> None:
@@ -1988,6 +2008,12 @@ class GameApp:
         分发处理具体的事件。
         根据当前的游戏状态（LOADING/CHOOSING/PLAYING），交给不同的函数处理。
         """
+        # 背景音乐：曲目结束时自动播放下一首
+        if event.type == MUSIC_END_EVENT:
+            if self.music_manager:
+                self.music_manager.on_track_end()
+            return
+
         if event.type == pg.QUIT:
             self.stop()
             return
