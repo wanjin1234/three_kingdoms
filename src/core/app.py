@@ -741,10 +741,11 @@ class GameApp:
             return False
 
         # 应用卡牌效果（记录效果/标记格子）
+        # 注意：province_id 可能是 int，统一转为 str 以匹配 get_effect(str(...)) 的查找方式
         success = self.card_effect_manager.apply_card_effect(
             card_id,
             card_def.name,
-            province_id,
+            str(province_id),
             self.player_country,
         )
 
@@ -1890,6 +1891,10 @@ class GameApp:
                 else target.compute_center(self.hex_side)
             )
             if dist(p_center, t_center) <= allowed_range_px:
+                # 跳过空城妙计保护的格子
+                _t_eff = self.card_effect_manager.get_effect(str(target.province_id))
+                if _t_eff and _t_eff.protected:
+                    continue
                 # 主威胁国优先级0，其余1
                 priority = 0 if (main_threat and def_c == main_threat) else 1
                 score = (priority, len(target.units))  # 越少越软
@@ -3200,9 +3205,7 @@ class GameApp:
                 str(target_province.province_id)
             )
             if target_effect and target_effect.protected:
-                self.info_panel.show_message(
-                    "该格处于空城妙计保护中，本大回合不可被进攻"
-                )
+                self.info_panel.show_message("此格子不能被进攻")
                 return
 
         # 民心5级（箪食壶浆）：对无守军的敌方城市可以直接占领，不触发战斗
@@ -3745,6 +3748,10 @@ class GameApp:
                 else target.compute_center(self.hex_side)
             )
             if dist(p_center, t_center) <= allowed_range_px:
+                # 跳过空城妙计保护的格子
+                _t_eff = self.card_effect_manager.get_effect(str(target.province_id))
+                if _t_eff and _t_eff.protected:
+                    continue
                 return True
 
         return False
@@ -3821,6 +3828,13 @@ class GameApp:
         if self.evt_flag_wuwei and atk_c == "WU" and def_c == "WEI":
             if self.info_panel:
                 self.info_panel.show_message("「吴魏媾和」：本回合东吴不能进攻曹魏")
+            return
+
+        # 空城妙计：受保护的格子不可被任何一方进攻（包括 AI）
+        _target_effect = self.card_effect_manager.get_effect(str(target.province_id))
+        if _target_effect and _target_effect.protected:
+            if self.info_panel:
+                self.info_panel.show_message("此格子不能被进攻")
             return
 
         if self.pending_post_move_attack and self.pending_attacker:

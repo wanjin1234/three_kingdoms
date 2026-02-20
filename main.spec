@@ -8,6 +8,7 @@ a = Analysis(
     datas=[
         ('assets', 'assets'),
         ('icon.ico', '.'),
+        ('src/music', 'src/music'),
     ],
     hiddenimports=[],
     hookspath=[],
