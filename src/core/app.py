@@ -1808,6 +1808,12 @@ class GameApp:
         if new_entry in self.selected_units:
             return
 
+        # 若已有选中单位且来自不同格子，先清空再选新格子（强制同格操作）
+        if self.selected_units:
+            existing_pids = {pid for pid, _ in self.selected_units}
+            if province_id not in existing_pids:
+                self.selected_units.clear()
+
         self.selected_units.append(new_entry)
         self._update_selection_info()  # 更新面板信息
 
@@ -2709,16 +2715,13 @@ class GameApp:
             self._handle_movement(target_province)
 
     def _handle_movement(self, target: object) -> None:  # target: Province
-        """处理移动逻辑"""
-        # 动作1：移动仅允许一个单位
-        if len(self.selected_units) != 1:
-            self.info_panel.show_message("移动行动只能选择1个单位")
-            return
-
+        """处理移动逻辑：同一格子上的单位可作为整体一起移动"""
         # 1. 检查选中单位的来源（只能来自同一个格子）
         source_ids = {pid for pid, _ in self.selected_units}
+        if not source_ids:
+            return
         if len(source_ids) > 1:
-            self.info_panel.show_message("选择单位过多")
+            self.info_panel.show_message("只能移动同一格子上的部队")
             return
 
         # 获取源格子
@@ -2800,7 +2803,8 @@ class GameApp:
         # 仅当“移动前可攻击”且“移动后可攻击”时，才提供移动后攻击选择
         # （根据规则：当且仅当移动前后都能攻击）
         pre_move_can_attack = (
-            selected_unit.mp > 0
+            len(moving_units) == 1
+            and selected_unit.mp > 0
             and self._has_attackable_target_for_unit(source, selected_unit)
         )
 
