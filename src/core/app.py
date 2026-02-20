@@ -9,7 +9,7 @@ import ctypes
 import logging
 import random
 from enum import Enum, auto
-from math import dist, sqrt
+from math import dist, radians, sqrt
 from typing import Callable, Dict, List, Sequence, Tuple
 
 import pygame as pg
@@ -347,6 +347,15 @@ class GameApp:
         # 分数显示状态（None = 不显示）
         # 结构：{"type": "wei_turn" | "game_over", "record": ScoreRecord, "net_scores": Dict}
         self.show_score_screen: dict | None = None
+
+        # 音量控制
+        self.volume_slider_visible: bool = False
+        self.volume_level: float = 1.0
+        self._vol_dragging: bool = False
+        self._vol_slider_rect: pg.Rect | None = None
+        self._vol_track_top: int = 0
+        self._vol_track_bottom: int = 0
+        self._vol_track_x: int = 0
 
         # 改回使用默认的 Arial 字体，因为中文字体 (msyh) 的垂直基线会导致数字无法垂直居中
         self.selection_overlay = SelectionOverlay()
@@ -2133,7 +2142,19 @@ class GameApp:
                         elif action == "SCORE":
                             if self.state == GameState.PLAYING:
                                 self._show_score_screen("wei_turn")
+                        elif action == "VOLUME":
+                            self.volume_slider_visible = not self.volume_slider_visible
                         return
+
+                # 0.0a 音量滑块：若打开且点在滑块面板内则拖动；否则关闭
+                if self.volume_slider_visible and self._vol_slider_rect:
+                    if self._vol_slider_rect.collidepoint(event.pos):
+                        self._vol_dragging = True
+                        self._update_volume_from_y(event.pos[1])
+                        return
+                    else:
+                        self.volume_slider_visible = False
+                        # fall through，不 return，让点击继续传递
 
                 # 0.0x 大回合开始加点按钮（三国）
                 if self.major_round_choice_pending:
@@ -2689,9 +2710,19 @@ class GameApp:
                     return
                 self._handle_game_right_click(event.pos)
         elif event.type == pg.MOUSEMOTION:
+            # 音量滑块拖动
+            if (
+                self._vol_dragging
+                and self.volume_slider_visible
+                and self._vol_slider_rect
+            ):
+                self._update_volume_from_y(event.pos[1])
             # 处理鼠标移动以显示卡牌描述提示
             if self.card_panel:
                 self.card_panel.handle_mouse_motion(event.pos)
+        elif event.type == pg.MOUSEBUTTONUP:
+            if event.button == 1:
+                self._vol_dragging = False
 
     def _get_unit_slot_at(self, pos: Tuple[int, int]) -> Tuple[int, int] | None:
         """根据鼠标点击位置获取被点击的单位"""
@@ -2993,6 +3024,97 @@ class GameApp:
             dfs = max(0, dfs - CONFUSION_PENALTY)
 
         return atk, dfs
+
+    # ------------------------------------------------------------------
+    # 音量滑块
+    # ------------------------------------------------------------------
+
+    def _draw_speaker_icon(self, cx: int, cy: int, radius: int) -> None:
+        """在圆形按钮内绘制喇叭图案（白色，居中）。"""
+        s = max(4, int(radius * 0.44))
+        ic = pg.Color("white")
+        lw = max(1, s // 4)
+
+        # 整体图标向左偏移，为右侧声波留空间
+        ox = cx - s // 3
+
+        # 扬声器盒体（左侧小矩形）
+        bw = max(2, s // 2)
+        bh = max(2, int(s * 0.85))
+        bx = ox - bw - s // 2
+        by = cy - bh // 2
+        pg.draw.rect(self.window, ic, pg.Rect(bx, by, bw, bh))
+
+        # 喇叭锥形（向右展开的梯形）
+        cone_rx = bx + bw + s
+        cone_pts = [
+            (bx + bw, cy - bh // 2),
+            (cone_rx, cy - s),
+            (cone_rx, cy + s),
+            (bx + bw, cy + bh // 2),
+        ]
+        pg.draw.polygon(self.window, ic, cone_pts)
+
+        # 声波弧线（两条，圆弧角 ±55°，仅绘制右半侧）
+        wave_cx = cx + s // 2
+        for arc_r in (int(s * 0.9), int(s * 1.55)):
+            arc_rect = pg.Rect(wave_cx - arc_r, cy - arc_r, arc_r * 2, arc_r * 2)
+            pg.draw.arc(self.window, ic, arc_rect, -radians(55), radians(55), lw)
+
+    def _update_volume_from_y(self, y: int) -> None:
+        """根据鼠标 Y 坐标更新音量（0.0-1.0），并同步应用到 mixer。"""
+        ty_top = self._vol_track_top
+        ty_bot = self._vol_track_bottom
+        track_h = ty_bot - ty_top
+        if track_h <= 0:
+            return
+        ratio = (y - ty_top) / track_h
+        self.volume_level = max(0.0, min(1.0, 1.0 - ratio))
+        if pg.mixer.get_init():
+            pg.mixer.music.set_volume(self.volume_level)
+
+    def _render_volume_slider(self) -> None:
+        """在屏幕上绘制音量调节滑块浮窗。"""
+        sr = self._vol_slider_rect
+        if sr is None:
+            return
+
+        # 半透明背景面板
+        panel_surf = pg.Surface((sr.width, sr.height), pg.SRCALPHA)
+        panel_surf.fill((20, 20, 20, 210))
+        self.window.blit(panel_surf, sr.topleft)
+        pg.draw.rect(self.window, pg.Color("#52b788"), sr, 2, border_radius=8)
+
+        tx = self._vol_track_x
+        ty_top = self._vol_track_top
+        ty_bot = self._vol_track_bottom
+        track_h = ty_bot - ty_top
+
+        # 轨道（灰色底层）
+        pg.draw.line(self.window, pg.Color("#555555"), (tx, ty_top), (tx, ty_bot), 4)
+
+        # 轨道已填充部分（绿色，从旋钮往下到底）
+        knob_y = int(ty_top + (1.0 - self.volume_level) * track_h)
+        if knob_y < ty_bot:
+            pg.draw.line(
+                self.window, pg.Color("#52b788"), (tx, knob_y), (tx, ty_bot), 4
+            )
+
+        # 旋钮
+        pg.draw.circle(self.window, pg.Color("white"), (tx, knob_y), 9)
+        pg.draw.circle(self.window, pg.Color("#2d6a4f"), (tx, knob_y), 7)
+
+        # 百分比文字（使用小号字体居中显示在浮窗底部）
+        pct_text = f"{int(self.volume_level * 100)}%"
+        font = getattr(self, "tooltip_font", None) or getattr(
+            self, "combat_ui_font", None
+        )
+        if font:
+            pct_surf = font.render(pct_text, True, pg.Color("white"))
+            pct_rect = pct_surf.get_rect(centerx=sr.centerx, bottom=sr.bottom - 4)
+            self.window.blit(pct_surf, pct_rect)
+
+    # ------------------------------------------------------------------
 
     def _is_mountain_terrain(self, province: object) -> bool:
         terrain = (province.terrain or "").lower()
@@ -4137,12 +4259,29 @@ class GameApp:
             color = btn["bg_color"]
             if btn["rect"].collidepoint(pg.mouse.get_pos()):
                 color = pg.Color("#666666")  # Lighter gray
+            # 音量按钮激活时高亮
+            if btn["action"] == "VOLUME" and self.volume_slider_visible:
+                color = pg.Color("#52b788")
 
-            pg.draw.rect(self.window, color, btn["rect"], border_radius=5)
-            pg.draw.rect(
-                self.window, btn["border_color"], btn["rect"], 2, border_radius=5
-            )
-            self.window.blit(btn["surface"], btn["text_pos"])
+            if btn.get("shape") == "circle":
+                r = btn["rect"]
+                cx, cy = r.centerx, r.centery
+                radius = min(r.width, r.height) // 2
+                pg.draw.circle(self.window, color, (cx, cy), radius)
+                pg.draw.circle(self.window, btn["border_color"], (cx, cy), radius, 2)
+                # 喀叭图标（纯 pygame 基本图形）
+                if btn["action"] == "VOLUME":
+                    self._draw_speaker_icon(cx, cy, radius)
+            else:
+                pg.draw.rect(self.window, color, btn["rect"], border_radius=5)
+                pg.draw.rect(
+                    self.window, btn["border_color"], btn["rect"], 2, border_radius=5
+                )
+                self.window.blit(btn["surface"], btn["text_pos"])
+
+        # 3.6 音量滑块浮窗
+        if self.volume_slider_visible and self._vol_slider_rect:
+            self._render_volume_slider()
 
         # 4. 右下角显示回合信息（避开功能按钮）
         country_label = (
@@ -5792,8 +5931,8 @@ class GameApp:
         # 视觉顺序从左到右: [退出] [重开]
         btn_font = self._font("msyh.ttc", int(height * 0.025))
 
-        labels = ["重开一局", "退出游戏", "当前各国分数"]
-        actions = ["RESTART", "EXIT", "SCORE"]
+        labels = ["重开一局", "退出游戏", "当前各国分数", ""]
+        actions = ["RESTART", "EXIT", "SCORE", "VOLUME"]
 
         self.control_btns = []
 
@@ -5802,8 +5941,13 @@ class GameApp:
 
         for label, action in zip(labels, actions):
             surf = btn_font.render(label, True, pg.Color("white"))
-            w = surf.get_width() + 20
-            h = surf.get_height() + 10
+            base_h = surf.get_height() + 10
+            # 音量按钮做成正方形（渲染时画圆）
+            if action == "VOLUME":
+                w = h = base_h
+            else:
+                w = surf.get_width() + 20
+                h = base_h
 
             x = current_x_right - w
             # 贴近底部
@@ -5812,21 +5956,46 @@ class GameApp:
             rect = pg.Rect(x, y, w, h)
 
             btn_color = (
-                pg.Color("#1a5276") if action == "SCORE" else pg.Color("#444444")
+                pg.Color("#1a5276")
+                if action == "SCORE"
+                else pg.Color("#2d6a4f")
+                if action == "VOLUME"
+                else pg.Color("#444444")
             )
+            # 音量按钮文字居中
+            if action == "VOLUME":
+                text_pos = surf.get_rect(center=rect.center).topleft
+            else:
+                text_pos = (x + 10, y + 5)
             self.control_btns.append(
                 {
                     "rect": rect,
                     "surface": surf,
-                    "text_pos": (x + 10, y + 5),
+                    "text_pos": text_pos,
                     "action": action,
                     "bg_color": btn_color,
                     "border_color": pg.Color("white"),
+                    "shape": "circle" if action == "VOLUME" else "rect",
                 }
             )
 
             # 往左移，留出间隙
             current_x_right -= w + 10
+
+        # 初始化音量滑块几何信息（在按钮布局完之后计算）
+        vol_btn_entry = next(
+            (b for b in self.control_btns if b["action"] == "VOLUME"), None
+        )
+        if vol_btn_entry:
+            vr = vol_btn_entry["rect"]
+            slider_w, slider_h = 72, 140
+            sx = vr.centerx - slider_w // 2
+            sy = vr.top - slider_h - 8
+            self._vol_slider_rect = pg.Rect(sx, sy, slider_w, slider_h)
+            self._vol_track_top = sy + 14
+            self._vol_track_bottom = sy + slider_h - 30
+            self._vol_track_x = sx + slider_w // 2
+
         # 往右调一点，之前是 width - height * 0.15，现在改为 0.05，更靠右
         self.country_tag_pos = (int(width - height * 0.12), 0)
 
