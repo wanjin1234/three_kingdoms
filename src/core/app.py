@@ -293,6 +293,23 @@ class GameApp:
         # 各国"！"悬停按钮区域（每帧由 _draw_country_stats_overlay 刷新）
         self.evt_info_btns: Dict[str, pg.Rect] = {}
 
+        # ---- 民心等级效果（2-5级）----
+        self.morale_lv2_used: Dict[
+            str, int
+        ] = {}  # {country: major_round} 令行禁止已用大回合
+        self.morale_lv3_used: Dict[
+            str, int
+        ] = {}  # {country: major_round} 老乡指路已用大回合
+        self.morale_lv4_pending: Dict[str, bool] = {}  # {country: True} 军容严整待处理
+        self.morale_free_move_mode: bool = (
+            False  # 令行禁止：自由移动1格模式（不消耗行动力）
+        )
+        self.morale_bonus_mp_mode: bool = False  # 老乡指路：选择单位获得+1行动力模式
+        self.morale_cure_mode: bool = False  # 军容严整：选择混乱单位解除混乱模式
+        self.morale_lv2_btn_rect: pg.Rect | None = None
+        self.morale_lv3_btn_rect: pg.Rect | None = None
+        self.morale_lv4_btn_rect: pg.Rect | None = None
+
         # 事件卡抽取阶段（每个小回合开始时的强制阶段）
         self.evt_draw_phase: bool = False  # True = 当前处于抽取阶段，禁止调兵
         self.evt_skip_draw_btn_rect: pg.Rect | None = None  # 「跳过」按钮区域
@@ -352,6 +369,16 @@ class GameApp:
         self._no_attack_btn_surf = self.combat_ui_font.render(
             "不攻击", True, pg.Color("white")
         )
+        # 民心等级效果按钮预渲染
+        self._morale_lv2_btn_surf = self.combat_ui_font.render(
+            "令行禁止：移动1格", True, pg.Color("white")
+        )
+        self._morale_lv3_btn_surf = self.combat_ui_font.render(
+            "老乡指路：+1行动力", True, pg.Color("white")
+        )
+        self._morale_lv4_btn_surf = self.combat_ui_font.render(
+            "军容严整：解除混乱", True, pg.Color("white")
+        )
 
         # Tooltip Caching
         self._last_tooltip_data = None
@@ -407,6 +434,29 @@ class GameApp:
 
         # 初始填充行动力
         self._replenish_action_points()
+
+    def _get_people_support_level(self, country: str) -> int:
+        """获取国家当前民心等级（点数即等级，支持负数）"""
+        return self.country_stats.get(country, {}).get("people_support", 0)
+
+    def _has_confused_units_for_country(self, country: str) -> bool:
+        """检查该国是否有任何混乱状态的单位"""
+        for prov in self.map_manager.provinces:
+            if prov.country == country:
+                for u in prov.units:
+                    if u.is_confused:
+                        return True
+        return False
+
+    def _ai_cure_confused_unit(self, country: str) -> bool:
+        """AI 自动解除该国第一个混乱单位的混乱状态（军容严整效果）。返回是否成功。"""
+        for prov in self.map_manager.provinces:
+            if prov.country == country:
+                for u in prov.units:
+                    if u.is_confused:
+                        u.is_confused = False
+                        return True
+        return False
 
     def _replenish_action_points(self) -> None:
         """
@@ -1052,6 +1102,10 @@ class GameApp:
         self.allow_jiangdong_selection = False
         self.no_attack_btn_rect = None
         self.skip_jiangdong_card_btn_rect = None
+        # 民心效果模式清除
+        self.morale_free_move_mode = False
+        self.morale_bonus_mp_mode = False
+        self.morale_cure_mode = False
 
         if not keep_info_message:
             self.combat_result_title = None
@@ -1095,6 +1149,13 @@ class GameApp:
                 self._end_full_round()
             elif self.major_round < self.max_major_rounds:
                 # 小回合满6后进入下一个大回合
+                # 大回合结束：民心4级效果（军容严整）各国可解除一个混乱单位
+                for _c in list(self.turn_order):
+                    if self._get_people_support_level(_c) >= 4:
+                        if _c == self.human_country:
+                            self.morale_lv4_pending[_c] = True
+                        else:
+                            self._ai_cure_confused_unit(_c)
                 self.major_round += 1
                 self.minor_round = 1
                 self._end_full_round()
@@ -1188,6 +1249,54 @@ class GameApp:
         country = self.player_country
         if country is None or country == self.human_country:
             return
+
+        # --- 民心等级效果（AI自动处理）---
+        _ai_support = self._get_people_support_level(country)
+
+        # 民心2级（令行禁止）：每大回合免费移动1格
+        if (
+            _ai_support >= 2
+            and self.morale_lv2_used.get(country, 0) != self.major_round
+        ):
+            border_provs_lv2 = self._ai_get_border_provinces(country)
+            _did_free_move = False
+            for _bp in border_provs_lv2:
+                if not _bp.units:
+                    continue
+                _dest = self._ai_pick_move_target(_bp, _bp.units[0], border_provs_lv2)
+                if (
+                    _dest
+                    and self.map_manager.find_path_cost(
+                        _bp.province_id, _dest.province_id
+                    )
+                    == 1
+                ):
+                    self.morale_free_move_mode = True
+                    self.selected_units = [(_bp.province_id, 0)]
+                    self._handle_movement(_dest)
+                    _did_free_move = True
+                    break
+            # 无论是否找到目标都消耗额度（避免无限尝试）
+            self.morale_lv2_used[country] = self.major_round
+            self.morale_free_move_mode = False
+
+        # 民心3级（老乡指路）：每大回合给一个边境单位+1行动力
+        if (
+            _ai_support >= 3
+            and self.morale_lv3_used.get(country, 0) != self.major_round
+        ):
+            _border_p3 = self._ai_get_border_provinces(country)
+            for _bp3 in _border_p3:
+                if _bp3.units:
+                    _bp3.units[0].mp += 1
+                    self.morale_lv3_used[country] = self.major_round
+                    break
+            else:
+                self.morale_lv3_used[country] = (
+                    self.major_round
+                )  # no units, still consume
+
+        # 民心4级（军容严整）：大回合结束时解除混乱 - 在 _advance_country_turn 中处理
 
         # --- 阶段0：处理事件卡目标选择（needs_target 类卡牌的 AI 自动选择） ---
         if self.selecting_evt_target and self.pending_evt_card_id:
@@ -1511,6 +1620,13 @@ class GameApp:
         self.evt_draw_again_safe = False
         self.evt_draw_phase = False
         self.evt_skip_draw_btn_rect = None
+        # 民心等级效果重置
+        self.morale_lv2_used = {}
+        self.morale_lv3_used = {}
+        self.morale_lv4_pending = {}
+        self.morale_free_move_mode = False
+        self.morale_bonus_mp_mode = False
+        self.morale_cure_mode = False
         self.state = GameState.MODE_SELECT
         logger.info("Game restarted.")
 
@@ -1756,8 +1872,19 @@ class GameApp:
         """处理游戏中的事件"""
         if event.type == pg.KEYDOWN:
             if event.key == pg.K_ESCAPE:
+                # 如果正在选择民心效果目标，取消该模式
+                if (
+                    self.morale_free_move_mode
+                    or self.morale_bonus_mp_mode
+                    or self.morale_cure_mode
+                ):
+                    self.morale_free_move_mode = False
+                    self.morale_bonus_mp_mode = False
+                    self.morale_cure_mode = False
+                    if self.info_panel:
+                        self.info_panel.show_message("已取消民心效果操作")
                 # 如果正在选择卡牌目标，取消目标选择
-                if self.selecting_card_target:
+                elif self.selecting_card_target:
                     self._cancel_card_target_selection()
                 else:
                     # 否则取消单位选择
@@ -1984,6 +2111,95 @@ class GameApp:
                     self._trigger_draw_event_card(self.player_country)
                     return
 
+                # 0.08 民心等级效果按钮（令行禁止 / 老乡指路 / 军容严整）
+                if self.morale_lv2_btn_rect and self.morale_lv2_btn_rect.collidepoint(
+                    event.pos
+                ):
+                    self.morale_free_move_mode = True
+                    if self.info_panel:
+                        self.info_panel.show_message(
+                            "令行禁止：请选中1个单位，再右键点击相邻格", duration=3.0
+                        )
+                    return
+                if self.morale_lv3_btn_rect and self.morale_lv3_btn_rect.collidepoint(
+                    event.pos
+                ):
+                    self.morale_bonus_mp_mode = True
+                    if self.info_panel:
+                        self.info_panel.show_message(
+                            "老乡指路：请点击一个己方单位获得+1行动力", duration=3.0
+                        )
+                    return
+                if self.morale_lv4_btn_rect and self.morale_lv4_btn_rect.collidepoint(
+                    event.pos
+                ):
+                    if self._has_confused_units_for_country(self.player_country):
+                        self.morale_cure_mode = True
+                        if self.info_panel:
+                            self.info_panel.show_message(
+                                "军容严整：请点击一个混乱的己方单位", duration=3.0
+                            )
+                    else:
+                        self.morale_lv4_pending.pop(self.player_country, None)
+                        if self.info_panel:
+                            self.info_panel.show_message("军容严整：当前无混乱单位")
+                    return
+
+                # 0.085 民心效果目标选择（老乡指路 & 军容严整 的单位点击处理）
+                if self.morale_bonus_mp_mode:
+                    unit_hit = self._get_unit_slot_at(event.pos)
+                    if unit_hit:
+                        _prov_id, _slot = unit_hit
+                        _prov = self.map_manager.get_by_id(_prov_id)
+                        if (
+                            _prov
+                            and _prov.country == self.player_country
+                            and _slot < len(_prov.units)
+                        ):
+                            _prov.units[_slot].mp += 1
+                            self.morale_bonus_mp_mode = False
+                            self.morale_lv3_used[self.player_country] = self.major_round
+                            if self.info_panel:
+                                self.info_panel.show_message("老乡指路：该单位行动力+1")
+                        else:
+                            if self.info_panel:
+                                self.info_panel.show_message("请点击己方单位")
+                    else:
+                        if self.info_panel:
+                            self.info_panel.show_message("请点击己方单位")
+                    return
+                if self.morale_cure_mode:
+                    unit_hit = self._get_unit_slot_at(event.pos)
+                    if unit_hit:
+                        _prov_id, _slot = unit_hit
+                        _prov = self.map_manager.get_by_id(_prov_id)
+                        if (
+                            _prov
+                            and _prov.country == self.player_country
+                            and _slot < len(_prov.units)
+                        ):
+                            _u = _prov.units[_slot]
+                            if _u.is_confused:
+                                _u.is_confused = False
+                                self.morale_cure_mode = False
+                                self.morale_lv4_pending.pop(self.player_country, None)
+                                if self.info_panel:
+                                    self.info_panel.show_message(
+                                        "军容严整：混乱已解除（大回合结束奖励）"
+                                    )
+                            else:
+                                if self.info_panel:
+                                    self.info_panel.show_message(
+                                        "该单位未处于混乱状态，请重新选择"
+                                    )
+                        else:
+                            if self.info_panel:
+                                self.info_panel.show_message("请点击己方单位")
+                    else:
+                        if self.info_panel:
+                            self.info_panel.show_message("请点击混乱状态的己方单位")
+                    return
+
                 # 0.1 检查“解除混乱”按钮
                 if self.recover_btn_rect and self.recover_btn_rect.collidepoint(
                     event.pos
@@ -2195,11 +2411,22 @@ class GameApp:
                 )
                 return
 
-        can_attack = is_enemy and (
-            len(target_province.units) > 0 or self._is_fort_or_city(target_province)
+        # 民心5级（箪食壶浆）：对无守军的敌方城市可以直接占领，不触发战斗
+        _danshi_lv = (
+            self._get_people_support_level(self.player_country)
+            if self.player_country
+            else 0
         )
+        _city_needs_combat = self._is_fort_or_city(target_province) and not (
+            _danshi_lv >= 5 and len(target_province.units) == 0
+        )
+        can_attack = is_enemy and (len(target_province.units) > 0 or _city_needs_combat)
 
         if can_attack:
+            # 令行禁止自由移动模式：禁止发动攻击
+            if self.morale_free_move_mode:
+                self.info_panel.show_message("令行禁止：只可移动，不可攻击")
+                return
             # 切换/取消 战斗目标逻辑
             # 如果再次点击已选目标 -> 取消选中
             if self.combat_target and self.combat_target == target_province:
@@ -2273,24 +2500,30 @@ class GameApp:
             self.info_panel.show_message("无法到达")
             return
 
+        # 令行禁止自由移动：只能移动恰好1格
+        if self.morale_free_move_mode and path_cost != 1:
+            self.info_panel.show_message("令行禁止：只能移动1格")
+            return
+
         moving_units = []
         unit_costs = []  # 记录扣除的行动力
 
         for idx in selected_indices:
             unit_state = source.units[idx]
 
-            # 1. 检查行动力是否为0
-            if unit_state.mp <= 0:
-                self.info_panel.show_message("行动力为0")
-                return
+            if not self.morale_free_move_mode:
+                # 1. 检查行动力是否为0
+                if unit_state.mp <= 0:
+                    self.info_panel.show_message("行动力为0")
+                    return
 
-            # 2. 检查行动力是否足够
-            if unit_state.mp < path_cost:
-                self.info_panel.show_message(f"行动力不足(需{path_cost})")
-                return
+                # 2. 检查行动力是否足够
+                if unit_state.mp < path_cost:
+                    self.info_panel.show_message(f"行动力不足(需{path_cost})")
+                    return
 
             moving_units.append(unit_state)
-            unit_costs.append(path_cost)
+            unit_costs.append(0 if self.morale_free_move_mode else path_cost)
 
         # 3. 堆叠检查
         # 目标格子已有兵 + 即将移动过去的兵 > MAX_UNIT_STACK
@@ -2349,6 +2582,14 @@ class GameApp:
             self.pending_attacker = (target.province_id, moved_slot)
             self.add_selection(target.province_id, moved_slot)
             self.info_panel.show_message("请选择攻击单位或不攻击")
+            return
+
+        # 令行禁止免费移动完成：不结束回合，继续正常行动
+        if self.morale_free_move_mode:
+            if self.player_country:
+                self.morale_lv2_used[self.player_country] = self.major_round
+            self.morale_free_move_mode = False
+            self.info_panel.show_message("令行禁止：移动完成，继续行动")
             return
 
         self._finish_country_action("移动")
@@ -3753,6 +3994,120 @@ class GameApp:
 
                     text_rect = btn_surf.get_rect(center=self.recover_btn_rect.center)
                     self.window.blit(btn_surf, text_rect)
+
+                # --- 民心等级效果按钮（2-4级）---
+                self.morale_lv2_btn_rect = None
+                self.morale_lv3_btn_rect = None
+                self.morale_lv4_btn_rect = None
+                if (
+                    self.player_country
+                    and not self.pending_post_move_attack
+                    and not self.morale_free_move_mode
+                    and not self.morale_bonus_mp_mode
+                    and not self.morale_cure_mode
+                ):
+                    _m_support = self._get_people_support_level(self.player_country)
+                    _top_h = int(self.screen_height * 0.15)
+                    _tag_x = self.country_tag_pos[0]
+                    _right_x = _tag_x - 30  # 从 Tag 左侧30px 处开始向左堆叠
+
+                    # 4级：军容严整（按钮：橙色）
+                    if self.morale_lv4_pending.get(self.player_country):
+                        _s = self._morale_lv4_btn_surf
+                        _bw = _s.get_width() + 20
+                        _bh = _s.get_height() + 10
+                        _bx = _right_x - _bw
+                        _by = (_top_h - _bh) // 2
+                        self.morale_lv4_btn_rect = pg.Rect(_bx, _by, _bw, _bh)
+                        _bc = (
+                            pg.Color("#FF8C00")
+                            if not self.morale_lv4_btn_rect.collidepoint(
+                                pg.mouse.get_pos()
+                            )
+                            else pg.Color("#FFA500")
+                        )
+                        pg.draw.rect(
+                            self.window, _bc, self.morale_lv4_btn_rect, border_radius=5
+                        )
+                        self.window.blit(
+                            _s, _s.get_rect(center=self.morale_lv4_btn_rect.center)
+                        )
+                        _right_x = _bx - 10
+
+                    # 3级：老乡指路（按钮：蓝色）
+                    if (
+                        _m_support >= 3
+                        and self.morale_lv3_used.get(self.player_country, 0)
+                        != self.major_round
+                    ):
+                        _s = self._morale_lv3_btn_surf
+                        _bw = _s.get_width() + 20
+                        _bh = _s.get_height() + 10
+                        _bx = _right_x - _bw
+                        _by = (_top_h - _bh) // 2
+                        self.morale_lv3_btn_rect = pg.Rect(_bx, _by, _bw, _bh)
+                        _bc = (
+                            pg.Color("#1E90FF")
+                            if not self.morale_lv3_btn_rect.collidepoint(
+                                pg.mouse.get_pos()
+                            )
+                            else pg.Color("#87CEEB")
+                        )
+                        pg.draw.rect(
+                            self.window, _bc, self.morale_lv3_btn_rect, border_radius=5
+                        )
+                        self.window.blit(
+                            _s, _s.get_rect(center=self.morale_lv3_btn_rect.center)
+                        )
+                        _right_x = _bx - 10
+
+                    # 2级：令行禁止（按钮：绿色）
+                    if (
+                        _m_support >= 2
+                        and self.morale_lv2_used.get(self.player_country, 0)
+                        != self.major_round
+                    ):
+                        _s = self._morale_lv2_btn_surf
+                        _bw = _s.get_width() + 20
+                        _bh = _s.get_height() + 10
+                        _bx = _right_x - _bw
+                        _by = (_top_h - _bh) // 2
+                        self.morale_lv2_btn_rect = pg.Rect(_bx, _by, _bw, _bh)
+                        _bc = (
+                            pg.Color("#2E8B57")
+                            if not self.morale_lv2_btn_rect.collidepoint(
+                                pg.mouse.get_pos()
+                            )
+                            else pg.Color("#3CB371")
+                        )
+                        pg.draw.rect(
+                            self.window, _bc, self.morale_lv2_btn_rect, border_radius=5
+                        )
+                        self.window.blit(
+                            _s, _s.get_rect(center=self.morale_lv2_btn_rect.center)
+                        )
+
+                # 当前处于某个民心效果模式时，顶部显示提示文字
+                if (
+                    self.morale_free_move_mode
+                    or self.morale_bonus_mp_mode
+                    or self.morale_cure_mode
+                ):
+                    _top_h = int(self.screen_height * 0.15)
+                    _tag_x = self.country_tag_pos[0]
+                    if self.morale_free_move_mode:
+                        _hint = "令行禁止：请右键选择目标格（仅1格）"
+                    elif self.morale_bonus_mp_mode:
+                        _hint = "老乡指路：请左键点击一个己方单位"
+                    else:
+                        _hint = "军容严整：请左键点击一个混乱的己方单位"
+                    _hint_surf = self.combat_ui_font.render(
+                        _hint, True, pg.Color("#FFD700")
+                    )
+                    _hint_rect = _hint_surf.get_rect(
+                        right=_tag_x - 30, centery=_top_h // 2
+                    )
+                    self.window.blit(_hint_surf, _hint_rect)
 
             # --- 画战斗结果 (Top UI) ---
             # 如果 timer != 0，则显示 (timer<0 为永久，timer>0 为倒计时)
