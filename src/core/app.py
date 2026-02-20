@@ -288,6 +288,11 @@ class GameApp:
         # 不懈于内：下次抽卡若负效果无效
         self.evt_draw_again_safe: bool = False
 
+        # 本小回合各国已生效事件卡记录 {country: [(card_name, card_desc), ...]}
+        self.evt_applied_this_round: Dict[str, List[Tuple[str, str]]] = {}
+        # 各国"！"悬停按钮区域（每帧由 _draw_country_stats_overlay 刷新）
+        self.evt_info_btns: Dict[str, pg.Rect] = {}
+
         # 事件卡抽取阶段（每个小回合开始时的强制阶段）
         self.evt_draw_phase: bool = False  # True = 当前处于抽取阶段，禁止调兵
         self.evt_skip_draw_btn_rect: pg.Rect | None = None  # 「跳过」按钮区域
@@ -1069,6 +1074,7 @@ class GameApp:
         self.evt_flag_hu_recruit = False
         self.evt_flag_wuwei = False
         self.evt_temp_pp = {}  # 临时政治点数回合结束消失
+        self.evt_applied_this_round = {}  # 清除本小回合事件卡记录
         self.selecting_evt_target = False
         self.pending_evt_card_id = None
         self.pending_evt_drawer = None
@@ -3861,6 +3867,7 @@ class GameApp:
         # 9. 画鼠标悬停提示 (Tooltip)：事件卡覆盖层激活时跳过
         if not self.event_card_overlay:
             self._draw_hover_tooltip()
+            self._draw_evt_info_tooltip()
 
     def _get_map_bounds_rect(self) -> pg.Rect:
         """基于六边形中心与边长，计算地图像素包围盒。"""
@@ -3897,6 +3904,7 @@ class GameApp:
         title_font = self.country_stat_title_font
         body_font = self.country_stat_font
         self.country_stat_choice_btns = {}
+        self.evt_info_btns = {}
 
         # 先计算统一面板尺寸
         content_specs = {}
@@ -4031,6 +4039,28 @@ class GameApp:
                 border_radius=8,
             )
 
+            # 右上角"！"信息按钮
+            _btn_r = 9
+            _btn_cx = rect.right - _btn_r - 5
+            _btn_cy = rect.top + _btn_r + 5
+            _btn_rect = pg.Rect(
+                _btn_cx - _btn_r, _btn_cy - _btn_r, _btn_r * 2, _btn_r * 2
+            )
+            _mouse = pg.mouse.get_pos()
+            _has_cards = bool(self.evt_applied_this_round.get(country))
+            _hovered_btn = _btn_rect.collidepoint(_mouse)
+            if _has_cards:
+                _btn_bg = pg.Color("#ffaa00") if _hovered_btn else pg.Color("#c87800")
+            else:
+                _btn_bg = pg.Color("#cccccc") if _hovered_btn else pg.Color("#aaaaaa")
+            pg.draw.circle(self.window, _btn_bg, (_btn_cx, _btn_cy), _btn_r)
+            pg.draw.circle(
+                self.window, pg.Color(60, 60, 60), (_btn_cx, _btn_cy), _btn_r, 1
+            )
+            _excl_surf = body_font.render("!", True, pg.Color("white"))
+            self.window.blit(_excl_surf, _excl_surf.get_rect(center=(_btn_cx, _btn_cy)))
+            self.evt_info_btns[country] = _btn_rect
+
             x = rect.x + 10
             y = rect.y + 6
             self.window.blit(title_surf, (x, y))
@@ -4115,6 +4145,102 @@ class GameApp:
                 self.window.blit(line1_surf, (x, y))
                 y += line1_surf.get_height() + 2
                 self.window.blit(line2_surf, (x, y))
+
+    def _draw_evt_info_tooltip(self) -> None:
+        """当鼠标悬停于国家"！"按钮时，绘制本回合已生效事件卡的多行浮窗。"""
+        if self.state != GameState.PLAYING:
+            return
+        mouse_pos = pg.mouse.get_pos()
+        hovered_country: str | None = None
+        for country, btn_rect in self.evt_info_btns.items():
+            if btn_rect.collidepoint(mouse_pos):
+                hovered_country = country
+                break
+        if hovered_country is None:
+            return
+
+        cards = self.evt_applied_this_round.get(hovered_country, [])
+        font_title = self.country_stat_font
+        font_body = self.tooltip_font
+        country_name = self.country_labels.get(hovered_country, hovered_country)
+
+        max_content_w = 260
+        padding = 10
+        line_gap = 3
+
+        def _wrap(text: str, font: pg.font.Font, max_w: int) -> List[str]:
+            lines: List[str] = []
+            cur = ""
+            for ch in text:
+                test = cur + ch
+                if font.size(test)[0] <= max_w:
+                    cur = test
+                else:
+                    if cur:
+                        lines.append(cur)
+                    cur = ch
+            if cur:
+                lines.append(cur)
+            return lines or [""]
+
+        # 构建行列表：(text, font, color)
+        all_lines: List[Tuple[str, pg.font.Font, pg.Color]] = []
+        header = f"【本回合生效事件卡 · {country_name}】"
+        all_lines.append((header, font_title, pg.Color("#333333")))
+
+        if not cards:
+            all_lines.append(
+                ("（本回合尚无已生效事件卡）", font_body, pg.Color("#888888"))
+            )
+        else:
+            for i, (name, desc) in enumerate(cards):
+                if i > 0:
+                    all_lines.append(("", font_body, pg.Color("white")))  # 间隔
+                all_lines.append((f"▸ {name}", font_title, pg.Color("#b06800")))
+                for dline in _wrap(desc, font_body, max_content_w - padding * 2):
+                    all_lines.append((dline, font_body, pg.Color("#444444")))
+
+        # 计算面板尺寸
+        actual_w = max_content_w
+        total_h = padding
+        for text, font, color in all_lines:
+            w = font.size(text)[0] + padding * 2
+            if w > actual_w:
+                actual_w = w
+            total_h += 3 if text == "" else font.get_height() + line_gap
+        total_h += padding
+
+        # 定位：靠近按钮，避免超出屏幕
+        hbtn = self.evt_info_btns[hovered_country]
+        tx = hbtn.right + 6
+        ty = hbtn.top
+        if tx + actual_w > self.screen_width - 5:
+            tx = hbtn.left - actual_w - 6
+        if ty + total_h > self.screen_height - 5:
+            ty = self.screen_height - total_h - 5
+        ty = max(5, ty)
+
+        # 绘制背景
+        bg_surf = pg.Surface((actual_w, total_h), pg.SRCALPHA)
+        bg_surf.fill((255, 252, 225, 235))
+        self.window.blit(bg_surf, (tx, ty))
+        pg.draw.rect(
+            self.window,
+            pg.Color("#c8a040"),
+            pg.Rect(tx, ty, actual_w, total_h),
+            1,
+            border_radius=6,
+        )
+
+        # 绘制文字
+        cy = ty + padding
+        for text, font, color in all_lines:
+            if text == "":
+                cy += 3
+                continue
+            surf = font.render(text, True, color)
+            self.window.blit(surf, (tx + padding, cy))
+            cy += font.get_height() + line_gap
 
     def _draw_hover_tooltip(self) -> None:
         """Draw tooltip for hovered element"""
@@ -4883,6 +5009,12 @@ class GameApp:
             self._check_tianxia_guixin_victory()
 
         msg = f"「{card.name}」：{card.description}"
+
+        # 记录本小回合该国已生效事件卡（老迈昏聩无效化的卡除外）
+        if not (card.id == "evt_jiangdong_cai" and self.evt_laomaikuai_active):
+            self.evt_applied_this_round.setdefault(tc, []).append(
+                (card.name, card.description)
+            )
 
         if et == "pp":
             # 老迈昏聩：若下次抽到"江东才俊"则无效
