@@ -5091,7 +5091,7 @@ class GameApp:
             )
 
             # 右上角"！"信息按钮
-            _btn_r = 9
+            _btn_r = 14
             _btn_cx = rect.right - _btn_r - 5
             _btn_cy = rect.top + _btn_r + 5
             _btn_rect = pg.Rect(
