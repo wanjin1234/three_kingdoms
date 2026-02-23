@@ -3586,13 +3586,24 @@ class GameApp:
         pg.draw.circle(self.window, pg.Color("white"), (tx, knob_y), 9)
         pg.draw.circle(self.window, pg.Color("#2d6a4f"), (tx, knob_y), 7)
 
-        # 百分比文字（使用小号字体居中显示在浮窗底部）
-        pct_text = f"{int(self.volume_level * 100)}%"
-        font = getattr(self, "tooltip_font", None) or getattr(
-            self, "combat_ui_font", None
-        )
-        if font:
-            pct_surf = font.render(pct_text, True, pg.Color("white"))
+        # 百分比文字（使用专用小号字体居中显示在浮窗底部）
+        pct_text = f"{int(round(self.volume_level * 100))}%"
+        # 使用固定小号字体（14px），确保"100%"不超出72px宽的浮窗
+        try:
+            pct_font = self._font("msyh.ttc", 14)
+        except Exception:
+            pct_font = getattr(self, "tooltip_font", None) or getattr(
+                self, "combat_ui_font", None
+            )
+        if pct_font:
+            pct_surf = pct_font.render(pct_text, True, pg.Color("white"))
+            # 若仍超宽则等比缩小，保证不超出浮窗左右边界
+            max_w = sr.width - 8
+            if pct_surf.get_width() > max_w:
+                scale = max_w / pct_surf.get_width()
+                new_w = max(1, int(pct_surf.get_width() * scale))
+                new_h = max(1, int(pct_surf.get_height() * scale))
+                pct_surf = pg.transform.smoothscale(pct_surf, (new_w, new_h))
             pct_rect = pct_surf.get_rect(centerx=sr.centerx, bottom=sr.bottom - 4)
             self.window.blit(pct_surf, pct_rect)
 
