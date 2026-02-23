@@ -1,4 +1,4 @@
-"""
+﻿"""
 这里包含了整个游戏应用的核心逻辑：GameApp。
 它是总导演，管理着游戏状态、循环、渲染和逻辑更新。
 """
@@ -1777,17 +1777,21 @@ class GameApp:
         # 治症优先，其次才招募新兵；不抢占移动/攻击机会
         _ai_pp_used = False
         if self._pp_can_use(country):
-            # 1) 治症伤兵
+            # 1) 治症伤兵（用 id() 去重，避免共享引用的单位被重复回血）
+            _healed_unit_ids: set = set()
             for _prov in self.map_manager.provinces:
                 if _prov.country != country:
                     continue
                 for _u in _prov.units:
+                    if id(_u) in _healed_unit_ids:
+                        continue
                     if _u.hp < 2:
                         _cost = self._get_pp_heal_cost(_u)
                         if self._get_total_pp(country) >= _cost:
                             self._spend_pp(country, _cost)
                             _u.hp += 1
                             _ai_pp_used = True
+                            _healed_unit_ids.add(id(_u))
             # 2) 有剩余PP则招募新兵到边境省
             _can_recruit = not (
                 getattr(self, "evt_flag_hu_recruit", False) and country == "WEI"
@@ -1898,10 +1902,44 @@ class GameApp:
                     best = target
         return best
 
+    def _ai_border_defense_score(self, prov) -> float:
+        """计算边境省的防御驻守优先级评分（分值越高越值得驻守）。
+        规则：
+        - 城市地形  = 基础 4 分
+        - 山地/丘陵 = 基础 3 分
+        - 普通地形  = 基础 1 分
+        - 与任意邻省之间存在河流（跨河边）额外 +1 分（城市/山地已内含防御优势，
+          河流额外加成体现不同地形叠加价值）
+        - 每已驻扎 1 支单位扣 0.5 分（让 AI 倾向把空格或兵力不足的前线补满，
+          而非继续往已满格堆兵）
+        """
+        terrain = (prov.terrain or "").lower()
+        if terrain == "city":
+            score = 4.0
+        elif terrain in ("hill", "mountain", "hills", "mountains"):
+            score = 3.0
+        else:
+            score = 1.0
+
+        # 检查是否有任意邻接边跨河
+        for nbr_id in self.map_manager._adjacency.get(prov.province_id, []):
+            if self.map_manager._river_crossing_edges.get(
+                (prov.province_id, nbr_id), False
+            ) or self.map_manager._river_crossing_edges.get(
+                (nbr_id, prov.province_id), False
+            ):
+                score += 1.0
+                break  # 有一条河流即可，不叠加
+
+        # 已有单位越多，优先级越低（鼓励分散驻守）
+        score -= len(prov.units) * 0.5
+        return score
+
     def _ai_pick_move_target(self, province, unit_state, border_provs=None):
         """AI 选择移动目标。
-        - 若提供了 border_provs（边境省列表），内陆单位优先移向最近的边境省。
-        - 边境单位或无边境时，移向最近的敌省旁的最优格子。
+        - 若提供了 border_provs（边境省列表），内陆单位优先移向防御价值最高且
+          有空位的可达边境省（城市 > 山地/河流 > 平原，空格优先于已满格）。
+        - 边境单位或无边境时，移向距最近敌省最近的可达己方/空格子（偏好防御地形）。
         """
         ap = unit_state.mp
         if ap <= 0:
@@ -1909,78 +1947,103 @@ class GameApp:
 
         p_center = province.center_cache or province.compute_center(self.hex_side)
 
-        # 决定"目标锚点"：内陆单位以边境省为锚（优先朝主威胁国方向的边境省），边境单位以最近敌省为锚
-        anchor_center = None
+        # ── 内陆单位：直接选防御评分最高的可达边境省 ──
         if border_provs:
-            main_threat = self._ai_get_main_threat_country(province.country)
-            unit_stride = SQRT3 * self.hex_side
-            # 第一轮：找临近主威胁国的边境省中最近的
-            best_d_threat = float("inf")
+            best_bp = None
+            best_score = float("-inf")
+            best_path_cost = float("inf")
+            for bp in border_provs:
+                if bp.province_id == province.province_id:
+                    continue
+                if len(bp.units) >= MAX_UNIT_STACK:
+                    continue  # 已满，跳过
+                pc = self.map_manager.find_path_cost(
+                    province.province_id, bp.province_id
+                )
+                if pc > ap or pc > 100:
+                    continue
+                sc = self._ai_border_defense_score(bp)
+                # 同分时路径短者优先（用负路径代价作为次级排序）
+                if sc > best_score or (sc == best_score and pc < best_path_cost):
+                    best_score = sc
+                    best_path_cost = pc
+                    best_bp = bp
+            if best_bp is not None:
+                return best_bp
+            # 若所有边境省均已满员或不可达，回退到旧锚点逻辑
+            # （找最近边境省作为锚点，再在行动力内选最近可达格）
             best_d_any = float("inf")
-            anchor_threat = None
-            anchor_any = None
+            anchor_center = None
             for bp in border_provs:
                 if bp.province_id == province.province_id:
                     continue
                 bc = bp.center_cache or bp.compute_center(self.hex_side)
                 d = dist(p_center, bc)
-                # 检查该边境省是否与主威胁国相邻（使用邻接图，排除不可通行隔断）
-                is_facing_threat = False
-                if main_threat:
-                    for nbr_id in self.map_manager._adjacency.get(bp.province_id, []):
-                        nbr = self.map_manager.get_by_id(nbr_id)
-                        if nbr is not None and nbr.country == main_threat:
-                            is_facing_threat = True
-                            break
-                if is_facing_threat and d < best_d_threat:
-                    best_d_threat = d
-                    anchor_threat = bc
                 if d < best_d_any:
                     best_d_any = d
-                    anchor_any = bc
-            anchor_center = anchor_threat or anchor_any
-
-        if anchor_center is None:
-            # 回退：以最近可达敌省为锚，优先瞄准主威胁国
-            # 只考虑从本省出发路径代价 < 9999 的敌省（排除不可通行地带对面的省）
-            main_threat = self._ai_get_main_threat_country(province.country)
-            best_d = float("inf")
-            best_d_fallback = float("inf")
-            anchor_center_threat = None
-            anchor_center_fallback = None
-            for target in self.map_manager.provinces:
-                if target.country == province.country or not target.country:
-                    continue
-                # 验证从本省到该敌省存在可通行路径
-                if (
-                    self.map_manager.find_path_cost(
-                        province.province_id, target.province_id
+                    anchor_center = bc
+            if anchor_center is not None:
+                best_dest = None
+                best_dist_to_anchor = float("inf")
+                for candidate in self.map_manager.provinces:
+                    if candidate.province_id == province.province_id:
+                        continue
+                    if candidate.country not in (province.country, None, ""):
+                        continue
+                    pc2 = self.map_manager.find_path_cost(
+                        province.province_id, candidate.province_id
                     )
-                    >= 9999
-                ):
-                    continue
-                tc = target.center_cache or target.compute_center(self.hex_side)
-                d = dist(p_center, tc)
-                if main_threat and target.country == main_threat:
-                    if d < best_d:
-                        best_d = d
-                        anchor_center_threat = tc
-                else:
-                    if d < best_d_fallback:
-                        best_d_fallback = d
-                        anchor_center_fallback = tc
-            anchor_center = anchor_center_threat or anchor_center_fallback
+                    if pc2 > ap or pc2 > 100:
+                        continue
+                    c_center = candidate.center_cache or candidate.compute_center(
+                        self.hex_side
+                    )
+                    d2 = dist(c_center, anchor_center)
+                    if d2 < best_dist_to_anchor:
+                        best_dist_to_anchor = d2
+                        best_dest = candidate
+                return best_dest
+            return None
+
+        # ── 边境/无边境单位：以最近可达敌省为锚，在行动力内选防御评分最优的格子 ──
+        main_threat = self._ai_get_main_threat_country(province.country)
+        best_d = float("inf")
+        best_d_fallback = float("inf")
+        anchor_center_threat = None
+        anchor_center_fallback = None
+        for target in self.map_manager.provinces:
+            if target.country == province.country or not target.country:
+                continue
+            if (
+                self.map_manager.find_path_cost(
+                    province.province_id, target.province_id
+                )
+                >= 9999
+            ):
+                continue
+            tc = target.center_cache or target.compute_center(self.hex_side)
+            d = dist(p_center, tc)
+            if main_threat and target.country == main_threat:
+                if d < best_d:
+                    best_d = d
+                    anchor_center_threat = tc
+            else:
+                if d < best_d_fallback:
+                    best_d_fallback = d
+                    anchor_center_fallback = tc
+        anchor_center = anchor_center_threat or anchor_center_fallback
 
         if anchor_center is None:
             return None
 
-        # 在行动力范围内找距锚点最近的可移动格子
+        # 在行动力范围内，同等距锚点条件下优先选防御评分高的格子
+        # 评分公式：score - dist_to_anchor / unit_stride（越近越好、评分越高越好）
+        unit_stride = max(1.0, SQRT3 * self.hex_side)
         best_dest = None
-        best_dist_to_anchor = float("inf")
+        best_combined = float("-inf")
         for candidate in self.map_manager.provinces:
             if candidate.province_id == province.province_id:
                 continue
-            # 不能移入敌方占领的省（有敌军驻守的）
             if candidate.country not in (province.country, None, ""):
                 continue
             path_cost = self.map_manager.find_path_cost(
@@ -1990,8 +2053,11 @@ class GameApp:
                 continue
             c_center = candidate.center_cache or candidate.compute_center(self.hex_side)
             d_to_anchor = dist(c_center, anchor_center)
-            if d_to_anchor < best_dist_to_anchor:
-                best_dist_to_anchor = d_to_anchor
+            defense_sc = self._ai_border_defense_score(candidate)
+            # 综合评分：防御分 - 距锚点格数（归一化），距锚越近越好
+            combined = defense_sc - d_to_anchor / unit_stride
+            if combined > best_combined:
+                best_combined = combined
                 best_dest = candidate
 
         return best_dest
@@ -2984,6 +3050,19 @@ class GameApp:
                     and self.no_attack_btn_rect
                     and self.no_attack_btn_rect.collidepoint(event.pos)
                 ):
+                    if self.morale_free_move_mode:
+                        # 令行禁止免费移动后选择不攻击：不结束回合，继续正常行动
+                        if self.player_country:
+                            self.morale_lv2_used[self.player_country] = self.major_round
+                        self.morale_free_move_mode = False
+                        self.pending_post_move_attack = False
+                        self.pending_attacker = None
+                        self.clear_selection()
+                        if self.info_panel:
+                            self.info_panel.show_message(
+                                "令行禁止：移动完成，继续行动", duration=2.0
+                            )
+                        return
                     if self.info_panel:
                         self.info_panel.show_message(
                             "已选择不攻击，进入下一步", duration=1.0
@@ -3099,6 +3178,9 @@ class GameApp:
                 if self.major_round_choice_pending:
                     if self.info_panel:
                         self.info_panel.show_message("请先完成三国大回合加点选择")
+                    return
+                # 事件卡阶段（含目标选取中）禁止右键触发移动/攻击
+                if self.evt_draw_phase or self.selecting_evt_target:
                     return
                 self._handle_game_right_click(event.pos)
         elif event.type == pg.MOUSEMOTION:
@@ -3414,8 +3496,12 @@ class GameApp:
                 new_source_list.append(u)
         source.units = new_source_list
 
-        # 扣除行动力并移动
+        # 扣除行动力并移动（用 id() 去重，防御性避免同一单位对象被 append 两次）
+        _moved_unit_ids: set = set()
         for u, c in zip(moving_units, unit_costs):
+            if id(u) in _moved_unit_ids:
+                continue
+            _moved_unit_ids.add(id(u))
             u.mp -= c
             target.units.append(u)
 
@@ -4518,9 +4604,9 @@ class GameApp:
                 valid_destinations.append(dest_prov)
 
         if valid_destinations:
-            # 随机选一个撤退目的地
+            # 随机选一个撤退目的地，只撤退存活单位（D1R 结果中 hp=0 的单位不随军撤退）
             dest = random.choice(valid_destinations)
-            dest.units.extend(province.units)
+            dest.units.extend(u for u in province.units if u.hp > 0)
             province.units.clear()
             logger.info(f"Defenders retreated to {dest.name}")
         else:
@@ -7120,6 +7206,15 @@ class GameApp:
 
         # 目标选择完成，检查是否退出抽卡阶段
         self._check_evt_draw_phase_pp()
+        # 若当前是 AI 国家的回合（AI 的卡需要人类手动选目标），选完后重启 AI 计时器
+        if (
+            self.player_country
+            and self.human_country is not None
+            and self.player_country != self.human_country
+            and self._ai_turn_timer is None
+            and not self.turn_game_finished
+        ):
+            self._ai_turn_timer = pg.time.get_ticks() + 400
 
     def _apply_evt_target_province(self, prov_id: int) -> None:
         """完成需要点击地块的事件卡效果（江东铁壁）"""
@@ -7143,6 +7238,15 @@ class GameApp:
             )
         # 目标选择完成，检查是否退出抽卡阶段
         self._check_evt_draw_phase_pp()
+        # 若当前是 AI 国家的回合（AI 的卡需要人类手动选目标），选完后重启 AI 计时器
+        if (
+            self.player_country
+            and self.human_country is not None
+            and self.player_country != self.human_country
+            and self._ai_turn_timer is None
+            and not self.turn_game_finished
+        ):
+            self._ai_turn_timer = pg.time.get_ticks() + 400
 
     # ====================================================================
     # 事件卡覆盖层渲染
