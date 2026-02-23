@@ -1273,28 +1273,23 @@ class GameApp:
                 return
 
         self.player_country = self.turn_order[self.turn_index]
-        # 该国开始自己的回合时，清除移动高亮：
-        # 若是人类玩家的回合，清除全部高亮（避免 AI 回合遗留的框在人类回合开始时仍然显示）
+        # 该国开始自己的回合时，仅清除本国上一回合遗留的移动高亮
+        # （不再区分人类/AI：让所有国家的高亮保持到下轮轮到该国时才清除，
+        #   确保魏国行动的蓝框在蜀汉回合开始时仍可见，直到魏国下次行动时清除）
         _new_c = self.player_country
-        if _new_c == self.human_country:
-            self.move_src_provs = {}
-            self.move_dst_provs = {}
-            self.move_src_slots = {}
-            self.move_dst_slots = {}
-        else:
-            self.move_src_provs = {
-                k: v for k, v in self.move_src_provs.items() if v != _new_c
-            }
-            self.move_dst_provs = {
-                k: v for k, v in self.move_dst_provs.items() if v != _new_c
-            }
-            # 同步清理对应槽位记录
-            self.move_src_slots = {
-                k: v for k, v in self.move_src_slots.items() if k in self.move_src_provs
-            }
-            self.move_dst_slots = {
-                k: v for k, v in self.move_dst_slots.items() if k in self.move_dst_provs
-            }
+        self.move_src_provs = {
+            k: v for k, v in self.move_src_provs.items() if v != _new_c
+        }
+        self.move_dst_provs = {
+            k: v for k, v in self.move_dst_provs.items() if v != _new_c
+        }
+        # 同步清理对应槽位记录
+        self.move_src_slots = {
+            k: v for k, v in self.move_src_slots.items() if k in self.move_src_provs
+        }
+        self.move_dst_slots = {
+            k: v for k, v in self.move_dst_slots.items() if k in self.move_dst_provs
+        }
         self.card_manager = self.card_managers[self.player_country]
         self._update_card_panel()
 
@@ -5432,7 +5427,10 @@ class GameApp:
         _ct_bw = _ct_s.get_width() + 20
         _ct_bh = _ct_s.get_height() + 10
         _ct_bx = self.screen_width - _ct_bw - 20
-        _ct_by = self.screen_height - _ct_bh - 150
+        # 动态计算Y坐标：确保始终在回合信息块（round_rect）和底部功能按钮上方，
+        # 适配不同纵横比的屏幕，避免硬编码偏移量导致的重叠。
+        _ct_floor = round_rect.top - 8  # 贴在回合信息块正上方
+        _ct_by = max(10, _ct_floor - _ct_bh)
         self.combat_table_btn_rect = pg.Rect(_ct_bx, _ct_by, _ct_bw, _ct_bh)
         _mx, _my = pg.mouse.get_pos()
         _ct_hovered = self.combat_table_btn_rect.collidepoint(_mx, _my)
