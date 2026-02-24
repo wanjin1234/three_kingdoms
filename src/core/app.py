@@ -1671,6 +1671,84 @@ class GameApp:
                 if self.player_country != country:
                     return  # 移动成功，回合已推进
 
+        # --- 阶捩2.2：边境空格补充（把多余单位从满员边境省调往空边境省） ---
+        # 重新收集最新边境信息（阶捩2 可能已改变地图状态）
+        border_provs = self._ai_get_border_provinces(country)
+        border_ids = {p.province_id for p in border_provs}
+        # 空边境省（0 单位）按防御评分降序排列，优先填高价值格
+        empty_border = sorted(
+            [p for p in border_provs if len(p.units) == 0],
+            key=lambda p: self._ai_border_defense_score(p),
+            reverse=True,
+        )
+        for empty_prov in empty_border:
+            filled = False
+            # 来源1：有多余单位（>=2）的边境省，按单位数降序，优先抽最拥挤的
+            surplus_border = sorted(
+                [
+                    p
+                    for p in border_provs
+                    if p.province_id != empty_prov.province_id and len(p.units) >= 2
+                ],
+                key=lambda p: len(p.units),
+                reverse=True,
+            )
+            for src_prov in surplus_border:
+                pc = _calc_path_cost(src_prov, empty_prov, src_prov.units[0])
+                if pc > 100:
+                    continue
+                movable = [
+                    (idx, u) for idx, u in enumerate(src_prov.units) if u.mp >= pc
+                ]
+                if not movable:
+                    continue
+                self.selected_units = [(src_prov.province_id, movable[0][0])]
+                self._handle_movement(empty_prov)
+                if self.player_country != country:
+                    return
+                filled = True
+                break
+            if not filled:
+                # 来源2：内陆有单位的省（阶捩2 未能移动的残余）
+                for src_prov_id, (src_prov2, slots2) in list(inland_by_prov.items()):
+                    pc2 = _calc_path_cost(src_prov2, empty_prov, slots2[0][1])
+                    if pc2 > 100:
+                        continue
+                    mv2 = [(idx, u) for idx, u in slots2 if u.mp >= pc2]
+                    if not mv2:
+                        continue
+                    self.selected_units = [(src_prov2.province_id, mv2[0][0])]
+                    self._handle_movement(empty_prov)
+                    if self.player_country != country:
+                        return
+                    break
+            # 重新更新边境省状态供下一轮空格使用
+            border_provs = self._ai_get_border_provinces(country)
+            border_ids = {p.province_id for p in border_provs}
+
+        # 重新收集边境单位供阶捩3攻击使用
+        border_provs = self._ai_get_border_provinces(country)
+        border_ids = {p.province_id for p in border_provs}
+        border_by_prov = {}
+        for _prov in self.map_manager.provinces:
+            if _prov.country != country:
+                continue
+            for _slot_idx, _unit_state in enumerate(_prov.units):
+                if _unit_state.mp <= 0:
+                    continue
+                if _prov.province_id in border_ids:
+                    if _prov.province_id not in border_by_prov:
+                        border_by_prov[_prov.province_id] = (_prov, [])
+                    border_by_prov[_prov.province_id][1].append(
+                        (_slot_idx, _unit_state)
+                    )
+        border_units = [
+            (prov, slot_idx, unit_state)
+            for prov, slots in border_by_prov.values()
+            for slot_idx, unit_state in slots
+        ]
+        border_units.sort(key=_border_threat_key)
+
         # --- 阶捩2.5：进攻前激活进攻锦囊卡，并使用召唤卡（七擒七纵/刮目相看）---
         _cm = self.card_managers.get(country)
         if _cm:
@@ -1929,7 +2007,10 @@ class GameApp:
                 break  # 有一条河流即可，不叠加
 
         # 已有单位越多，优先级越低（鼓励分散驻守）
-        score -= len(prov.units) * 0.5
+        score -= len(prov.units) * 2.0
+        # 完全空的边境省馉额外加分，确保空格必先被填满
+        if len(prov.units) == 0:
+            score += 3.0
         return score
 
     def _ai_pick_move_target(self, province, unit_state, border_provs=None):
