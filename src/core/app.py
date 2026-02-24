@@ -1462,6 +1462,7 @@ class GameApp:
                 _dest = self._ai_pick_move_target(_bp, _bp.units[0], border_provs_lv2)
                 if (
                     _dest
+                    and _dest.country == country  # 令行禁止只能移动到己方格
                     and self.map_manager.find_path_cost(
                         _bp.province_id, _dest.province_id
                     )
@@ -3546,11 +3547,14 @@ class GameApp:
                     if p.province_id != target.province_id
                 ]
 
-        # 令行禁止自由移动：只能移动到直接相邻的格子（不受地形代价限制）
+        # 令行禁止自由移动：只能移动到直接相邻的己方格子（不受地形代价限制）
         if self.morale_free_move_mode:
             _lxjz_neighbors = self.map_manager._adjacency.get(source.province_id, [])
             if target.province_id not in _lxjz_neighbors:
                 self.info_panel.show_message("令行禁止：只能移动到相邻格子")
+                return
+            if target.country != source.country:
+                self.info_panel.show_message("令行禁止：只能移动到己方格子")
                 return
 
         moving_units = []
@@ -5420,7 +5424,7 @@ class GameApp:
                         self.morale_lv2_btn_rect
                         and self.morale_lv2_btn_rect.collidepoint(_mx, _my)
                     ):
-                        _morale_tt_text = "每大回合：免费移动一个己方单位至任意相邻格子"
+                        _morale_tt_text = "每大回合：免费移动一个己方单位至相邻己方格子"
                         _morale_tt_anchor = self.morale_lv2_btn_rect
                     if _morale_tt_text and _morale_tt_anchor:
                         _ft = self.morale_tt_font
@@ -5450,7 +5454,7 @@ class GameApp:
                     _top_h = int(self.screen_height * 0.15)
                     _tag_x = self.country_tag_pos[0]
                     if self.morale_free_move_mode:
-                        _hint = "令行禁止：请右键选择目标格（仅1格）"
+                        _hint = "令行禁止：请右键选择相邻己方格（仅1格）"
                     elif self.morale_bonus_mp_mode:
                         _hint = "老乡指路：请左键点击一个己方单位"
                     else:
