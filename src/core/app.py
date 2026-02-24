@@ -1793,10 +1793,26 @@ class GameApp:
                             action_taken = True
 
         # --- 阶捩3：所有单位均已在边境（或内陆无法移动），发动攻击 ---
+        _danshi_morale = self._get_people_support_level(country)
         for province, slot_idx, unit_state in border_units:
             if self._has_attackable_target_for_unit(province, unit_state):
                 target = self._ai_pick_attack_target(province, unit_state)
                 if target is not None:
+                    # 箪食壶浆（民心5级）：空城可直接移动占领，无需战斗
+                    if (
+                        _danshi_morale >= 5
+                        and not target.units
+                        and self._is_fort_or_city(target)
+                    ):
+                        _danshi_pc = self.map_manager.find_path_cost(
+                            province.province_id, target.province_id
+                        )
+                        if 0 < _danshi_pc <= unit_state.mp:
+                            self.selected_units = [(province.province_id, slot_idx)]
+                            self._handle_movement(target)
+                            if self.player_country != country:
+                                return
+                            continue
                     if self._ai_execute_combat(province, slot_idx, target):
                         # _execute_combat 已调用 _finish_country_action，直接返回
                         return
@@ -3447,6 +3463,13 @@ class GameApp:
         # 寻路失败（比如不可达，虽然目前全图连通）
         if path_cost > 100:
             self.info_panel.show_message("无法到达")
+            return
+
+        # 行动力不足以到达目标格子：直接拒绝，不允许停在中途
+        if not self.morale_free_move_mode and path_cost > selected_unit.mp:
+            self.info_panel.show_message(
+                f"行动力不足（需 {path_cost}，剩余 {selected_unit.mp}）"
+            )
             return
 
         # 路径拦截：逐步模拟行军，空的非己方格子可继续穿越（并占领），
