@@ -46,7 +46,7 @@
   },
   {
     "type": "WUDANG_archer",
-    "move": 2,
+    "move": 3,
     "attack": 4,
     "defense": 3,
     "range": 2,

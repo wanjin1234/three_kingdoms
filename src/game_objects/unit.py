@@ -189,14 +189,27 @@ class UnitRenderer:
             pos = self._slot_position(center, idx)
             surface.blit(icon, pos)
 
-            # 状态标记：统一画在图标正中心，并适当放大
-            cx, cy = pos[0] + self._icon_size // 2, pos[1] + self._icon_size // 2
+            # 状态标记：受伤（红）在左下角，混乱（紫）在右下角，互不重叠
             status_radius = max(4, self._icon_size // 7)
+            bottom_y = pos[1] + self._icon_size - status_radius  # 贴底边
+
+            if unit_state.is_injured:
+                inj_cx = pos[0] + status_radius  # 贴左边
+                pg.draw.circle(
+                    surface, pg.Color("red"), (inj_cx, bottom_y), status_radius
+                )
+                pg.draw.circle(
+                    surface, pg.Color("white"), (inj_cx, bottom_y), status_radius, 1
+                )
 
             if unit_state.is_confused:
-                pg.draw.circle(surface, pg.Color("purple"), (cx, cy), status_radius)
-            elif unit_state.is_injured:
-                pg.draw.circle(surface, pg.Color("red"), (cx, cy), status_radius)
+                conf_cx = pos[0] + self._icon_size - status_radius  # 贴右边
+                pg.draw.circle(
+                    surface, pg.Color("purple"), (conf_cx, bottom_y), status_radius
+                )
+                pg.draw.circle(
+                    surface, pg.Color("white"), (conf_cx, bottom_y), status_radius, 1
+                )
 
     def selection_rects(
         self, center: Tuple[int, int], unit_count: int

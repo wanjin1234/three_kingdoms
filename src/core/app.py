@@ -547,13 +547,6 @@ class GameApp:
                 defn = self.unit_repository.get_definition(unit.unit_type)
                 max_mp = defn.move
 
-                # 特殊逻辑：无当飞军在山地行动力为3
-                if unit.unit_type == "WUDANG_archer":
-                    # 检查当前所在地形
-                    t_terrain = prov.terrain.lower() if prov.terrain else ""
-                    if t_terrain in ("hill", "mountain", "hills", "mountains"):
-                        max_mp = 3
-
                 # 特殊逻辑：虎豹骑固定为4 (defs里应该是4，如果不是，这里强制设定也可以，但defs优先)
                 # defs里已经是4了.
 
@@ -1438,11 +1431,13 @@ class GameApp:
             return
 
         # 最优先：若有残留的未确认事件卡覆盖层（如 draw_again_safe 的第二张牌），立即确认
+        # 单人模式（human_country is not None）下，所有事件卡覆盖层都必须由玩家手动确认，
+        # AI 不得自动确认；纯 AI 模式（human_country is None）下才允许自动确认。
         if self.event_card_overlay:
             _tmp_drawer = self.event_card_overlay.get("drawer", "")
-            if _tmp_drawer != self.human_country:
+            if self.human_country is None and _tmp_drawer != self.human_country:
                 self._confirm_event_card()
-            # 确认后若仍有覆盖层或目标选择, 等下一帧
+            # 若仍有覆盖层或目标选择（含等待玩家确认），等下一帧
             if self.event_card_overlay or self.selecting_evt_target:
                 self._ai_turn_timer = pg.time.get_ticks() + 300
                 return
@@ -1629,6 +1624,9 @@ class GameApp:
             src_eff = self.card_effect_manager.get_effect(str(src_prov.province_id))
             ign = bool(getattr(lead_unit, "temp_terrain_immunity", False))
             if src_eff and src_eff.terrain_immunity:
+                ign = True
+            # 无当飞军始终无视山地
+            if getattr(lead_unit, "unit_type", "") == "WUDANG_archer":
                 ign = True
             if ign:
                 return self._find_path_cost_ignore_mountain(
@@ -3451,6 +3449,9 @@ class GameApp:
         ignore_mountain = bool(getattr(selected_unit, "temp_terrain_immunity", False))
         if source_effect and source_effect.terrain_immunity:
             ignore_mountain = True
+        # 无当飞军始终无视山地地形
+        if getattr(selected_unit, "unit_type", "") == "WUDANG_archer":
+            ignore_mountain = True
 
         if ignore_mountain:
             path_cost = self._find_path_cost_ignore_mountain(
@@ -4533,7 +4534,6 @@ class GameApp:
 
         # 疲劳判定 & 消耗行动力
         for _, u in attackers:
-            u.mp -= 1  # 消耗1点行动力 (必须先于疲劳判定?)
             u.attack_count += 1
             if u.attack_count >= 2:
                 u.is_confused = True
