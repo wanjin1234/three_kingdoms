@@ -272,14 +272,14 @@ class GameApp:
 
         # ---- 小回合级别标志（_advance_country_turn 时清除） ----
         self.evt_flag_liukang: bool = False  # 联刘抗曹：SHU/WU 本小回合不互攻
-        self.evt_flag_she_hushu: bool = False  # 舍身护主：吴防御时全部+1
-        self.evt_flag_hu_recruit: bool = False  # 胡人袭扰：魏本小回合禁止招募
         self.evt_flag_wuwei: bool = False  # 吴魏媾和：东吴本小回合不能攻魏
+        self.evt_flag_all_attack: bool = False  # 奖率三军：全军进攻骰点+1（本小回合）
         self.evt_temp_pp: Dict[str, int] = {}  # 老骥伏枥：临时政治点数（key=country）
 
         # ---- 大回合级别标志（_end_full_round 时清除） ----
         self.evt_flag_hefei: bool = False  # 合肥十万：吴攻魏骰点-1
-        self.evt_flag_all_attack: bool = False  # 奖率三军：全军进攻骰点+1
+        self.evt_flag_she_hushu: bool = False  # 舍身护主：吴防御时全部+1（本大回合）
+        self.evt_flag_hu_recruit: bool = False  # 胡人袭扰：魏本大回合禁止招募
 
         # ---- 五子良将 ----
         self.evt_wuzi_rounds: int = 0  # 剩余生效小回合数
@@ -923,7 +923,8 @@ class GameApp:
         self._replenish_action_points()
         # 大回合级事件标志清除
         self.evt_flag_hefei = False
-        self.evt_flag_all_attack = False
+        self.evt_flag_she_hushu = False
+        self.evt_flag_hu_recruit = False
         self.evt_yishen_used = False  # 一身是胆使用标志重置（每大回合重置）
 
     def _show_score_screen(self, screen_type: str) -> None:
@@ -1221,9 +1222,8 @@ class GameApp:
         self.selected_card_for_effect = None
         # 小回合级事件标志清除
         self.evt_flag_liukang = False
-        self.evt_flag_she_hushu = False
-        self.evt_flag_hu_recruit = False
         self.evt_flag_wuwei = False
+        self.evt_flag_all_attack = False
         self.evt_temp_pp = {}  # 临时政治点数回合结束消失
         self.evt_applied_this_round = {}  # 清除本小回合事件卡记录
         self.selecting_evt_target = False
@@ -1564,15 +1564,12 @@ class GameApp:
         while _evt_loop < 1 and self._can_draw_event_card(country):
             _evt_loop += 1
             self._trigger_draw_event_card(country)
-            # 自动确认事件卡覆盖层
-            if self.event_card_overlay:
-                _overlay_drawer = self.event_card_overlay.get("drawer", country)
-                if _overlay_drawer != self.human_country:
-                    self._confirm_event_card()
-            # 若触发了需要目标选择，立即处理
+            # AI 抽到事件卡后不再自动确认，而是展示 overlay 给玩家查看
+            # 玩家点击「确认生效」后由 _confirm_event_card 恢复 AI 行动
+            # 若触发了需要目标选择（不懈于内第二张等），立即处理
             if self.selecting_evt_target and self.pending_evt_card_id:
                 self._ai_auto_select_evt_target(country)
-            # 若仍有覆盖层或目标选择，下一帧继续
+            # 若仍有覆盖层或目标选择，等待玩家确认后再继续
             if self.event_card_overlay or self.selecting_evt_target:
                 self._ai_turn_timer = pg.time.get_ticks() + 200
                 return
@@ -4766,23 +4763,8 @@ class GameApp:
             self._ai_turn_timer = None
             self._run_ai_turn()
 
-        # 兜底：若有未确认的 AI 事件卡覆盖层（例如 draw_again_safe 触发的第二张牌），
-        # 且没有定时器在跑，则直接自动确认，无需等待鼠标点击
-        if (
-            self.event_card_overlay
-            and self._ai_turn_timer is None
-            and not self.turn_game_finished
-            and self.state == GameState.PLAYING
-        ):
-            _evt_drawer = self.event_card_overlay.get("drawer")
-            if _evt_drawer and _evt_drawer != self.human_country:
-                self._confirm_event_card()
-                # 确认后若还有覆盖层/目标选择，下一帧再处理
-                if self.event_card_overlay or self.selecting_evt_target:
-                    self._ai_turn_timer = pg.time.get_ticks() + 300
-                elif self.player_country and self.player_country != self.human_country:
-                    # 当前 AI 国家可能还需要继续行动
-                    self._ai_turn_timer = pg.time.get_ticks() + 400
+        # 注：AI 事件卡覆盖层现在需要玩家手动点击「确认生效」来确认，
+        # 不再自动跳过，以便玩家看到 AI 抽到了哪张事件卡。
 
     def _render(self) -> None:
         """渲染总控：根据状态画对应的界面"""
@@ -6913,6 +6895,13 @@ class GameApp:
             else:
                 self._exit_evt_draw_phase()
 
+        # ── 若抽卡方是 AI，玩家点击确认后：处理 needs_target 并恢复 AI 行动
+        if self.human_country is not None and drawer != self.human_country:
+            if self.selecting_evt_target and self.pending_evt_card_id:
+                self._ai_auto_select_evt_target(drawer)
+            if not self.event_card_overlay and not self.selecting_evt_target:
+                self._ai_turn_timer = pg.time.get_ticks() + 400
+
     def _apply_event_card(self, card, drawer: str) -> None:
         """执行事件卡效果"""
         et = card.effect_type
@@ -7290,6 +7279,21 @@ class GameApp:
         overlay = pg.Surface((self.screen_width, self.screen_height), pg.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         self.window.blit(overlay, (0, 0))
+
+        # ---- 面板外上方：显示是哪国玩家抽取的 ----
+        drawer_name = self.country_labels.get(drawer, drawer)
+        drawer_color = self.country_button_colors.get(drawer, pg.Color("white"))
+        announce_surf = font_title.render(
+            f"{drawer_name}  抽取了事件卡", True, drawer_color
+        )
+        # 绘制文字阴影，增强可读性
+        shadow_surf = font_title.render(
+            f"{drawer_name}  抽取了事件卡", True, pg.Color(0, 0, 0, 180)
+        )
+        announce_x = (self.screen_width - announce_surf.get_width()) // 2
+        announce_y = panel_y - title_h - padding - 4
+        self.window.blit(shadow_surf, (announce_x + 2, announce_y + 2))
+        self.window.blit(announce_surf, (announce_x, announce_y))
 
         # 卡牌面板底色
         panel_rect = pg.Rect(panel_x, panel_y, panel_w, panel_h)
