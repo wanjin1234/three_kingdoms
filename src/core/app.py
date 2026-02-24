@@ -7,12 +7,21 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import random
+import threading
 from enum import Enum, auto
 from math import dist, radians, sqrt
 from typing import Callable, Dict, List, Sequence, Tuple
 
 import pygame as pg
+
+try:
+    import fitz  # PyMuPDF，用于PDF渲染
+
+    _FITZ_AVAILABLE = True
+except ImportError:
+    _FITZ_AVAILABLE = False
 from settings import Settings
 
 from src.core.camera import Camera
@@ -307,6 +316,18 @@ class GameApp:
 
         # AI 每小回合抓卡限制：{country: True} 表示本小回合已抑节 1 张卡
         self.evt_ai_drawn_this_turn: Dict[str, bool] = {}
+
+        # ---- 帮助/规则书覆盖层 ----
+        self.help_overlay_visible: bool = False  # 是否显示规则PDF界面
+        self.help_overlay_scroll: int = 0  # 当前垂直滚动偏移（像素）
+        self._help_pdf_surfaces: List = []  # 每页渲染后的Surface（惰性加载）
+        self._help_pdf_total_h: int = 0  # 所有页面累计高度（含间隔）
+        self._help_overlay_content_rect: pg.Rect | None = None  # 内容区域Rect
+        self._help_pdf_loading: bool = False  # 后台线程正在加载中
+        self._help_pdf_load_failed: bool = False  # 加载已完成但结果为空（真正失败）
+        self._help_pdf_raw: List = []  # 后台线程产出的原始数据（待主线程转Surface）
+        self._help_pdf_lock: threading.Lock = threading.Lock()  # 保护_help_pdf_raw
+        self._help_load_anim_frame: int = 0  # 加载动画帧计数
 
         # ---- 民心等级效果（2-5级）----
         self.morale_lv2_used: Dict[
@@ -2624,8 +2645,35 @@ class GameApp:
 
     def _handle_playing_event(self, event: pg.event.Event) -> None:
         """处理游戏中的事件"""
+        # 帮助覆盖层优先拦截滚轮事件
+        if event.type == pg.MOUSEWHEEL and self.help_overlay_visible:
+            scroll_speed = 60
+            self.help_overlay_scroll = max(
+                0,
+                min(
+                    self.help_overlay_scroll - event.y * scroll_speed,
+                    max(0, self._help_pdf_total_h - (self.screen_height - 120)),
+                ),
+            )
+            return
+
+        # 帮助覆盖层：点击内容区域以外关闭
+        if (
+            event.type == pg.MOUSEBUTTONDOWN
+            and event.button == 1
+            and self.help_overlay_visible
+        ):
+            content_rect = self._help_overlay_content_rect
+            if content_rect is None or not content_rect.collidepoint(event.pos):
+                self.help_overlay_visible = False
+                return
+
         if event.type == pg.KEYDOWN:
             if event.key == pg.K_ESCAPE:
+                # 帮助覆盖层优先关闭
+                if self.help_overlay_visible:
+                    self.help_overlay_visible = False
+                    return
                 # 如果正在选择民心效果目标，取消该模式
                 if (
                     self.morale_free_move_mode
@@ -2686,6 +2734,11 @@ class GameApp:
                                 self._show_score_screen("wei_turn")
                         elif action == "VOLUME":
                             self.volume_slider_visible = not self.volume_slider_visible
+                        elif action == "HELP":
+                            self.help_overlay_visible = not self.help_overlay_visible
+                            self.help_overlay_scroll = 0
+                            if self.help_overlay_visible:
+                                self._start_help_pdf_load()
                         return
 
                 # 0.0a 音量滑块：若打开且点在滑块面板内则拖动；否则关闭
@@ -3804,6 +3857,211 @@ class GameApp:
             self.window.blit(pct_surf, pct_rect)
 
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # 帮助/游戏规则 PDF 覆盖层
+    # ------------------------------------------------------------------
+
+    def _load_help_pdf(self) -> None:
+        """在后台线程中加载游戏规则PDF，渲染为原始像素数据存入 _help_pdf_raw。"""
+        if not _FITZ_AVAILABLE:
+            self._help_pdf_load_failed = True
+            self._help_pdf_loading = False
+            return
+        pdf_path = os.path.join(
+            os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ),
+            "游戏规则v1.5.pdf",
+        )
+        if not os.path.isfile(pdf_path):
+            self._help_pdf_load_failed = True
+            self._help_pdf_loading = False
+            return
+        try:
+            doc = fitz.open(pdf_path)
+        except Exception:
+            self._help_pdf_load_failed = True
+            self._help_pdf_loading = False
+            return
+
+        # 计算目标宽度
+        target_w = max(400, self.screen_width - 140)
+        page_gap = 12
+        raw_pages = []
+        try:
+            for page in doc:
+                page_w_pt = page.rect.width if page.rect.width > 0 else 595.0
+                zoom = max(2.0, (target_w * 2) / page_w_pt)
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                # 只在后台线程中做耗时的像素提取；Surface创建留给主线程
+                raw_pages.append(
+                    (bytes(pix.samples), pix.width, pix.height, target_w, page_gap)
+                )
+        except Exception:
+            self._help_pdf_load_failed = True
+            self._help_pdf_loading = False
+            return
+        finally:
+            doc.close()
+
+        with self._help_pdf_lock:
+            self._help_pdf_raw = raw_pages
+        # 注意：loading 标志必须在 raw 数据写入后才置 False，
+        # 主线程检测到 _help_pdf_raw 非空后会在当帧应用并显示内容。
+        self._help_pdf_loading = False
+
+    def _start_help_pdf_load(self) -> None:
+        """启动后台线程加载PDF（若尚未加载）。"""
+        if self._help_pdf_surfaces or self._help_pdf_loading:
+            return
+        self._help_pdf_loading = True
+        t = threading.Thread(target=self._load_help_pdf, daemon=True)
+        t.start()
+
+    def _apply_help_pdf_raw(self) -> None:
+        """主线程：将后台线程产出的原始像素数据转换为 pygame Surface 并缓存。"""
+        with self._help_pdf_lock:
+            raw_pages = self._help_pdf_raw
+            self._help_pdf_raw = []
+        if not raw_pages:
+            return
+        page_gap = 12
+        total_h = 0
+        surfaces = []
+        for samples, src_w, src_h, target_w, _gap in raw_pages:
+            surf = pg.image.frombuffer(samples, (src_w, src_h), "RGB").copy()
+            scale = target_w / surf.get_width()
+            scaled_h = max(1, int(surf.get_height() * scale))
+            scaled = pg.transform.smoothscale(surf, (target_w, scaled_h))
+            surfaces.append(scaled)
+            total_h += scaled_h + page_gap
+        self._help_pdf_surfaces = surfaces
+        self._help_pdf_total_h = max(0, total_h - page_gap)
+
+    def _render_help_overlay(self) -> None:
+        """渲染游戏规则PDF覆盖层（半透明背景+可滚动页面）。"""
+        if not self.help_overlay_visible:
+            return
+
+        # 若后台线程已完成，将原始数据转为Surface（在主线程执行）
+        if self._help_pdf_raw:
+            self._apply_help_pdf_raw()
+
+        # 触发后台加载（不阻塞）
+        if not self._help_pdf_surfaces and not self._help_pdf_loading:
+            self._start_help_pdf_load()
+
+        # 半透明暗色背景遮罩
+        _mask = pg.Surface((self.screen_width, self.screen_height), pg.SRCALPHA)
+        _mask.fill((0, 0, 0, 190))
+        self.window.blit(_mask, (0, 0))
+
+        # 内容白色面板
+        margin = 60
+        content_w = self.screen_width - margin * 2
+        content_h = self.screen_height - margin * 2
+        content_x = margin
+        content_y = margin
+        content_rect = pg.Rect(content_x, content_y, content_w, content_h)
+        self._help_overlay_content_rect = content_rect
+
+        pg.draw.rect(self.window, pg.Color("#f5f0e8"), content_rect, border_radius=10)
+        pg.draw.rect(
+            self.window, pg.Color("#5a3a1a"), content_rect, 3, border_radius=10
+        )
+
+        if not self._help_pdf_surfaces:
+            _info_font = self._font("msyh.ttc", 22)
+            # 只有明确标记失败时才显示错误，其余情况（含竞态过渡帧）均视为加载中
+            if self._help_pdf_load_failed:
+                _err_surf = _info_font.render(
+                    "无法加载规则PDF（需要 pymupdf 库）", True, pg.Color("#cc4444")
+                )
+                self.window.blit(
+                    _err_surf, _err_surf.get_rect(center=content_rect.center)
+                )
+            else:
+                # 显示加载动画（含 loading=True 及竞态过渡帧）
+                self._help_load_anim_frame += 1
+                dots = "●" * ((self._help_load_anim_frame // 12) % 4)
+                _loading_surf = _info_font.render(
+                    f"正在加载规则书{dots}", True, pg.Color("#5a3a1a")
+                )
+                self.window.blit(
+                    _loading_surf, _loading_surf.get_rect(center=content_rect.center)
+                )
+            return
+
+        # 设置裁剪区域，防止页面溢出面板边界
+        inner_rect = pg.Rect(
+            content_x + 8, content_y + 8, content_w - 16, content_h - 32
+        )
+        prev_clip = self.window.get_clip()
+        self.window.set_clip(inner_rect)
+
+        # 绘制各页（按滚动偏移）
+        page_gap = 12
+        cur_y = content_y + 8 - self.help_overlay_scroll
+        for surf in self._help_pdf_surfaces:
+            ph = surf.get_height()
+            page_bottom = cur_y + ph
+            # 只绘制可见页
+            if page_bottom > inner_rect.top and cur_y < inner_rect.bottom:
+                self.window.blit(surf, (content_x + 8, cur_y))
+                # 页面底部分隔线
+                if cur_y + ph + page_gap < inner_rect.bottom:
+                    pg.draw.line(
+                        self.window,
+                        pg.Color("#ccb89a"),
+                        (content_x + 16, cur_y + ph + page_gap // 2),
+                        (content_x + content_w - 16, cur_y + ph + page_gap // 2),
+                        1,
+                    )
+            cur_y += ph + page_gap
+
+        self.window.set_clip(prev_clip)
+
+        # 滚动条
+        total_h = self._help_pdf_total_h
+        visible_h = inner_rect.height
+        if total_h > visible_h:
+            bar_track_h = content_h - 24
+            bar_h = max(30, int(bar_track_h * visible_h / total_h))
+            bar_y = (
+                content_y
+                + 12
+                + int(
+                    (bar_track_h - bar_h)
+                    * self.help_overlay_scroll
+                    / max(1, total_h - visible_h)
+                )
+            )
+            bar_x = content_x + content_w - 10
+            pg.draw.rect(
+                self.window,
+                pg.Color("#d4c4a8"),
+                pg.Rect(bar_x, content_y + 12, 6, bar_track_h),
+                border_radius=3,
+            )
+            pg.draw.rect(
+                self.window,
+                pg.Color("#8b6640"),
+                pg.Rect(bar_x, bar_y, 6, bar_h),
+                border_radius=3,
+            )
+
+        # 关闭提示
+        _hint_font = self._font("msyh.ttc", 14)
+        _hint = _hint_font.render("ESC 或点击外部关闭", True, pg.Color("#888888"))
+        self.window.blit(
+            _hint,
+            (
+                content_x + content_w - _hint.get_width() - 16,
+                content_y + content_h - _hint.get_height() - 6,
+            ),
+        )
 
     def _is_mountain_terrain(self, province: object) -> bool:
         terrain = (province.terrain or "").lower()
@@ -5067,6 +5325,9 @@ class GameApp:
             # 音量按钮激活时高亮
             if btn["action"] == "VOLUME" and self.volume_slider_visible:
                 color = pg.Color("#52b788")
+            # 帮助按钮激活时高亮
+            if btn["action"] == "HELP" and self.help_overlay_visible:
+                color = pg.Color("#e07b39")
 
             if btn.get("shape") == "circle":
                 r = btn["rect"]
@@ -5077,6 +5338,12 @@ class GameApp:
                 # 喀叭图标（纯 pygame 基本图形）
                 if btn["action"] == "VOLUME":
                     self._draw_speaker_icon(cx, cy, radius)
+                # 帮助按钮：绘制 "?" 字符
+                elif btn["action"] == "HELP":
+                    _q_font = self._font("msyh.ttc", max(12, int(radius * 1.1)))
+                    _q_surf = _q_font.render("?", True, pg.Color("white"))
+                    _q_rect = _q_surf.get_rect(center=(cx, cy))
+                    self.window.blit(_q_surf, _q_rect)
             else:
                 pg.draw.rect(self.window, color, btn["rect"], border_radius=5)
                 pg.draw.rect(
@@ -5754,6 +6021,9 @@ class GameApp:
         if not self.event_card_overlay:
             self._draw_hover_tooltip()
             self._draw_evt_info_tooltip()
+
+        # 9.5 游戏规则PDF覆盖层（始终位于最顶层）
+        self._render_help_overlay()
 
     def _render_pp_summon_panel(self) -> None:
         """绘制PP召唤子面板（居中覆盖层），并填充 self.pp_summon_btns。
@@ -6702,8 +6972,8 @@ class GameApp:
         # 视觉顺序从左到右: [退出] [重开]
         btn_font = self._font("msyh.ttc", int(height * 0.025))
 
-        labels = ["重开一局", "退出游戏", "当前各国分数", ""]
-        actions = ["RESTART", "EXIT", "SCORE", "VOLUME"]
+        labels = ["重开一局", "退出游戏", "当前各国分数", "", ""]
+        actions = ["RESTART", "EXIT", "SCORE", "VOLUME", "HELP"]
 
         self.control_btns = []
 
@@ -6713,8 +6983,8 @@ class GameApp:
         for label, action in zip(labels, actions):
             surf = btn_font.render(label, True, pg.Color("white"))
             base_h = surf.get_height() + 10
-            # 音量按钮做成正方形（渲染时画圆）
-            if action == "VOLUME":
+            # 音量/帮助按钮做成正方形（渲染时画圆）
+            if action in ("VOLUME", "HELP"):
                 w = h = base_h
             else:
                 w = surf.get_width() + 20
@@ -6731,10 +7001,12 @@ class GameApp:
                 if action == "SCORE"
                 else pg.Color("#2d6a4f")
                 if action == "VOLUME"
+                else pg.Color("#7b3f00")
+                if action == "HELP"
                 else pg.Color("#444444")
             )
-            # 音量按钮文字居中
-            if action == "VOLUME":
+            # 圆形按钮文字居中
+            if action in ("VOLUME", "HELP"):
                 text_pos = surf.get_rect(center=rect.center).topleft
             else:
                 text_pos = (x + 10, y + 5)
@@ -6746,7 +7018,7 @@ class GameApp:
                     "action": action,
                     "bg_color": btn_color,
                     "border_color": pg.Color("white"),
-                    "shape": "circle" if action == "VOLUME" else "rect",
+                    "shape": "circle" if action in ("VOLUME", "HELP") else "rect",
                 }
             )
 
