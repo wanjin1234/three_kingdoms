@@ -305,6 +305,9 @@ class GameApp:
         # 各国"！"悬停按钮区域（每帧由 _draw_country_stats_overlay 刷新）
         self.evt_info_btns: Dict[str, pg.Rect] = {}
 
+        # AI 每小回合抓卡限制：{country: True} 表示本小回合已抑节 1 张卡
+        self.evt_ai_drawn_this_turn: Dict[str, bool] = {}
+
         # ---- 民心等级效果（2-5级）----
         self.morale_lv2_used: Dict[
             str, int
@@ -551,8 +554,7 @@ class GameApp:
                 # defs里已经是4了.
 
                 unit.mp = max_mp
-                # 注意：回合结杞时不清除混乱状态，只重置攻击计数
-                unit.attack_count = 0
+                # 注意：回合结杞时不清除混乱状态
                 unit.temp_river_immunity = False
                 unit.temp_terrain_immunity = False
                 unit.temp_dice_bonus = 0
@@ -919,6 +921,7 @@ class GameApp:
         self.evt_flag_she_hushu = False
         self.evt_flag_hu_recruit = False
         self.evt_yishen_used = False  # 一身是胆使用标志重置（每大回合重置）
+        self.evt_jingzhu_skill = 0  # 荆州之主骰点加成重置（每大回合重置）
 
     def _show_score_screen(self, screen_type: str) -> None:
         """
@@ -1219,6 +1222,7 @@ class GameApp:
         self.evt_flag_all_attack = False
         self.evt_temp_pp = {}  # 临时政治点数回合结束消失
         self.evt_applied_this_round = {}  # 清除本小回合事件卡记录
+        self.evt_ai_drawn_this_turn = {}  # AI抓卡标记每小回合重置
         self.selecting_evt_target = False
         self.pending_evt_card_id = None
         self.pending_evt_drawer = None
@@ -1555,10 +1559,11 @@ class GameApp:
                 self._ai_turn_timer = pg.time.get_ticks() + 300
                 return
 
-        # --- 阶捩1.5：事件卡抽取（AI 主动消耗 PP 抽卡，每回合最多1次） ---
-        _evt_loop = 0
-        while _evt_loop < 1 and self._can_draw_event_card(country):
-            _evt_loop += 1
+        # --- 阶捩1.5：事件卡抽取（AI 主动消耗 PP 抽卡，每小回合最多1次） ---
+        if not self.evt_ai_drawn_this_turn.get(country) and self._can_draw_event_card(
+            country
+        ):
+            self.evt_ai_drawn_this_turn[country] = True
             self._trigger_draw_event_card(country)
             # AI 抽到事件卡后不再自动确认，而是展示 overlay 给玩家查看
             # 玩家点击「确认生效」后由 _confirm_event_card 恢复 AI 行动
@@ -1569,6 +1574,22 @@ class GameApp:
             if self.event_card_overlay or self.selecting_evt_target:
                 self._ai_turn_timer = pg.time.get_ticks() + 200
                 return
+
+        # --- 阶捩1.7：治疗伤兵（优先于移动和攻击） ---
+        if self._pp_can_use(country):
+            _healed_unit_ids: set = set()
+            for _prov in self.map_manager.provinces:
+                if _prov.country != country:
+                    continue
+                for _u in _prov.units:
+                    if id(_u) in _healed_unit_ids:
+                        continue
+                    if _u.hp < 2:
+                        _cost = self._get_pp_heal_cost(_u)
+                        if self._get_total_pp(country) >= _cost:
+                            self._spend_pp(country, _cost)
+                            _u.hp += 1
+                            _healed_unit_ids.add(id(_u))
 
         # ―― 预计算边境省集合 ――
         border_provs = self._ai_get_border_provinces(country)
@@ -1864,25 +1885,9 @@ class GameApp:
                             action_taken = True
 
         # --- 阶捩4.5：移动/攻击都无法进行时，才考虑使用政治点数（PP） ---
-        # 治症优先，其次才招募新兵；不抢占移动/攻击机会
+        # 招募新兵到边境省
         _ai_pp_used = False
         if self._pp_can_use(country):
-            # 1) 治症伤兵（用 id() 去重，避免共享引用的单位被重复回血）
-            _healed_unit_ids: set = set()
-            for _prov in self.map_manager.provinces:
-                if _prov.country != country:
-                    continue
-                for _u in _prov.units:
-                    if id(_u) in _healed_unit_ids:
-                        continue
-                    if _u.hp < 2:
-                        _cost = self._get_pp_heal_cost(_u)
-                        if self._get_total_pp(country) >= _cost:
-                            self._spend_pp(country, _cost)
-                            _u.hp += 1
-                            _ai_pp_used = True
-                            _healed_unit_ids.add(id(_u))
-            # 2) 有剩余PP则招募新兵到边境省
             _can_recruit = not (
                 getattr(self, "evt_flag_hu_recruit", False) and country == "WEI"
             )
@@ -2416,7 +2421,6 @@ class GameApp:
             f"防{actual_dfs:.1f}",
             f"动{u_state.mp}/{u_def.move}",
             f"射{u_def.range}",
-            f"疲{u_state.attack_count}",
         ]
         return f"{label} {'·'.join(attrs)}"
 
@@ -4426,12 +4430,12 @@ class GameApp:
         if atk_country == "WU" and def_country == "SHU" and self.evt_jingzhu_skill > 0:
             attacker_dice_bonus += self.evt_jingzhu_skill
 
-        # 一身是胆：蜀汉被进攻且档位低于1:1时，强制按1:1计算（自动生效）
+        # 一身是胆：蜀汉被进攻且攻方比例超过1:1时，强制限制至1:1列（自动生效）
         if (
             def_country == "SHU"
             and self.evt_yishen_skill
             and not self.evt_yishen_used
-            and col_index < 1
+            and col_index > 1
         ):
             col_index = 1
             self.evt_yishen_skill = False  # 一次性消耗
@@ -4531,12 +4535,6 @@ class GameApp:
             else:
                 # 空城守备没有可撤退实体
                 retreat_defender = False
-
-        # 疲劳判定 & 消耗行动力
-        for _, u in attackers:
-            u.attack_count += 1
-            if u.attack_count >= 2:
-                u.is_confused = True
 
         # 战斗后清理
         self._cleanup_dead_units(attackers, target_province)

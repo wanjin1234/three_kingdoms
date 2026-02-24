@@ -103,7 +103,7 @@
     "name": "荆州之主",
     "deck": "WU",
     "target_country": "WU",
-    "description": "若荆州属于东吴，则东吴获得技能牌：进攻蜀汉时骰点+1（可叠加）",
+    "description": "若荆州属于东吴，则本大回合东吴进攻蜀汉时骰点+1（可叠加）",
     "effect_type": "conditional_jingzhu",
     "effect_value": 0,
     "needs_target": false,

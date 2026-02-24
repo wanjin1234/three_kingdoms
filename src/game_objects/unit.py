@@ -27,7 +27,6 @@ class UnitState:
     hp: int = 2
     is_confused: bool = False
     confusion_count: int = 0  # 连续混乱次数
-    attack_count: int = 0
     mp: int = 0  # Action Points / Movement Points
     temp_river_immunity: bool = False  # 本大回合跨河惩罚免疫
     temp_terrain_immunity: bool = False  # 本大回合山地惩罚免疫
