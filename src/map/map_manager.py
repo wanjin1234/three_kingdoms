@@ -86,8 +86,9 @@ class MapManager:
     def set_hex_side(self, side_length: float) -> None:
         """设置格子的边长，这通常在窗口大小确定后调用"""
         self._hex_side = side_length
-        # 预计算所有格子的几何信息 (利用 Pygame Vector2 进行优化)
-        # 重置缓存
+        # 清空地形图标缓存：图标尺寸与 hex_side 挂钩，分辨率变化时必须重新生成
+        self._terrain_cache = {}
+        # 重置背景缓存
         self._cached_background = None
 
         for p in self._provinces_list:

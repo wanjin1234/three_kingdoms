@@ -39,7 +39,7 @@ class Settings:
     fonts_dir: Path  # 字体文件夹
     graphics_dir: Path  # 图片文件夹
     window_title: str = "三足鼎立"  # 游戏窗口的标题
-    borderless: bool = True  # 是否开启无边框（全屏）模式
+    borderless: bool = False  # 是否开启无边框模式（默认关闭，使用可缩放窗口）
     icon_slot_size_factor: float = 0.6  # 兵种图标相较于格子大小的比例
 
     # @property 也是一个魔法，它把一个函数伪装成一个变量。

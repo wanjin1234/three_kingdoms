@@ -153,12 +153,31 @@ class GameApp:
 
         # 获取当前屏幕分辨率并创建窗口
         display_info = pg.display.Info()
-        self.screen_width = display_info.current_w
-        self.screen_height = display_info.current_h
-        flags = pg.NOFRAME if settings.borderless else 0
-        self.window = pg.display.set_mode(
+        self.min_window_width = min(960, display_info.current_w)
+        self.min_window_height = min(540, display_info.current_h)
+        self.screen_width = min(
+            display_info.current_w,
+            max(self.min_window_width, int(display_info.current_w * 0.9)),
+        )
+        self.screen_height = min(
+            display_info.current_h,
+            max(self.min_window_height, int(display_info.current_h * 0.9)),
+        )
+        self.is_fullscreen: bool = False
+        self._windowed_size: Tuple[int, int] = (self.screen_width, self.screen_height)
+        flags = pg.RESIZABLE
+        self.display_surface = pg.display.set_mode(
             (self.screen_width, self.screen_height), flags
         )
+        self.display_width, self.display_height = self.display_surface.get_size()
+        # 逻辑画布（固定设计分辨率）：所有UI都在这上面绘制，再整体缩放到真实窗口
+        self.window = pg.Surface((self.screen_width, self.screen_height)).convert()
+        self._logical_window_size: Tuple[int, int] = (self.screen_width, self.screen_height)
+        self._direct_render: bool = False
+        self._base_screen_width: int = self.screen_width   # 设计分辨率宽，固定不变
+        self._base_screen_height: int = self.screen_height  # 设计分辨率高，固定不变
+        self.viewport_rect = pg.Rect(0, 0, self.display_width, self.display_height)
+        self._viewport_scale = 1.0
         pg.display.set_caption(settings.window_title)
 
         # 设置窗口图标（任务栏 / Alt+Tab 显示）
@@ -2294,9 +2313,7 @@ class GameApp:
             self.event_manager.process()  # 1. 处理鼠标键盘输入
             self._update()  # 2. 更新游戏逻辑
             self._render()  # 3. 绘制画面
-
-            # pg.display.flip() 将绘制好的缓冲区画面一次性显示到屏幕上
-            pg.display.flip()
+            self._present_frame()
             # 休息一小会儿，以保持稳定的 FPS
             self.clock.tick(self.settings.fps)
 
@@ -2305,6 +2322,207 @@ class GameApp:
     def stop(self) -> None:
         """停止游戏循环，准备退出"""
         self._running = False
+
+    def _reflow_after_window_change(self) -> None:
+        """更新逻辑画布到真实窗口的缩放比例与留白区域。"""
+        self.display_width, self.display_height = self.display_surface.get_size()
+        if self._direct_render:
+            # 全屏：铺满屏幕不留白
+            self._viewport_scale = 1.0
+            self.viewport_rect = pg.Rect(0, 0, self.display_width, self.display_height)
+            return
+
+        base_w = self._base_screen_width
+        base_h = self._base_screen_height
+        scale_x = self.display_width / base_w
+        scale_y = self.display_height / base_h
+
+        if scale_x > scale_y:
+            # 矮胖：以高度为基准缩放，扩展逻辑画布宽度
+            # 右侧面板锚定到新的 screen_width 右边缘，中间自然留白
+            self._viewport_scale = scale_y
+            new_logical_w = max(base_w, int(round(self.display_width / scale_y)))
+            self.viewport_rect = pg.Rect(0, 0, self.display_width, self.display_height)
+            if new_logical_w != self.screen_width or self.screen_height != base_h:
+                self.screen_width = new_logical_w
+                self.screen_height = base_h
+                self.window = pg.Surface((self.screen_width, self.screen_height)).convert()
+                self._rebuild_layout_for_screen_size()
+        else:
+            # 瘦高/等比：以宽度为基准缩放，上下留白
+            self._viewport_scale = min(scale_x, scale_y)
+            target_w = max(1, int(base_w * self._viewport_scale))
+            target_h = max(1, int(base_h * self._viewport_scale))
+            offset_x = (self.display_width - target_w) // 2
+            offset_y = (self.display_height - target_h) // 2
+            self.viewport_rect = pg.Rect(offset_x, offset_y, target_w, target_h)
+            if self.screen_width != base_w or self.screen_height != base_h:
+                self.screen_width = base_w
+                self.screen_height = base_h
+                self.window = pg.Surface((self.screen_width, self.screen_height)).convert()
+                self._rebuild_layout_for_screen_size()
+
+    def _rebuild_layout_for_screen_size(self) -> None:
+        """当逻辑分辨率变化时，重建地图比例、字体与UI布局。"""
+        self.hex_side = self.screen_height * 2 / (19 * SQRT3)
+        self.map_manager.set_hex_side(self.hex_side)
+        self.unit_renderer.on_hex_side_changed(self.hex_side)
+
+        # 全屏模式：面板按当前分辨率比例缩放（整体铺满屏幕）
+        # 窗口模式：面板宽度固定（基于原始设计宽度），位置锚定到逻辑画布右边缘，中间留白
+        if self._direct_render:
+            panel_w = int(self.screen_width * 0.30)
+        else:
+            panel_w = int(self._base_screen_width * 0.30)
+        panel_x = self.screen_width - panel_w
+        panel_y = int(self.screen_height * 0.15)
+        panel_h = int(self.screen_height * 0.45)
+        panel_rect = pg.Rect(panel_x, panel_y, panel_w, panel_h)
+
+        font_size = int(self.screen_height * 0.025)
+        info_font = self._font("msyh.ttc", font_size)
+        font_path = str(self.settings.fonts_dir / "msyh.ttc")
+
+        if self.info_panel:
+            self.info_panel.rect = panel_rect
+            self.info_panel.font = info_font
+            self.info_panel.font_path = font_path
+            self.info_panel.base_font_size = font_size
+            self.info_panel._font_cache = {}
+
+        if self.card_panel:
+            self.card_panel.rect = pg.Rect(
+                panel_x,
+                int(self.screen_height * 0.60),
+                panel_w,
+                int(self.screen_height * 0.25),
+            )
+            self.card_panel.font = info_font
+            self.card_panel.font_path = font_path
+            self.card_panel.base_font_size = font_size
+            self.card_panel._font_cache = {}
+            self.card_panel.tooltip_font = None
+
+        self.combat_ui_font = info_font
+        self._recover_btn_surf = self.combat_ui_font.render(
+            "解除混乱", True, pg.Color("white")
+        )
+        self._no_attack_btn_surf = self.combat_ui_font.render(
+            "不攻击", True, pg.Color("white")
+        )
+        self._morale_lv2_btn_surf = self.combat_ui_font.render(
+            "令行禁止", True, pg.Color("white")
+        )
+        self._morale_lv3_btn_surf = self.combat_ui_font.render(
+            "老乡指路", True, pg.Color("white")
+        )
+        self._morale_lv4_btn_surf = self.combat_ui_font.render(
+            "军容严整", True, pg.Color("white")
+        )
+        self._combat_table_btn_surf = self.combat_ui_font.render(
+            "战斗判定表", True, pg.Color("white")
+        )
+        self._pp_btn_surf = self.combat_ui_font.render(
+            "使用政治点数", True, pg.Color("white")
+        )
+        self._pp_end_btn_surf = self.combat_ui_font.render(
+            "结束行动", True, pg.Color("white")
+        )
+
+        tooltip_size = max(12, int(self.screen_height * 0.018))
+        self.tooltip_font = self._font("msyh.ttc", tooltip_size)
+        self.tooltip_bold_font = self._font("msyhbd.ttc", tooltip_size)
+        morale_tt_size = max(10, int(self.screen_height * 0.014))
+        self.morale_tt_font = self._font("msyh.ttc", morale_tt_size)
+        console_font_size = max(14, int(self.screen_height * 0.022))
+        self.console_font = self._font("msyh.ttc", console_font_size)
+
+        self._build_loading_assets()
+        self._build_mode_select_assets()
+        self._build_choosing_assets()
+        self._build_play_assets()
+        self._cached_tooltip_surface = None
+        self._last_tooltip_data = None
+
+    def _present_frame(self) -> None:
+        """将逻辑画布按比例缩放并显示到真实窗口。"""
+        if not self.display_surface:
+            return
+
+        if self._direct_render:
+            pg.display.flip()
+            return
+
+        self.display_surface.fill(pg.Color("white"))
+        scaled = pg.transform.smoothscale(
+            self.window, (self.viewport_rect.width, self.viewport_rect.height)
+        )
+        self.display_surface.blit(scaled, self.viewport_rect.topleft)
+        pg.display.flip()
+
+    def _to_logical_pos(self, pos: Tuple[int, int]) -> Tuple[int, int]:
+        """把真实窗口坐标转换为逻辑画布坐标。"""
+        x, y = pos
+        if self._direct_render:
+            return (x, y)
+        if not self.viewport_rect.collidepoint((x, y)):
+            return (-10_000, -10_000)
+
+        lx = int((x - self.viewport_rect.x) * self.screen_width / self.viewport_rect.width)
+        ly = int((y - self.viewport_rect.y) * self.screen_height / self.viewport_rect.height)
+        lx = max(0, min(self.screen_width - 1, lx))
+        ly = max(0, min(self.screen_height - 1, ly))
+        return (lx, ly)
+
+    def _get_logical_mouse_pos(self) -> Tuple[int, int]:
+        """获取当前鼠标在逻辑画布中的坐标。"""
+        return self._to_logical_pos(pg.mouse.get_pos())
+
+    def _adapt_event_to_logical(self, event: pg.event.Event) -> pg.event.Event:
+        """将带坐标的鼠标事件转换到逻辑画布坐标系。"""
+        if hasattr(event, "pos"):
+            data = dict(event.dict)
+            data["pos"] = self._to_logical_pos(event.pos)
+            return pg.event.Event(event.type, data)
+        return event
+
+    def _resize_windowed(self, width: int, height: int) -> None:
+        """调整窗口模式尺寸（带边框，可拖拽，可缩放）。"""
+        width = max(self.min_window_width, width)
+        height = max(self.min_window_height, height)
+        self.display_surface = pg.display.set_mode((width, height), pg.RESIZABLE)
+        self._windowed_size = (width, height)
+        self.is_fullscreen = False
+        self._direct_render = False
+        self._reflow_after_window_change()
+
+    def _toggle_fullscreen_mode(self) -> None:
+        """在窗口模式与真正全屏之间切换，不改系统分辨率。"""
+        if not self.is_fullscreen:
+            self._windowed_size = self.display_surface.get_size()
+            # (0, 0) + FULLSCREEN：SDL2 标准桌面全屏，以当前桌面分辨率进入，无偏移。
+            self.display_surface = pg.display.set_mode((0, 0), pg.FULLSCREEN)
+            self.is_fullscreen = True
+            self._direct_render = True
+            self.window = self.display_surface
+            self.screen_width, self.screen_height = self.display_surface.get_size()
+            self._rebuild_layout_for_screen_size()
+        else:
+            self.display_surface = pg.display.set_mode(self._windowed_size, pg.RESIZABLE)
+            self.is_fullscreen = False
+            self._direct_render = False
+            # screen_width/height 此时还是全屏分辨率，_reflow 会检测差异并重建
+            self.window = pg.Surface((self._base_screen_width, self._base_screen_height)).convert()
+        self._reflow_after_window_change()
+
+    def _draw_global_fullscreen_btn(self) -> None:
+        """在逻辑画布底部居中绘制全屏提示文字（所有界面通用）。"""
+        font_size = max(10, int(self.screen_height * 0.018))
+        hint_font = self._font("msyh.ttc", font_size)
+        hint_surf = hint_font.render("按 F11 切换全屏/窗口模式", True, pg.Color("#888888"))
+        x = (self.screen_width - hint_surf.get_width()) // 2
+        y = self.screen_height - hint_surf.get_height() - 8
+        self.window.blit(hint_surf, (x, y))
 
     def clear_selection(self, clear_ui: bool = True) -> None:
         """清空当前选中的单位"""
@@ -2479,6 +2697,25 @@ class GameApp:
 
         if event.type == pg.QUIT:
             self.stop()
+            return
+
+        if event.type in (pg.VIDEORESIZE, pg.WINDOWSIZECHANGED):
+            if not self.is_fullscreen:
+                if event.type == pg.VIDEORESIZE:
+                    new_w, new_h = event.w, event.h
+                else:
+                    new_w = getattr(event, "x", self.display_width)
+                    new_h = getattr(event, "y", self.display_height)
+
+                if (new_w, new_h) != (self.display_width, self.display_height):
+                    self._resize_windowed(new_w, new_h)
+            return
+
+        event = self._adapt_event_to_logical(event)
+
+        # F11 全局切换全屏
+        if event.type == pg.KEYDOWN and event.key == pg.K_F11:
+            self._toggle_fullscreen_mode()
             return
 
         # ` 键（反引号）切换控制台显示/隐藏
@@ -5135,6 +5372,7 @@ class GameApp:
         # 如果正在显示分数屏，优先渲染
         if self.show_score_screen:
             self._render_score_screen()
+            self._draw_global_fullscreen_btn()
             self._render_console()
             return
 
@@ -5147,6 +5385,8 @@ class GameApp:
         else:
             self._render_gameplay()
 
+        # 全屏按钮贯穿所有界面，渲染在最顶层控制台之前
+        self._draw_global_fullscreen_btn()
         # 控制台浮层始终渲染在最顶层
         self._render_console()
 
@@ -5320,7 +5560,7 @@ class GameApp:
         for btn in getattr(self, "control_btns", []):
             # 简单的悬停效果
             color = btn["bg_color"]
-            if btn["rect"].collidepoint(pg.mouse.get_pos()):
+            if btn["rect"].collidepoint(self._get_logical_mouse_pos()):
                 color = pg.Color("#666666")  # Lighter gray
             # 音量按钮激活时高亮
             if btn["action"] == "VOLUME" and self.volume_slider_visible:
@@ -5425,7 +5665,7 @@ class GameApp:
 
                 # 悬停变色逻辑
                 btn_color = pg.Color("blue")
-                if self.combat_btn_rect.collidepoint(pg.mouse.get_pos()):
+                if self.combat_btn_rect.collidepoint(self._get_logical_mouse_pos()):
                     btn_color = pg.Color("#4169E1")  # RoyalBlue (Lighter than Blue)
 
                 # 画按钮背景
@@ -5488,10 +5728,10 @@ class GameApp:
                     self.defense_hold_skip_btn_rect = hold_no_rect
 
                     hold_yes_color = pg.Color("#8B0000")
-                    if hold_yes_rect.collidepoint(pg.mouse.get_pos()):
+                    if hold_yes_rect.collidepoint(self._get_logical_mouse_pos()):
                         hold_yes_color = pg.Color("#A52A2A")
                     hold_no_color = pg.Color("#4B4B4B")
-                    if hold_no_rect.collidepoint(pg.mouse.get_pos()):
+                    if hold_no_rect.collidepoint(self._get_logical_mouse_pos()):
                         hold_no_color = pg.Color("#666666")
 
                     pg.draw.rect(
@@ -5530,7 +5770,7 @@ class GameApp:
                     self.no_attack_btn_rect = pg.Rect(btn_x, btn_y, btn_w, btn_h)
 
                     btn_color = pg.Color("#555555")
-                    if self.no_attack_btn_rect.collidepoint(pg.mouse.get_pos()):
+                    if self.no_attack_btn_rect.collidepoint(self._get_logical_mouse_pos()):
                         btn_color = pg.Color("#6f6f6f")
 
                     pg.draw.rect(
@@ -5566,7 +5806,7 @@ class GameApp:
 
                     # 悬停变色逻辑
                     btn_color = pg.Color("purple")
-                    if self.recover_btn_rect.collidepoint(pg.mouse.get_pos()):
+                    if self.recover_btn_rect.collidepoint(self._get_logical_mouse_pos()):
                         btn_color = pg.Color("#BA55D3")  # MediumOrchid (Lighter Purple)
 
                     # 按照要求，按钮颜色为紫色
@@ -5604,7 +5844,7 @@ class GameApp:
                         _bc = (
                             pg.Color("#FF8C00")
                             if not self.morale_lv4_btn_rect.collidepoint(
-                                pg.mouse.get_pos()
+                                self._get_logical_mouse_pos()
                             )
                             else pg.Color("#FFA500")
                         )
@@ -5631,7 +5871,7 @@ class GameApp:
                         _bc = (
                             pg.Color("#1E90FF")
                             if not self.morale_lv3_btn_rect.collidepoint(
-                                pg.mouse.get_pos()
+                                self._get_logical_mouse_pos()
                             )
                             else pg.Color("#87CEEB")
                         )
@@ -5658,7 +5898,7 @@ class GameApp:
                         _bc = (
                             pg.Color("#2E8B57")
                             if not self.morale_lv2_btn_rect.collidepoint(
-                                pg.mouse.get_pos()
+                                self._get_logical_mouse_pos()
                             )
                             else pg.Color("#3CB371")
                         )
@@ -5672,7 +5912,7 @@ class GameApp:
                     # --- 民心按鈕 Hover 浮窗 ---
                     _morale_tt_text = None
                     _morale_tt_anchor = None
-                    _mx, _my = pg.mouse.get_pos()
+                    _mx, _my = self._get_logical_mouse_pos()
                     if (
                         self.morale_lv4_btn_rect
                         and self.morale_lv4_btn_rect.collidepoint(_mx, _my)
@@ -5759,7 +5999,7 @@ class GameApp:
                         _end_c = (
                             pg.Color("#888888")
                             if self.pp_spend_end_btn_rect.collidepoint(
-                                pg.mouse.get_pos()
+                                self._get_logical_mouse_pos()
                             )
                             else pg.Color("#555555")
                         )
@@ -5811,7 +6051,7 @@ class GameApp:
                         self.pp_btn_rect = pg.Rect(_pp_bx, _pp_by, _pp_bw, _pp_bh)
                         _pp_col = (
                             pg.Color("#DAA520")
-                            if self.pp_btn_rect.collidepoint(pg.mouse.get_pos())
+                            if self.pp_btn_rect.collidepoint(self._get_logical_mouse_pos())
                             else pg.Color("#B8860B")
                         )
                         pg.draw.rect(
@@ -5884,7 +6124,7 @@ class GameApp:
         _ct_floor = round_rect.top - 8  # 贴在回合信息块正上方
         _ct_by = max(10, _ct_floor - _ct_bh)
         self.combat_table_btn_rect = pg.Rect(_ct_bx, _ct_by, _ct_bw, _ct_bh)
-        _mx, _my = pg.mouse.get_pos()
+        _mx, _my = self._get_logical_mouse_pos()
         _ct_hovered = self.combat_table_btn_rect.collidepoint(_mx, _my)
         _ct_col = pg.Color("#4A6FA5") if not _ct_hovered else pg.Color("#6B9FD4")
         pg.draw.rect(self.window, _ct_col, self.combat_table_btn_rect, border_radius=5)
@@ -5918,7 +6158,7 @@ class GameApp:
                     self.skip_jiangdong_card_btn_rect = btn_rect
 
                     btn_color = pg.Color("#4B4B4B")
-                    if btn_rect.collidepoint(pg.mouse.get_pos()):
+                    if btn_rect.collidepoint(self._get_logical_mouse_pos()):
                         btn_color = pg.Color("#666666")
 
                     pg.draw.rect(self.window, btn_color, btn_rect, border_radius=6)
@@ -5938,7 +6178,7 @@ class GameApp:
 
         # 8.4 战斗判定表浮窗表格（高层，覆盖卡牌面板）
         if self.combat_table_btn_rect and self.combat_table_btn_rect.collidepoint(
-            pg.mouse.get_pos()
+            self._get_logical_mouse_pos()
         ):
             _ct_bx = self.combat_table_btn_rect.left
             _ct_by = self.combat_table_btn_rect.top
@@ -6067,7 +6307,7 @@ class GameApp:
             ("archer", "弓兵"),
         ]
         _hp_defs = [(1, 1), (2, 2)]
-        _mouse = pg.mouse.get_pos()
+        _mouse = self._get_logical_mouse_pos()
 
         self.pp_summon_btns = []
         for ui, (utype, uname) in enumerate(_unit_defs):
@@ -6239,11 +6479,8 @@ class GameApp:
         if shu_y < wei_y + panel_h + gap:
             shu_y = min(self.screen_height - panel_h - 10, wei_y + panel_h + gap)
 
-        # 吴：向左下挪，且避免与右侧 panel 重叠
-        if self.info_panel:
-            wu_x = self.info_panel.rect.left - panel_w - 28
-        else:
-            wu_x = map_rect.right + 14
+        # 吴：紧贴地图右侧，向左留出面板宽度
+        wu_x = map_rect.right - panel_w + 60
         wu_x = max(10, min(self.screen_width - panel_w - 10, wu_x))
 
         # 吴：与屏幕下边缘的间距 = 魏/蜀与屏幕左边缘的间距
@@ -6303,7 +6540,7 @@ class GameApp:
             _btn_rect = pg.Rect(
                 _btn_cx - _btn_r, _btn_cy - _btn_r, _btn_r * 2, _btn_r * 2
             )
-            _mouse = pg.mouse.get_pos()
+            _mouse = self._get_logical_mouse_pos()
             _has_cards = bool(self.evt_applied_this_round.get(country))
             _hovered_btn = _btn_rect.collidepoint(_mouse)
             if _has_cards:
@@ -6348,10 +6585,10 @@ class GameApp:
                     politics_rect = pg.Rect(btn_x, btn2_y, btn_w, btn_h)
 
                     support_color = pg.Color("#7a1f1f")
-                    if support_rect.collidepoint(pg.mouse.get_pos()):
+                    if support_rect.collidepoint(self._get_logical_mouse_pos()):
                         support_color = pg.Color("#9b2a2a")
                     politics_color = pg.Color("#1f4f7a")
-                    if politics_rect.collidepoint(pg.mouse.get_pos()):
+                    if politics_rect.collidepoint(self._get_logical_mouse_pos()):
                         politics_color = pg.Color("#2b6aa2")
 
                     pg.draw.rect(
@@ -6407,7 +6644,7 @@ class GameApp:
         """当鼠标悬停于国家"！"按钮时，绘制本回合已生效事件卡的多行浮窗。"""
         if self.state != GameState.PLAYING:
             return
-        mouse_pos = pg.mouse.get_pos()
+        mouse_pos = self._get_logical_mouse_pos()
         hovered_country: str | None = None
         for country, btn_rect in self.evt_info_btns.items():
             if btn_rect.collidepoint(mouse_pos):
@@ -6505,7 +6742,7 @@ class GameApp:
         if self.state != GameState.PLAYING:
             return
 
-        mouse_pos = pg.mouse.get_pos()
+        mouse_pos = self._get_logical_mouse_pos()
         # 确保鼠标在窗口内
         if not self.window.get_rect().collidepoint(mouse_pos):
             return
@@ -7735,7 +7972,7 @@ class GameApp:
         self.evt_overlay_ok_btn = btn_rect
 
         btn_color = pg.Color("#8B4513")
-        if btn_rect.collidepoint(pg.mouse.get_pos()):
+        if btn_rect.collidepoint(self._get_logical_mouse_pos()):
             btn_color = pg.Color("#A0522D")
         pg.draw.rect(self.window, btn_color, btn_rect, border_radius=8)
         ok_surf = font_body.render("确认生效", True, pg.Color("white"))
@@ -7826,7 +8063,7 @@ class GameApp:
         font = self.combat_ui_font
         top_area_h = int(self.screen_height * 0.15)
         tag_x = self.country_tag_pos[0]
-        mouse_pos = pg.mouse.get_pos()
+        mouse_pos = self._get_logical_mouse_pos()
 
         # 以「跳过」按钮为锚点，紧贴国家标签左侧
         skip_label = "跳过抽卡"
