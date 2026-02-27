@@ -1326,10 +1326,23 @@ class GameApp:
             pg.draw.lines(self.window, pg.Color("gold"), True, vertices, 4)
 
         # 3. 画河流和阻挡线
+        # 河流使用双层绘制：先画所有深蓝色描边，再画所有浅蓝色河流
+        river_light_blue = pg.Color(173, 216, 230)  # 浅蓝色
+        river_dark_blue = pg.Color(30, 80, 120)     # 深蓝色描边
+        
+        # 第一步：画所有河流的深蓝色描边
         for polyline in self.yangtze_polylines:
-            self._draw_smooth_polyline(pg.Color(173, 216, 230), polyline, 20)
-        self._draw_smooth_polyline(pg.Color(173, 216, 230), self.yellow_river_polyline, 20)
-        self._draw_smooth_polyline(pg.Color("black"), self.ban_line_polyline, 20)
+            self._draw_smooth_polyline(river_dark_blue, polyline, 28)  # 深蓝色描边
+        self._draw_smooth_polyline(river_dark_blue, self.yellow_river_polyline, 28)
+        
+        # 第二步：画所有河流的浅蓝色主体
+        for polyline in self.yangtze_polylines:
+            self._draw_smooth_polyline(river_light_blue, polyline, 20)  # 浅蓝色河流
+        self._draw_smooth_polyline(river_light_blue, self.yellow_river_polyline, 20)
+        
+        # 画阻挡线：双层绘制，先画黑色描边，再画紫色主体
+        self._draw_smooth_polyline(pg.Color("black"), self.ban_line_polyline, 28)  # 黑色描边
+        self._draw_smooth_polyline(pg.Color(120, 0, 120), self.ban_line_polyline, 20)  # 紫色主体
 
         # 3.5 画功能按钮
         for btn in getattr(self, "control_btns", []):
