@@ -303,11 +303,13 @@ class GameApp:
 
         # ---- 小回合级别标志（持续到抽取者下次回合开始时清除） ----
         self.evt_flag_liukang: bool = (
-            False  # 联刘抗曹（WU卡）：SHU/WU本回合不互攻，WU下次回合开始时清除
+            False  # 联刘抗曹（WU卡）：SHU/WU本回合不互攻，抗取者下次回合开始时清除
         )
+        self.evt_flag_liukang_drawer: str = ""  # 联刘抗曹抽取方
         self.evt_flag_wuwei: bool = (
-            False  # 吴魏媾和（WEI卡）：东吴不能攻魏，WEI下次回合开始时清除
+            False  # 吴魏媾和（WEI卡）：东吴不能攻魏，抽取者下次回合开始时清除
         )
+        self.evt_flag_wuwei_drawer: str = ""  # 吴魏媾和抽取方
         self.evt_flag_all_attack: bool = (
             False  # 奖率三军（公共卡）：全军进攻+1，抽取者下次回合开始时清除
         )
@@ -345,7 +347,7 @@ class GameApp:
         self.jingnang_applied: Dict[str, List[Tuple[str, str]]] = {}
         # 本大回合持久锦囊卡记录（大回合结束才清除）{country: [(card_name, card_desc), ...]}
         self.jingnang_applied_major: Dict[str, List[Tuple[str, str]]] = {}
-        # 割须弃袍小回合全局免伤标志（魏下次回合开始时清除）
+        # 割须弃袍：一次性免伤标志，战斗结束后自动清除（WEI专属锦囊卡）
         self.gexu_guard_active: bool = False
         # 各国"！"悬停按钮区域（每帧由 _draw_country_stats_overlay 刷新）
         self.evt_info_btns: Dict[str, pg.Rect] = {}
@@ -830,7 +832,7 @@ class GameApp:
                     u.temp_terrain_immunity = True
 
             if card_id == "card_gexu_qibao":
-                # 割须弃袍：激活小回合全局免伤标志（魏下次回合开始时清除）
+                # 割须弃袍：激活免伤标志，只保护当前这场战斗（战斗后自动清除）
                 self.gexu_guard_active = True
                 self.info_panel.show_message(
                     "割须弃袍已激活：本小回合内魏方防御最高单位受伤时免除一次伤害",
@@ -1004,7 +1006,8 @@ class GameApp:
         self.card_effect_manager.clear_turn_effects()  # 仅清除小回合级格子效果，保留大回合 is_major 效果（空城妙计等）
         self._replenish_action_points()
         # ── 小回合级标志清除 ──
-        # 注意：gexu_guard_active（割须弃袍）持续到魏国下次回合开始，不在此清除
+        # 注意：gexu_guard_active（割须弃袍）在每场战斗结束时即清除，大回合结束时若未消耗则清除兜底
+        self.gexu_guard_active = False
         self.jingnang_applied.clear()    # 锦囊卡小回合记录清除
 
     def _show_score_screen(self, screen_type: str) -> None:
@@ -1372,14 +1375,17 @@ class GameApp:
         # （不再区分人类/AI：让所有国家的高亮保持到下轮轮到该国时才清除，
         #   确保魏国行动的蓝框在蜀汉回合开始时仍可见，直到魏国下次行动时清除）
         _new_c = self.player_country
-        # 事件卡"持续到抽取者下次回合"：在该国回合开始时才清除
-        if _new_c == "WU":
-            self.evt_flag_liukang = False  # 联刘抗曹（WU卡）
-        if _new_c == "WEI":
-            self.evt_flag_wuwei = False  # 吴魏媾和（WEI卡）
-            self.gexu_guard_active = False  # 割须弃袍（魏下次回合开始时清除）
+        # 事件卡"持续到抽取者下次回合"：在抽取国下次回合开始时才清除
+        if self.evt_flag_liukang_drawer and _new_c == self.evt_flag_liukang_drawer:
+            self.evt_flag_liukang = False
+            self.evt_flag_liukang_drawer = ""
+        if self.evt_flag_wuwei_drawer and _new_c == self.evt_flag_wuwei_drawer:
+            self.evt_flag_wuwei = False
+            self.evt_flag_wuwei_drawer = ""
+        if _new_c == "WEI":  # 割须弃袍兜底：若战斗后未消耗，魏国下次回合开始时清除
+            self.gexu_guard_active = False
         if self.evt_all_attack_drawer and _new_c == self.evt_all_attack_drawer:
-            self.evt_flag_all_attack = False  # 奖率三军（公共卡，按抽取者清除）
+            self.evt_flag_all_attack = False
             self.evt_all_attack_drawer = ""
         self.move_src_provs = {
             k: v for k, v in self.move_src_provs.items() if v != _new_c
@@ -2330,15 +2336,18 @@ class GameApp:
         self.pending_evt_card_id = None
         self.pending_evt_drawer = None
         self.evt_flag_liukang = False
+        self.evt_flag_liukang_drawer = ""
         self.evt_flag_she_hushu = False
         self.evt_flag_hu_recruit = False
         self.evt_flag_wuwei = False
+        self.evt_flag_wuwei_drawer = ""
         self.evt_temp_pp = {}
         self.evt_flag_hefei = False
         self.evt_flag_all_attack = False
         self.evt_all_attack_drawer = ""
         self.gexu_guard_active = False
         self.jingnang_applied = {}
+        self.evt_applied_this_round = {}
         self.evt_applied_major_round = {}
         self.jingnang_applied_major = {}
         self.evt_wuzi_rounds = 0
@@ -3826,12 +3835,18 @@ class GameApp:
         # 假设所有选中单位走同一条路
         selected_unit = source.units[selected_indices[0]]
         source_effect = self.card_effect_manager.get_effect(str(source.province_id))
-        ignore_mountain = bool(getattr(selected_unit, "temp_terrain_immunity", False))
+        # 混编部队的山地无视规则：只有全部选中单位都能无视山地时，整组才能无视
+        # 普通单位不能被无当飞军“带领”穿越山地
         if source_effect and source_effect.terrain_immunity:
             ignore_mountain = True
-        # 无当飞军始终无视山地地形
-        if getattr(selected_unit, "unit_type", "") == "WUDANG_archer":
-            ignore_mountain = True
+        else:
+            ignore_mountain = all(
+                bool(getattr(source.units[idx], "temp_terrain_immunity", False))
+                or getattr(source.units[idx], "unit_type", "") == "WUDANG_archer"
+                for idx in selected_indices
+            )
+        # 全组最小可用行动力（最差单位决定步行上限）
+        effective_mp = min(source.units[idx].mp for idx in selected_indices)
 
         if ignore_mountain:
             path_cost = self._find_path_cost_ignore_mountain(
@@ -3848,9 +3863,9 @@ class GameApp:
             return
 
         # 行动力不足以到达目标格子：直接拒绝，不允许停在中途
-        if not self.morale_free_move_mode and path_cost > selected_unit.mp:
+        if not self.morale_free_move_mode and path_cost > effective_mp:
             self.info_panel.show_message(
-                f"行动力不足（需 {path_cost}，剩余 {selected_unit.mp}）"
+                f"行动力不足（需 {path_cost}，剩余 {effective_mp}）"
             )
             return
 
@@ -3876,7 +3891,7 @@ class GameApp:
                     _cumulative = (
                         1 if _src_t in ("hill", "mountain", "hills", "mountains") else 0
                     )
-                _unit_mp = selected_unit.mp
+                _unit_mp = effective_mp  # 全组最小行动力
                 _intercept_prov = None
                 _effective_target = target
                 _effective_cost = path_cost
@@ -3895,7 +3910,7 @@ class GameApp:
                         _sc += 1
                     _cumulative += _sc
 
-                    if _cumulative > _unit_mp:
+                    if _cumulative > effective_mp:
                         break  # 行动力不足，止步于此
 
                     _curr_prov = self.map_manager.get_by_id(_curr_id)
@@ -5094,12 +5109,13 @@ class GameApp:
         if dmg_defender > 0 and target_province.units:
             self._apply_damage(target_province.units, dmg_defender)
 
-        # 割须弃袍：免除防御最高单位一次伤害（一次性）
+        # 割须弃袍：免除防御最高单位一次伤害（仅限该场战斗，战斗后无论是否触发都清除）
         self._try_apply_gexu_guard(target_province, target_province.units, pre_def_hp)
         for pid, units in attacker_groups.items():
             prov = self.map_manager.get_by_id(pid)
             if prov:
                 self._try_apply_gexu_guard(prov, units, pre_atk_hp_by_prov.get(pid, {}))
+        self.gexu_guard_active = False  # 该场战斗结束，效果消耗（规则：仅限该场战斗）
 
         # Retreat Logic
         if retreat_defender:
@@ -7775,6 +7791,7 @@ class GameApp:
 
         elif et == "flag_liukang":
             self.evt_flag_liukang = True
+            self.evt_flag_liukang_drawer = drawer
 
         elif et == "flag_hefei":
             self.evt_flag_hefei = True
@@ -7803,6 +7820,7 @@ class GameApp:
         elif et == "flag_wuwei":
             add_pp("WU", ev)
             self.evt_flag_wuwei = True
+            self.evt_flag_wuwei_drawer = drawer
 
         elif et == "flag_all_attack":
             self.evt_flag_all_attack = True
