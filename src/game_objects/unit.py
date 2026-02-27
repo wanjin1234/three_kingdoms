@@ -31,6 +31,7 @@ class UnitState:
     temp_river_immunity: bool = False  # 本大回合跨河惩罚免疫
     temp_terrain_immunity: bool = False  # 本大回合山地惩罚免疫
     temp_dice_bonus: int = 0  # 本大回合战斗骰点加成
+    major_mp_bonus: int = 0  # 本大回合行动力加成（忘身于外，大回合结束时清零）
     attack_bonus: int = 0  # 永久攻击力加成（由事件卡挟帝发令等给予）
     defense_bonus: int = 0  # 永久防御力加成（由事件卡江东铁壁等给予）
 

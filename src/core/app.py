@@ -172,9 +172,12 @@ class GameApp:
         self.display_width, self.display_height = self.display_surface.get_size()
         # 逻辑画布（固定设计分辨率）：所有UI都在这上面绘制，再整体缩放到真实窗口
         self.window = pg.Surface((self.screen_width, self.screen_height)).convert()
-        self._logical_window_size: Tuple[int, int] = (self.screen_width, self.screen_height)
+        self._logical_window_size: Tuple[int, int] = (
+            self.screen_width,
+            self.screen_height,
+        )
         self._direct_render: bool = False
-        self._base_screen_width: int = self.screen_width   # 设计分辨率宽，固定不变
+        self._base_screen_width: int = self.screen_width  # 设计分辨率宽，固定不变
         self._base_screen_height: int = self.screen_height  # 设计分辨率高，固定不变
         self.viewport_rect = pg.Rect(0, 0, self.display_width, self.display_height)
         self._viewport_scale = 1.0
@@ -298,10 +301,17 @@ class GameApp:
         self.pending_evt_card_id: str | None = None
         self.pending_evt_drawer: str | None = None
 
-        # ---- 小回合级别标志（_advance_country_turn 时清除） ----
-        self.evt_flag_liukang: bool = False  # 联刘抗曹：SHU/WU 本小回合不互攻
-        self.evt_flag_wuwei: bool = False  # 吴魏媾和：东吴本小回合不能攻魏
-        self.evt_flag_all_attack: bool = False  # 奖率三军：全军进攻骰点+1（本小回合）
+        # ---- 小回合级别标志（持续到抽取者下次回合开始时清除） ----
+        self.evt_flag_liukang: bool = (
+            False  # 联刘抗曹（WU卡）：SHU/WU本回合不互攻，WU下次回合开始时清除
+        )
+        self.evt_flag_wuwei: bool = (
+            False  # 吴魏媾和（WEI卡）：东吴不能攻魏，WEI下次回合开始时清除
+        )
+        self.evt_flag_all_attack: bool = (
+            False  # 奖率三军（公共卡）：全军进攻+1，抽取者下次回合开始时清除
+        )
+        self.evt_all_attack_drawer: str = ""  # 记录奖率三军的抽取方
         self.evt_temp_pp: Dict[str, int] = {}  # 老骥伏枥：临时政治点数（key=country）
 
         # ---- 大回合级别标志（_end_full_round 时清除） ----
@@ -320,16 +330,23 @@ class GameApp:
         self.evt_laomaikuai_active: bool = False  # 老迈昏聩已触发（下次江东才俊无效）
 
         # ---- 会话级持久技能标志 ----
-        self.evt_lonzhong_skill: int = 0  # 蜀汉"隆中定计"攻吴骰+N（可叠加）
+        self.evt_lonzhong_skill: int = 0  # 蜀汉"隆中定计"攻吴骰+N（每次抽取+1，可叠加）
         self.evt_jingzhu_skill: int = 0  # 东吴"荆州之主"攻蜀骰+N（可叠加）
-        self.evt_yishen_skill: bool = False  # 蜀汉"一身是胆"技能（全局唯一）
-        self.evt_yishen_used: bool = False  # 一身是胆本次战斗是否已使用
+        self.evt_yishen_skill: int = 0  # 蜀汉"一身是胆"剩余触发次数（每次抽取+1，触发时-1）
 
         # 不懈于内：下次抽卡若负效果无效
         self.evt_draw_again_safe: bool = False
 
         # 本小回合各国已生效事件卡记录 {country: [(card_name, card_desc), ...]}
         self.evt_applied_this_round: Dict[str, List[Tuple[str, str]]] = {}
+        # 本大回合持久事件卡记录（大回合结束才清除）{country: [(card_name, card_desc), ...]}
+        self.evt_applied_major_round: Dict[str, List[Tuple[str, str]]] = {}
+        # 本小回合已使用锦囊卡记录 {country: [(card_name, card_desc), ...]}
+        self.jingnang_applied: Dict[str, List[Tuple[str, str]]] = {}
+        # 本大回合持久锦囊卡记录（大回合结束才清除）{country: [(card_name, card_desc), ...]}
+        self.jingnang_applied_major: Dict[str, List[Tuple[str, str]]] = {}
+        # 割须弃袍小回合全局免伤标志（魏下次回合开始时清除）
+        self.gexu_guard_active: bool = False
         # 各国"！"悬停按钮区域（每帧由 _draw_country_stats_overlay 刷新）
         self.evt_info_btns: Dict[str, pg.Rect] = {}
 
@@ -593,11 +610,10 @@ class GameApp:
                 # 特殊逻辑：虎豹骑固定为4 (defs里应该是4，如果不是，这里强制设定也可以，但defs优先)
                 # defs里已经是4了.
 
-                unit.mp = max_mp
-                # 注意：回合结杞时不清除混乱状态
-                unit.temp_river_immunity = False
-                unit.temp_terrain_immunity = False
-                unit.temp_dice_bonus = 0
+                unit.mp = max_mp + getattr(unit, "major_mp_bonus", 0)
+                # 注意：回合结束时不清除混乱状态
+                # temp_river_immunity / temp_terrain_immunity / temp_dice_bonus
+                # 是大回合级效果，不在此处清除，在大回合结束时清除
 
     def _update_card_panel(self) -> None:
         """更新卡牌面板显示"""
@@ -648,6 +664,10 @@ class GameApp:
 
             # 立即消耗并登记本次战斗生效
             self.card_manager.use_card(selected_card_id)
+            # 记录江东止啊（魏防守卡）
+            self.jingnang_applied.setdefault("WEI", []).append(
+                (card_def.name, card_def.description or "")
+            )
             self.defender_use_jiangdong = True
             self.defender_jiangdong_decided = True
             self.allow_jiangdong_selection = False
@@ -679,6 +699,11 @@ class GameApp:
                 if self.card_effect_manager.activate_offensive_card(selected_card_id):
                     # 标记卡牌为已使用
                     self.card_manager.use_card(selected_card_id)
+                    # 记录进攻锦囊卡
+                    _jn_c = self.player_country or ""
+                    self.jingnang_applied.setdefault(_jn_c, []).append(
+                        (card_def.name, card_def.description or "")
+                    )
                     self.info_panel.show_message(
                         f"已激活锦囊卡: {card_def.name}", duration=2.0
                     )
@@ -695,8 +720,9 @@ class GameApp:
             # 进入目标选择模式
             self.selecting_card_target = True
             self.selected_card_for_effect = selected_card_id
+            _desc = card_def.description or ""
             self.info_panel.show_message(
-                f"请点击目标格子来应用{card_def.name}", duration=-1
+                f"【{card_def.name}】\n{_desc}\n请点击目标格子来应用", duration=-1
             )
         else:
             # 直接应用（当前暂无不需要目标的卡牌）
@@ -709,6 +735,12 @@ class GameApp:
         """
         # 标记卡牌为已使用
         self.card_manager.use_card(card_id)
+
+        # 记录本小回合已使用锦囊卡
+        _jn_c = self.player_country or ""
+        self.jingnang_applied.setdefault(_jn_c, []).append(
+            (card_def.name, card_def.description or "")
+        )
 
         # 显示卡牌使用提示
         self.info_panel.show_message(f"已使用锦囊卡: {card_def.name}", duration=2.0)
@@ -796,6 +828,21 @@ class GameApp:
                 for u in target_prov.units:
                     u.mp += 2
                     u.temp_terrain_immunity = True
+
+            if card_id == "card_gexu_qibao":
+                # 割须弃袍：激活小回合全局免伤标志（魏下次回合开始时清除）
+                self.gexu_guard_active = True
+                self.info_panel.show_message(
+                    "割须弃袍已激活：本小回合内魏方防御最高单位受伤时免除一次伤害",
+                    duration=2.5,
+                )
+
+            # 大回合持久锦囊卡：额外记录到大回合字典
+            if card_id in ("card_baiyue_dujiang", "card_touduo_yinping", "card_kongcheng_mouce"):
+                _jn_c = self.player_country or ""
+                self.jingnang_applied_major.setdefault(_jn_c, []).append(
+                    (card_def.name, card_def.description or "")
+                )
 
             # 处理召唤类卡牌的实际单位生成
             if card_id == "card_qilin_qishu":
@@ -953,15 +1000,12 @@ class GameApp:
             self._enter_evt_draw_phase_if_needed()
 
     def _end_full_round(self) -> None:
-        """三个国家都行动完后触发：清理回合效果并复位行动力。"""
-        self.card_effect_manager.clear_all_effects()
+        """三个国家都行动完后触发（每小回合结束调用）：清理小回合效果并复位行动力。"""
+        self.card_effect_manager.clear_turn_effects()  # 仅清除小回合级格子效果，保留大回合 is_major 效果（空城妙计等）
         self._replenish_action_points()
-        # 大回合级事件标志清除
-        self.evt_flag_hefei = False
-        self.evt_flag_she_hushu = False
-        self.evt_flag_hu_recruit = False
-        self.evt_yishen_used = False  # 一身是胆使用标志重置（每大回合重置）
-        self.evt_jingzhu_skill = 0  # 荆州之主骰点加成重置（每大回合重置）
+        # ── 小回合级标志清除 ──
+        # 注意：gexu_guard_active（割须弃袍）持续到魏国下次回合开始，不在此清除
+        self.jingnang_applied.clear()    # 锦囊卡小回合记录清除
 
     def _show_score_screen(self, screen_type: str) -> None:
         """
@@ -1256,10 +1300,8 @@ class GameApp:
         self.pending_attacker = None
         self.selecting_card_target = False
         self.selected_card_for_effect = None
-        # 小回合级事件标志清除
-        self.evt_flag_liukang = False
-        self.evt_flag_wuwei = False
-        self.evt_flag_all_attack = False
+        # 注意：evt_flag_liukang/wuwei/all_attack 为"持续到抽取者下次回合"效果，
+        # 不在此处统一清除，而是在各自抽取方的下次回合开始时按国家清除（见下方 _new_c 判断处）
         self.evt_temp_pp = {}  # 临时政治点数回合结束消失
         self.evt_applied_this_round = {}  # 清除本小回合事件卡记录
         self.evt_ai_drawn_this_turn = {}  # AI抓卡标记每小回合重置
@@ -1292,6 +1334,22 @@ class GameApp:
                             self._ai_cure_confused_unit(_c)
                 self.major_round += 1
                 self.minor_round = 1
+                # 大回合结束：清零单位大回合属性和大回合级事件标志
+                for _prov in self.map_manager.provinces:
+                    for _u in _prov.units:
+                        _u.major_mp_bonus = 0
+                        _u.temp_river_immunity = False    # 白衣渡江（大回合）
+                        _u.temp_terrain_immunity = False  # 偷渡阴平（大回合）
+                        _u.temp_dice_bonus = 0            # 愿打愿挚/厘兵秣马（大回合）
+                self.evt_flag_hefei = False
+                self.evt_flag_she_hushu = False
+                self.evt_flag_hu_recruit = False
+                self.evt_jingzhu_skill = 0
+                # 大回合持久卡牌记录清除
+                self.evt_applied_major_round = {}
+                self.jingnang_applied_major = {}
+                # 大回合级格子效果（空城妙计等 is_major=True）全量清除
+                self.card_effect_manager.clear_all_effects()
                 self._end_full_round()
                 self._start_major_round_choice_phase()
             else:
@@ -1314,6 +1372,15 @@ class GameApp:
         # （不再区分人类/AI：让所有国家的高亮保持到下轮轮到该国时才清除，
         #   确保魏国行动的蓝框在蜀汉回合开始时仍可见，直到魏国下次行动时清除）
         _new_c = self.player_country
+        # 事件卡"持续到抽取者下次回合"：在该国回合开始时才清除
+        if _new_c == "WU":
+            self.evt_flag_liukang = False  # 联刘抗曹（WU卡）
+        if _new_c == "WEI":
+            self.evt_flag_wuwei = False  # 吴魏媾和（WEI卡）
+            self.gexu_guard_active = False  # 割须弃袍（魏下次回合开始时清除）
+        if self.evt_all_attack_drawer and _new_c == self.evt_all_attack_drawer:
+            self.evt_flag_all_attack = False  # 奖率三军（公共卡，按抽取者清除）
+            self.evt_all_attack_drawer = ""
         self.move_src_provs = {
             k: v for k, v in self.move_src_provs.items() if v != _new_c
         }
@@ -2269,14 +2336,18 @@ class GameApp:
         self.evt_temp_pp = {}
         self.evt_flag_hefei = False
         self.evt_flag_all_attack = False
+        self.evt_all_attack_drawer = ""
+        self.gexu_guard_active = False
+        self.jingnang_applied = {}
+        self.evt_applied_major_round = {}
+        self.jingnang_applied_major = {}
         self.evt_wuzi_rounds = 0
         self.evt_wuzi_bonus = 0
         self.evt_xingluo_active = False
         self.evt_laomaikuai_active = False
         self.evt_lonzhong_skill = 0
         self.evt_jingzhu_skill = 0
-        self.evt_yishen_skill = False
-        self.evt_yishen_used = False
+        self.evt_yishen_skill = 0
         self.evt_draw_again_safe = False
         self.evt_draw_phase = False
         self.evt_skip_draw_btn_rect = None
@@ -2346,7 +2417,9 @@ class GameApp:
             if new_logical_w != self.screen_width or self.screen_height != base_h:
                 self.screen_width = new_logical_w
                 self.screen_height = base_h
-                self.window = pg.Surface((self.screen_width, self.screen_height)).convert()
+                self.window = pg.Surface(
+                    (self.screen_width, self.screen_height)
+                ).convert()
                 self._rebuild_layout_for_screen_size()
         else:
             # 瘦高/等比：以宽度为基准缩放，上下留白
@@ -2359,7 +2432,9 @@ class GameApp:
             if self.screen_width != base_w or self.screen_height != base_h:
                 self.screen_width = base_w
                 self.screen_height = base_h
-                self.window = pg.Surface((self.screen_width, self.screen_height)).convert()
+                self.window = pg.Surface(
+                    (self.screen_width, self.screen_height)
+                ).convert()
                 self._rebuild_layout_for_screen_size()
 
     def _rebuild_layout_for_screen_size(self) -> None:
@@ -2468,8 +2543,12 @@ class GameApp:
         if not self.viewport_rect.collidepoint((x, y)):
             return (-10_000, -10_000)
 
-        lx = int((x - self.viewport_rect.x) * self.screen_width / self.viewport_rect.width)
-        ly = int((y - self.viewport_rect.y) * self.screen_height / self.viewport_rect.height)
+        lx = int(
+            (x - self.viewport_rect.x) * self.screen_width / self.viewport_rect.width
+        )
+        ly = int(
+            (y - self.viewport_rect.y) * self.screen_height / self.viewport_rect.height
+        )
         lx = max(0, min(self.screen_width - 1, lx))
         ly = max(0, min(self.screen_height - 1, ly))
         return (lx, ly)
@@ -2508,18 +2587,24 @@ class GameApp:
             self.screen_width, self.screen_height = self.display_surface.get_size()
             self._rebuild_layout_for_screen_size()
         else:
-            self.display_surface = pg.display.set_mode(self._windowed_size, pg.RESIZABLE)
+            self.display_surface = pg.display.set_mode(
+                self._windowed_size, pg.RESIZABLE
+            )
             self.is_fullscreen = False
             self._direct_render = False
             # screen_width/height 此时还是全屏分辨率，_reflow 会检测差异并重建
-            self.window = pg.Surface((self._base_screen_width, self._base_screen_height)).convert()
+            self.window = pg.Surface(
+                (self._base_screen_width, self._base_screen_height)
+            ).convert()
         self._reflow_after_window_change()
 
     def _draw_global_fullscreen_btn(self) -> None:
         """在逻辑画布底部居中绘制全屏提示文字（所有界面通用）。"""
         font_size = max(10, int(self.screen_height * 0.018))
         hint_font = self._font("msyh.ttc", font_size)
-        hint_surf = hint_font.render("按 F11 切换全屏/窗口模式", True, pg.Color("#888888"))
+        hint_surf = hint_font.render(
+            "按 F11 切换全屏/窗口模式", True, pg.Color("#888888")
+        )
         x = (self.screen_width - hint_surf.get_width()) // 2
         y = self.screen_height - hint_surf.get_height() - 8
         self.window.blit(hint_surf, (x, y))
@@ -3485,8 +3570,9 @@ class GameApp:
                             self._play_selected_card()
                             return
                         elif card_def:
+                            _desc = card_def.description or ""
                             self.info_panel.show_message(
-                                f"已选中: {card_def.name}，按 Enter 使用"
+                                f"【{card_def.name}】\n{_desc}\n按 Enter 使用"
                             )
 
                 # 优先处理 UI 面板点击
@@ -4403,9 +4489,8 @@ class GameApp:
     def _try_apply_gexu_guard(
         self, province: object, units: List[UnitState], pre_hp_map: Dict[int, int]
     ) -> bool:
-        """割须弃袍：若防御最高单位在本次战斗受伤，则免除其1点伤害（一次性）。"""
-        effect = self.card_effect_manager.get_effect(str(province.province_id))
-        if not effect or not effect.gexu_guard or not units:
+        """割须弃袍：本小回合内，魏方防御最高单位受伤时免除一次伤害（全局标志）。"""
+        if not self.gexu_guard_active or not units:
             return False
 
         highest_def_unit = max(
@@ -4416,7 +4501,7 @@ class GameApp:
         before_hp = pre_hp_map.get(id(highest_def_unit), highest_def_unit.hp)
         if highest_def_unit.hp < before_hp:
             highest_def_unit.hp += 1
-            self.card_effect_manager.remove_effect(str(province.province_id))
+            self.gexu_guard_active = False
             return True
 
         return False
@@ -4676,17 +4761,19 @@ class GameApp:
         col_index = get_ratio_column(total_attack, total_defense, is_flanked)
 
         # 关隘/城市受攻：判定向防守方有利方向移动一列
+        # 威震华夏：若已激活且目标格子旁有河流，判定向进攻方有利移动一列
+        # 两者合并后再做边界处理，避免城市-1被夹界消耗后威震+1仍生效的净右移bug
+        col_adj = 0
         if self._is_fort_or_city(target):
-            col_index = max(0, col_index - 1)
-
-        # 应用卡牌效果修饰
-        # 威震华夏：如果已激活且目标格子旁有河流，判定列向利于进攻方移动一列
+            col_adj -= 1
         if self.card_effect_manager.is_offensive_card_active(
             "card_zhenjing_huaxia_shu"
         ):
             if self._province_has_river_neighbor(target.province_id):
-                col_index = min(5, col_index + 1)
+                col_adj += 1
+        col_index = max(0, min(5, col_index + col_adj))
 
+        # 应用卡牌效果修饰
         # 火烧连营：如果激活且敌方有多个部队堆叠，判定列向利于进攻方移动一列
         if self.card_effect_manager.is_offensive_card_active("card_huoshao_lianying"):
             if len(target.units) > 1:
@@ -4840,15 +4927,16 @@ class GameApp:
         # 计算最新的攻防比列索引
         col_index = get_ratio_column(total_attack, total_defense, is_flanked)
 
+        # 关隘/城市受攻：-1；威震华夏+河流：+1；合并后统一做边界
+        col_adj = 0
         if self._is_fort_or_city(target_province):
-            col_index = max(0, col_index - 1)
-
-        # 威震华夏（在战斗发起前可能已全局激活）：若已激活且目标格子旁有河流，判定向进攻方有利移动一列
+            col_adj -= 1
         if self.card_effect_manager.is_offensive_card_active(
             "card_zhenjing_huaxia_shu"
         ):
             if self._province_has_river_neighbor(target_province.province_id):
-                col_index = min(5, col_index + 1)
+                col_adj += 1
+        col_index = max(0, min(5, col_index + col_adj))
 
         # 调用原有的战斗解决逻辑
         self._resolve_combat(col_index, attackers, target_province)
@@ -4917,27 +5005,30 @@ class GameApp:
         if atk_country == "WU" and def_country == "WEI" and self.evt_flag_hefei:
             attacker_dice_bonus -= 1
 
-        # 隆中定计：蜀汉进攻东吴时骰点+N
+        # 隆中定计：蜀汉进攻东吴时每次触发+1骰点，消耗一次机会（与一身是胆机制一致）
         if atk_country == "SHU" and def_country == "WU" and self.evt_lonzhong_skill > 0:
-            attacker_dice_bonus += self.evt_lonzhong_skill
+            attacker_dice_bonus += 1
+            self.evt_lonzhong_skill -= 1
+            if self.info_panel:
+                remaining = f"，剩余 {self.evt_lonzhong_skill} 次" if self.evt_lonzhong_skill > 0 else ""
+                self.info_panel.show_message(f"蜀汉使用「隆中定计」：进攻骰点+1！{remaining}", duration=2.0)
 
         # 荆州之主：东吴进攻蜀汉时骰点+N
         if atk_country == "WU" and def_country == "SHU" and self.evt_jingzhu_skill > 0:
             attacker_dice_bonus += self.evt_jingzhu_skill
 
-        # 一身是胆：蜀汉被进攻且攻方比例超过1:1时，强制限制至1:1列（自动生效）
+        # 一身是胆：蜀汉被进攻且攻方比例超过1:1时，强制限制至1:1列（每次抽取获得一次触发机会）
         if (
             def_country == "SHU"
-            and self.evt_yishen_skill
-            and not self.evt_yishen_used
+            and self.evt_yishen_skill > 0
             and col_index > 1
         ):
             col_index = 1
-            self.evt_yishen_skill = False  # 一次性消耗
-            self.evt_yishen_used = True
+            self.evt_yishen_skill -= 1  # 消耗一次触发机会
             if self.info_panel:
+                remaining = f"，剩余 {self.evt_yishen_skill} 次" if self.evt_yishen_skill > 0 else ""
                 self.info_panel.show_message(
-                    "蜀汉使用「一身是胆」：按1:1档位计算！", duration=2.0
+                    f"蜀汉使用「一身是胆」：按1:1档位计算！{remaining}", duration=2.0
                 )
 
         # 江东止啼：防守方即时选择"使用"后生效（一次性），进攻方骰点-2
@@ -5770,7 +5861,9 @@ class GameApp:
                     self.no_attack_btn_rect = pg.Rect(btn_x, btn_y, btn_w, btn_h)
 
                     btn_color = pg.Color("#555555")
-                    if self.no_attack_btn_rect.collidepoint(self._get_logical_mouse_pos()):
+                    if self.no_attack_btn_rect.collidepoint(
+                        self._get_logical_mouse_pos()
+                    ):
                         btn_color = pg.Color("#6f6f6f")
 
                     pg.draw.rect(
@@ -5806,7 +5899,9 @@ class GameApp:
 
                     # 悬停变色逻辑
                     btn_color = pg.Color("purple")
-                    if self.recover_btn_rect.collidepoint(self._get_logical_mouse_pos()):
+                    if self.recover_btn_rect.collidepoint(
+                        self._get_logical_mouse_pos()
+                    ):
                         btn_color = pg.Color("#BA55D3")  # MediumOrchid (Lighter Purple)
 
                     # 按照要求，按钮颜色为紫色
@@ -6051,7 +6146,9 @@ class GameApp:
                         self.pp_btn_rect = pg.Rect(_pp_bx, _pp_by, _pp_bw, _pp_bh)
                         _pp_col = (
                             pg.Color("#DAA520")
-                            if self.pp_btn_rect.collidepoint(self._get_logical_mouse_pos())
+                            if self.pp_btn_rect.collidepoint(
+                                self._get_logical_mouse_pos()
+                            )
                             else pg.Color("#B8860B")
                         )
                         pg.draw.rect(
@@ -6534,14 +6631,19 @@ class GameApp:
             )
 
             # 右上角"！"信息按钮
-            _btn_r = 14
+            _btn_r = 18
             _btn_cx = rect.right - _btn_r - 5
             _btn_cy = rect.top + _btn_r + 5
             _btn_rect = pg.Rect(
                 _btn_cx - _btn_r, _btn_cy - _btn_r, _btn_r * 2, _btn_r * 2
             )
             _mouse = self._get_logical_mouse_pos()
-            _has_cards = bool(self.evt_applied_this_round.get(country))
+            _has_cards = (
+                bool(self.evt_applied_this_round.get(country))
+                or bool(self.jingnang_applied.get(country))
+                or bool(self.evt_applied_major_round.get(country))
+                or bool(self.jingnang_applied_major.get(country))
+            )
             _hovered_btn = _btn_rect.collidepoint(_mouse)
             if _has_cards:
                 _btn_bg = pg.Color("#ffaa00") if _hovered_btn else pg.Color("#c87800")
@@ -6654,11 +6756,18 @@ class GameApp:
             return
 
         cards = self.evt_applied_this_round.get(hovered_country, [])
+        # 合并小回合+大回合持久记录
+        _jn_minor = self.jingnang_applied.get(hovered_country, [])
+        _jn_major = self.jingnang_applied_major.get(hovered_country, [])
+        jn_cards = _jn_minor + [x for x in _jn_major if x not in _jn_minor]
+        _evt_minor = self.evt_applied_this_round.get(hovered_country, [])
+        _evt_major = self.evt_applied_major_round.get(hovered_country, [])
+        evt_cards = _evt_minor + [x for x in _evt_major if x not in _evt_minor]
         font_title = self.country_stat_font
         font_body = self.tooltip_font
         country_name = self.country_labels.get(hovered_country, hovered_country)
 
-        max_content_w = 260
+        max_content_w = 280
         padding = 10
         line_gap = 3
 
@@ -6679,20 +6788,34 @@ class GameApp:
 
         # 构建行列表：(text, font, color)
         all_lines: List[Tuple[str, pg.font.Font, pg.Color]] = []
-        header = f"【本回合生效事件卡 · {country_name}】"
+        header = f"【本回合生效卡牌 · {country_name}】"
         all_lines.append((header, font_title, pg.Color("#333333")))
 
-        if not cards:
+        if not jn_cards and not evt_cards:
             all_lines.append(
-                ("（本回合尚无已生效事件卡）", font_body, pg.Color("#888888"))
+                ("（本回合尚无已生效卡牌）", font_body, pg.Color("#888888"))
             )
         else:
-            for i, (name, desc) in enumerate(cards):
-                if i > 0:
-                    all_lines.append(("", font_body, pg.Color("white")))  # 间隔
-                all_lines.append((f"▸ {name}", font_title, pg.Color("#b06800")))
-                for dline in _wrap(desc, font_body, max_content_w - padding * 2):
-                    all_lines.append((dline, font_body, pg.Color("#444444")))
+            # ── 锦囊卡 ──
+            if jn_cards:
+                all_lines.append(("— 锦囊卡 —", font_title, pg.Color("#1a6620")))
+                for i, (name, desc) in enumerate(jn_cards):
+                    if i > 0:
+                        all_lines.append(("", font_body, pg.Color("white")))
+                    all_lines.append((f"▸ {name}", font_title, pg.Color("#1a6620")))
+                    for dline in _wrap(desc, font_body, max_content_w - padding * 2):
+                        all_lines.append((dline, font_body, pg.Color("#444444")))
+            # ── 事件卡 ──
+            if evt_cards:
+                if jn_cards:
+                    all_lines.append(("", font_body, pg.Color("white")))
+                all_lines.append(("— 事件卡 —", font_title, pg.Color("#b06800")))
+                for i, (name, desc) in enumerate(evt_cards):
+                    if i > 0:
+                        all_lines.append(("", font_body, pg.Color("white")))
+                    all_lines.append((f"▸ {name}", font_title, pg.Color("#b06800")))
+                    for dline in _wrap(desc, font_body, max_content_w - padding * 2):
+                        all_lines.append((dline, font_body, pg.Color("#444444")))
 
         # 计算面板尺寸
         actual_w = max_content_w
@@ -7486,8 +7609,9 @@ class GameApp:
             return
         card: EventCardDef = self.event_card_overlay["card"]
         drawer: str = self.event_card_overlay["drawer"]
-        # 记录本张牌是否为「不懈于内」的免费第二次抽取（不消耗 PP）
+        # 「不懈于内」免费第二张牌时，drawer=SHU（受益方），actual_actor 记录实际行动方
         is_free_draw: bool = self.event_card_overlay.get("free_draw", False)
+        actual_actor: str = self.event_card_overlay.get("actual_actor", drawer)
         self.event_card_overlay = None
         self.evt_overlay_ok_btn = None
 
@@ -7499,23 +7623,31 @@ class GameApp:
             return
 
         if not card.needs_target:
-            # 免费第二张牌（不懈于内）：不消耗 PP，但仍按实际 PP 决定阶段
-            # 普通牌：效果执行后按实际 PP 决定阶段
+            # 免费第二张牌（不懈于内）：PP 阶段管理针对实际行动方（actual_actor），而非受益方（SHU）
+            pp_country = actual_actor if is_free_draw else drawer
             _current_pp: int = int(
-                self.country_stats.get(drawer, {}).get("political_points", 0)
-            ) + self.evt_temp_pp.get(drawer, 0)
+                self.country_stats.get(pp_country, {}).get("political_points", 0)
+            ) + self.evt_temp_pp.get(pp_country, 0)
             if _current_pp >= 1:
-                if not self.evt_draw_phase and drawer == self.player_country:
+                if not self.evt_draw_phase and pp_country == self.player_country:
                     self._enter_evt_draw_phase_if_needed()
             else:
                 self._exit_evt_draw_phase()
 
-        # ── 若抽卡方是 AI，玩家点击确认后：处理 needs_target 并恢复 AI 行动
+        # ── 若受益方（drawer）是 AI，自动处理目标选择
         if self.human_country is not None and drawer != self.human_country:
             if self.selecting_evt_target and self.pending_evt_card_id:
                 self._ai_auto_select_evt_target(drawer)
-            if not self.event_card_overlay and not self.selecting_evt_target:
-                self._ai_turn_timer = pg.time.get_ticks() + 400
+
+        # ── 恢复 AI 行动：针对实际行动方（is_free_draw 时为 actual_actor，否则为 drawer）
+        ai_actor = actual_actor if is_free_draw else drawer
+        if (
+            self.human_country is not None
+            and ai_actor != self.human_country
+            and not self.event_card_overlay
+            and not self.selecting_evt_target
+        ):
+            self._ai_turn_timer = pg.time.get_ticks() + 400
 
     def _apply_event_card(self, card, drawer: str) -> None:
         """执行事件卡效果"""
@@ -7578,28 +7710,23 @@ class GameApp:
             self.evt_xingluo_active = True
 
         elif et == "conditional_lonzhong":
-            # 荆州（ID=35）是否属于蜀汉
-            jingzhou = self.map_manager.get_by_id(35)
-            if jingzhou and jingzhou.country == "SHU":
-                self.evt_lonzhong_skill += 1
-                if self.evt_xingluo_active:
-                    add_pp("SHU", 1)
-                    self.evt_xingluo_active = False
-                msg = f"「{card.name}」：荆州属于蜀汉！蜀汉获得进攻东吴骰点+1（累计 {self.evt_lonzhong_skill}）"
+            # 无条件生效：每次抽到累积一次触发机会，进攻东吴时消耗一次（与一身是胆机制一致）
+            self.evt_lonzhong_skill += 1
+            if self.evt_xingluo_active:
+                add_pp("SHU", 1)
+                self.evt_xingluo_active = False
+                msg = f"「{card.name}」：蜀汉获得「隆中定计」触发机会（累计 {self.evt_lonzhong_skill} 次，进攻东吴时+1骰点）；「星落秋风」补偿触发，额外+1政治点数"
             else:
-                _xingluo_fired = self.evt_xingluo_active
-                if self.evt_xingluo_active:
-                    add_pp("SHU", 1)
-                    self.evt_xingluo_active = False
-                if _xingluo_fired:
-                    msg = f"「{card.name}」：荆州不属于蜀汉，无效（但「星落秋风」补偿触发，蜀汉获得+1政治点数）"
-                else:
-                    msg = f"「{card.name}」：荆州不属于蜀汉，无效"
+                msg = f"「{card.name}」：蜀汉获得「隆中定计」触发机会（累计 {self.evt_lonzhong_skill} 次，进攻东吴时+1骰点）"
 
         elif et == "conditional_jingzhu":
             jingzhou = self.map_manager.get_by_id(35)
             if jingzhou and jingzhou.country == "WU":
                 self.evt_jingzhu_skill += 1
+                # 荆州之主为大回合持久效果，记录到大回合字典
+                self.evt_applied_major_round.setdefault(tc, []).append(
+                    (card.name, card.description)
+                )
                 msg = f"「{card.name}」：荆州属于东吴！东吴获得进攻蜀汉骰点+1（累计 {self.evt_jingzhu_skill}）"
             else:
                 msg = f"「{card.name}」：荆州不属于东吴，无效"
@@ -7616,9 +7743,10 @@ class GameApp:
             self.evt_draw_again_safe = True
             msg = f"「{card.name}」：额外免费抽一张，若为负效果则无效"
             # 立即触发免费再抽一张（不消耗 PP）
-            next_card = self.event_card_deck.draw(drawer)
+            # target_country=SHU，无论谁抽到，保护和效果归属均以 tc（SHU）为准
+            next_card = self.event_card_deck.draw(tc)
             if next_card:
-                ni = self._is_negative_event(next_card, drawer)
+                ni = self._is_negative_event(next_card, tc)
                 if ni:
                     self.evt_draw_again_safe = False
                     msg += (
@@ -7628,9 +7756,10 @@ class GameApp:
                     self.evt_draw_again_safe = False
                     self.event_card_overlay = {
                         "card": next_card,
-                        "drawer": drawer,
+                        "drawer": tc,   # 以 SHU 为 drawer，目标选择/效果归属蜀汉
                         "safe": False,
                         "free_draw": True,  # 不消耗政治点的免费第二次抽取
+                        "actual_actor": drawer,  # 记录实际行动方（用于 AI 计时器恢复）
                     }
                     if self.info_panel:
                         self.info_panel.show_message(msg, duration=2.0)
@@ -7639,9 +7768,9 @@ class GameApp:
                 msg += "\n（牌堆已空，未能再次抽卡）"
 
         elif et == "evt_skill_yishen":
-            self.evt_yishen_skill = True
+            self.evt_yishen_skill += 1
             msg = (
-                f"「{card.name}」：蜀汉持有「一身是胆」（下次被进攻低于1:1时自动触发）"
+                f"「{card.name}」：蜀汉获得「一身是胆」触发机会（累计 {self.evt_yishen_skill} 次，被进攻低于1:1时自动触发）"
             )
 
         elif et == "flag_liukang":
@@ -7649,12 +7778,27 @@ class GameApp:
 
         elif et == "flag_hefei":
             self.evt_flag_hefei = True
+            _r = self.turn_order if tc == "ALL" else [tc]
+            for _rc in _r:
+                self.evt_applied_major_round.setdefault(_rc, []).append(
+                    (card.name, card.description)
+                )
 
         elif et == "flag_she_hushu":
             self.evt_flag_she_hushu = True
+            _r = self.turn_order if tc == "ALL" else [tc]
+            for _rc in _r:
+                self.evt_applied_major_round.setdefault(_rc, []).append(
+                    (card.name, card.description)
+                )
 
         elif et == "flag_hu_recruit":
             self.evt_flag_hu_recruit = True
+            _r = self.turn_order if tc == "ALL" else [tc]
+            for _rc in _r:
+                self.evt_applied_major_round.setdefault(_rc, []).append(
+                    (card.name, card.description)
+                )
 
         elif et == "flag_wuwei":
             add_pp("WU", ev)
@@ -7662,6 +7806,7 @@ class GameApp:
 
         elif et == "flag_all_attack":
             self.evt_flag_all_attack = True
+            self.evt_all_attack_drawer = drawer  # 记录抽取方，用于其下次回合清除
 
         elif et == "flag_laomaikuai":
             self.evt_laomaikuai_active = True
@@ -7669,6 +7814,12 @@ class GameApp:
         elif et == "flag_wuzi":
             self.evt_wuzi_rounds = 5
             self.evt_wuzi_bonus = min(3, self.evt_wuzi_bonus + 1)
+            # 五子良将为大回合级持久效果，记录到大回合字典
+            _r = self.turn_order if tc == "ALL" else [tc]
+            for _rc in _r:
+                self.evt_applied_major_round.setdefault(_rc, []).append(
+                    (card.name, card.description)
+                )
             msg = f"「{card.name}」：曹魏进攻骰点+{self.evt_wuzi_bonus}（剩余 {self.evt_wuzi_rounds} 小回合）"
 
         elif et in (
@@ -7780,7 +7931,8 @@ class GameApp:
         card = self.event_card_deck.get_definition(card_id)
 
         if card_id == "evt_wangshen":  # 忘身于外：单位本大回合 MP+1
-            unit.mp += card.effect_value
+            unit.major_mp_bonus = getattr(unit, "major_mp_bonus", 0) + card.effect_value
+            unit.mp += card.effect_value  # 立即对本回合剩余行动力生效
             if self.info_panel:
                 self.info_panel.show_message(
                     f"「{card.name}」：{unit.unit_type} 本大回合行动力+{card.effect_value}"

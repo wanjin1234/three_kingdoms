@@ -22,11 +22,11 @@
   flag_all_attack     : 设置"奖率三军"标志（本大回合全军进攻骰点+1）
   flag_laomaikuai     : 设置"老迈昏聩"标志（下次抽到"江东才俊"无效）
   flag_wuzi           : 设置"五子良将"标志（5小回合内魏进攻+1骰，至多+3）
-  conditional_lonzhong: 若荆州属于蜀汉，蜀汉获得"隆中定计"攻吴骰+1技能（可叠加）
+  conditional_lonzhong: 若荆州属于蜀汉，蜀汉获得"隆中定计"攻吴骰+1技能（可叠加，每次抽取+1）
   conditional_jingzhu : 若荆州属于东吴，东吴获得"荆州之主"攻蜀骰+1技能（可叠加）
   conditional_ruzhong : 若汉中属于曹魏，曹魏本回合 PP+2
   draw_again_safe     : 再抽一张，若负效果则无效（不懈于内）
-  evt_skill_yishen    : 蜀汉持有"一身是胆"技能牌
+  evt_skill_yishen    : 蜀汉持有"一身是胆"技能牌（每次抽取+1次触发机会，可叠加）
   unit_mp_plus        : 需点击单位 → 单位本大回合 MP+effect_value（忘身于外）
   unit_dice_perm_def_minus: 需点击单位 → 本大回合骰点+1，永久防御-1（愿打愿挨）
   province_def_plus   : 需点击地块 → 该地块所有单位永久防御+effect_value（江东铁壁）

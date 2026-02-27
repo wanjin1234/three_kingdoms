@@ -40,6 +40,7 @@ class ProvinceEffect:
     stacked_bonus: bool = False  # 堆叠进攻奖励
     wounded_attack_bonus: int = 0  # 受伤部队战斗力奖励 (割须弃袍)
     gexu_guard: bool = False  # 割须弃袍：免除防御最高单位一次所受伤害
+    is_major: bool = False  # 是否为大回合级效果（True=小回合结束时不清除，仅大回合结束时清除）
 
 
 @dataclass
@@ -73,8 +74,15 @@ class CardEffectManager:
         """移除格子上的效果"""
         self.current_effects.pop(province_id, None)
 
+    def clear_turn_effects(self) -> None:
+        """清除小回合级效果（每小回合结束调用）：仅移除 is_major=False 的效果，保留大回合级效果（如空城妙计）。"""
+        to_remove = [pid for pid, eff in self.current_effects.items() if not eff.is_major]
+        for pid in to_remove:
+            del self.current_effects[pid]
+        self.active_offensive_cards.clear()
+
     def clear_all_effects(self) -> None:
-        """清除所有效果（通常在大回合结束时调用）"""
+        """清除所有效果（大回合结束时调用，包括 is_major 效果）"""
         self.current_effects.clear()
         self.active_offensive_cards.clear()
 
@@ -144,8 +152,9 @@ class CardEffectManager:
             self.add_effect(province_id, card_id, card_name, effect)
             return True
 
-        elif card_id == "card_kongcheng_mouce":  # 空城妙计 (蜀国)
+        elif card_id == "card_kongcheng_mouce":  # 空城妙计 (蜀国) - 大回合级（本大回合持续保护）
             effect.protected = True
+            effect.is_major = True
             self.add_effect(province_id, card_id, card_name, effect)
             return True
 
