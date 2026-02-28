@@ -511,8 +511,10 @@ class GameApp:
             panel_w,
             int(self.screen_height * 0.25),  # 85% - 60%
         )
+        cards_dir = str(self.settings.graphics_dir / "ui" / "cards")
         self.card_panel = CardPanel(
-            card_rect, info_font, font_path=font_path, base_font_size=font_size
+            card_rect, info_font, font_path=font_path, base_font_size=font_size, cards_dir=cards_dir,
+            allow_jiangdong_selection=False  # 初始为 False，之后会在 _update_card_panel 中更新
         )
 
         # 战斗UI状态 (位于顶部栏)
@@ -622,17 +624,11 @@ class GameApp:
         if self.card_panel and self.card_manager:
             available_cards = self.card_manager.get_available_cards()
 
-            # 江东止啼仅在“被进攻（魏方防守）”时可选
-            if self.allow_jiangdong_selection:
-                available_cards = [
-                    c for c in available_cards if c.id == "card_jiangdong_zhiti"
-                ]
-            else:
-                available_cards = [
-                    c for c in available_cards if c.id != "card_jiangdong_zhiti"
-                ]
-
+            # 江东止啼仅在"被进攻（魏方防守）"时可用（灰色不可选状态）
+            # 但始终显示在卡牌列表中，让玩家能看到
             self.card_panel.set_available_cards(available_cards)
+            # 更新江东止啼的可用状态
+            self.card_panel.allow_jiangdong_selection = self.allow_jiangdong_selection
 
     def _play_selected_card(self) -> None:
         """打出选中的卡牌"""
