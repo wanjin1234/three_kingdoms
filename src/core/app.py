@@ -295,6 +295,8 @@ class GameApp:
         # 结构: {"card": EventCardDef, "drawer": str, "safe": bool}
         self.event_card_overlay: dict | None = None
         self.evt_overlay_ok_btn: pg.Rect | None = None
+        # 事件卡图片缓存：{card_name: pg.Surface}
+        self._event_card_image_cache: Dict[str, pg.Surface | None] = {}
 
         # 事件卡单位/地块目标选择
         self.selecting_evt_target: bool = False
@@ -8004,6 +8006,28 @@ class GameApp:
     # 事件卡覆盖层渲染
     # ====================================================================
 
+    def _get_event_card_image(self, card_name: str) -> "pg.Surface | None":
+        """按卡牌名称加载 card/ 目录下的图片，结果缓存避免重复 IO。"""
+        if card_name in self._event_card_image_cache:
+            return self._event_card_image_cache[card_name]
+        card_dir = os.path.join(
+            os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ),
+            "card",
+        )
+        surf: "pg.Surface | None" = None
+        for ext in (".png", ".jpg", ".jpeg"):
+            path = os.path.join(card_dir, card_name + ext)
+            if os.path.isfile(path):
+                try:
+                    surf = pg.image.load(path).convert_alpha()
+                except Exception as exc:
+                    logger.warning("事件卡图片加载失败 %s: %s", path, exc)
+                break
+        self._event_card_image_cache[card_name] = surf
+        return surf
+
     def _render_event_card_overlay(self) -> None:
         """绘制事件卡展示面板（模态覆盖层）"""
         if not self.event_card_overlay:
@@ -8014,12 +8038,29 @@ class GameApp:
         font_title = self.country_stat_title_font
         font_body = self.country_stat_font
 
-        # ---- 预渲染所有文本，用于计算动态高度 ----
         title_h = font_title.get_height()
         body_h = font_body.get_height()
+        padding = 16
 
-        # 描述文字按面板宽度分行（约 24 字/行）
-        panel_w = max(520, int(self.screen_width * 0.38))
+        # 尝试加载卡牌图片
+        card_img = self._get_event_card_image(card.name)
+
+        # 面板宽度
+        panel_w = max(520, int(self.screen_width * 0.40))
+
+        # 图片区高度：有图时展示，无图时为 0
+        img_area_h = 0
+        img_surf_scaled: "pg.Surface | None" = None
+        if card_img is not None:
+            iw, ih = card_img.get_width(), card_img.get_height()
+            max_img_w = panel_w - padding * 2
+            max_img_h = int(self.screen_height * 0.35)
+            scale = min(max_img_w / max(iw, 1), max_img_h / max(ih, 1))
+            dw, dh = max(1, int(iw * scale)), max(1, int(ih * scale))
+            img_surf_scaled = pg.transform.smoothscale(card_img, (dw, dh))
+            img_area_h = dh + padding
+
+        # 描述文字分行（每行最多 24 字）
         chunk_size = 24
         desc_lines: list[str] = []
         raw = card.description
@@ -8027,46 +8068,42 @@ class GameApp:
             desc_lines.append(raw[:chunk_size])
             raw = raw[chunk_size:]
 
-        # 各区域高度
-        padding = 16
-        bar_h = title_h + padding  # 顶部国家色条高度（自适应字体）
-        card_name_h = title_h + padding  # 卡牌名称区
-        desc_total_h = len(desc_lines) * (body_h + 4) + padding
-        btn_section_h = body_h + padding * 3  # 确认按钮区
+        bar_h = title_h + padding
+        name_h = title_h + padding
+        desc_h = len(desc_lines) * (body_h + 4) + padding
+        btn_h_total = body_h + padding * 3
 
-        panel_h = bar_h + card_name_h + desc_total_h + btn_section_h
+        panel_h = bar_h + name_h + img_area_h + desc_h + btn_h_total
         panel_x = (self.screen_width - panel_w) // 2
-        panel_y = (self.screen_height - panel_h) // 2
+        panel_y = max(padding, (self.screen_height - panel_h) // 2)
 
         # 半透明背景遮罩
         overlay = pg.Surface((self.screen_width, self.screen_height), pg.SRCALPHA)
         overlay.fill((0, 0, 0, 140))
         self.window.blit(overlay, (0, 0))
 
-        # ---- 面板外上方：显示是哪国玩家抽取的 ----
+        # 面板外上方公告文字
         drawer_name = self.country_labels.get(drawer, drawer)
         drawer_color = self.country_button_colors.get(drawer, pg.Color("white"))
         announce_surf = font_title.render(
             f"{drawer_name}  抽取了事件卡", True, drawer_color
         )
-        # 绘制文字阴影，增强可读性
         shadow_surf = font_title.render(
             f"{drawer_name}  抽取了事件卡", True, pg.Color(0, 0, 0, 180)
         )
-        announce_x = (self.screen_width - announce_surf.get_width()) // 2
-        announce_y = panel_y - title_h - padding - 4
-        self.window.blit(shadow_surf, (announce_x + 2, announce_y + 2))
-        self.window.blit(announce_surf, (announce_x, announce_y))
+        ax = (self.screen_width - announce_surf.get_width()) // 2
+        ay = panel_y - title_h - padding - 4
+        self.window.blit(shadow_surf, (ax + 2, ay + 2))
+        self.window.blit(announce_surf, (ax, ay))
 
-        # 卡牌面板底色
+        # 面板底色
         panel_rect = pg.Rect(panel_x, panel_y, panel_w, panel_h)
         pg.draw.rect(self.window, pg.Color("#FFF8E7"), panel_rect, border_radius=12)
         pg.draw.rect(
             self.window, pg.Color("#8B4513"), panel_rect, width=3, border_radius=12
         )
 
-        # ---- 顶部国家颜色标签条 ----
-        # 公共卡（deck=="PUBLIC"）始终显示抽取方；其余显示实际生效国
+        # 顶部国家色标签条
         display_country = drawer if card.deck == "PUBLIC" else card.target_country
         country_color = self.country_button_colors.get(
             display_country, pg.Color("gray")
@@ -8078,7 +8115,6 @@ class GameApp:
             country_color,
             pg.Rect(panel_x, panel_y + bar_h // 2, panel_w, bar_h // 2),
         )
-
         drawer_label = (
             f"{self.country_labels.get(display_country, display_country)} — 事件卡"
         )
@@ -8088,7 +8124,7 @@ class GameApp:
             tag_surf.get_rect(center=(panel_x + panel_w // 2, panel_y + bar_h // 2)),
         )
 
-        # ---- 卡牌名称 ----
+        # 卡牌名称
         cur_y = panel_y + bar_h + padding // 2
         name_surf = font_title.render(card.name, True, pg.Color("#4B2800"))
         self.window.blit(
@@ -8096,7 +8132,7 @@ class GameApp:
         )
         cur_y += title_h + padding
 
-        # ---- 分隔线 ----
+        # 分隔线
         pg.draw.line(
             self.window,
             pg.Color("#C8A87A"),
@@ -8105,13 +8141,27 @@ class GameApp:
             1,
         )
 
-        # ---- 描述文字 ----
+        # 卡牌图片
+        if img_surf_scaled is not None:
+            img_x = panel_x + (panel_w - img_surf_scaled.get_width()) // 2
+            self.window.blit(img_surf_scaled, (img_x, cur_y))
+            cur_y += img_surf_scaled.get_height() + padding
+            # 图片下分隔线
+            pg.draw.line(
+                self.window,
+                pg.Color("#C8A87A"),
+                (panel_x + 24, cur_y - padding // 2),
+                (panel_x + panel_w - 24, cur_y - padding // 2),
+                1,
+            )
+
+        # 描述文字
         for dl in desc_lines:
             ds = font_body.render(dl, True, pg.Color("#333333"))
             self.window.blit(ds, ds.get_rect(centerx=panel_x + panel_w // 2, top=cur_y))
             cur_y += body_h + 4
 
-        # ---- 确认按钮 ----
+        # 确认按鈕
         btn_w = max(140, font_body.size("确认生效")[0] + 40)
         btn_h = body_h + padding
         btn_x = panel_x + (panel_w - btn_w) // 2
