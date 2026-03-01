@@ -1017,6 +1017,43 @@ class GameApp:
         self.gexu_guard_active = False
         self.jingnang_applied.clear()  # 锦囊卡小回合记录清除
 
+    def _remove_from_major_round(
+        self, card_name: str, country: str | None = None
+    ) -> None:
+        """从 evt_applied_major_round 中移除指定卡牌名称的显示记录。
+
+        Args:
+            card_name: 要移除的卡牌名称。
+            country: 指定国家时仅移除该国记录；为 None 时对所有国家操作。
+        """
+        targets = [country] if country else list(self.evt_applied_major_round.keys())
+        for c in targets:
+            if c in self.evt_applied_major_round:
+                self.evt_applied_major_round[c] = [
+                    (n, d) for n, d in self.evt_applied_major_round[c] if n != card_name
+                ]
+
+    def _refresh_session_skill_display(self) -> None:
+        """重建会话级持久技能（隆中定计、一身是胆、星落秋风）在 evt_applied_major_round
+        中的显示条目。在计数变化（抽牌、触发消耗）或大回合记录被清除后调用。"""
+        for skill_name in ("隆中定计", "一身是胆", "星落秋风"):
+            self._remove_from_major_round(skill_name, "SHU")
+        if self.evt_lonzhong_skill > 0:
+            self.evt_applied_major_round.setdefault("SHU", []).append(
+                ("隆中定计", f"蜀汉进攻东吴骰点+1（剩余 {self.evt_lonzhong_skill} 次）")
+            )
+        if self.evt_yishen_skill > 0:
+            self.evt_applied_major_round.setdefault("SHU", []).append(
+                (
+                    "一身是胆",
+                    f"被进攻低于1:1时自动触发（剩余 {self.evt_yishen_skill} 次）",
+                )
+            )
+        if self.evt_xingluo_active:
+            self.evt_applied_major_round.setdefault("SHU", []).append(
+                ("星落秋风", "下次抽到「隆中定计」时蜀汉额外+1政治点数")
+            )
+
     def _show_score_screen(self, screen_type: str) -> None:
         """
         显示分数屏幕。
@@ -1358,6 +1395,8 @@ class GameApp:
                 # 大回合持久卡牌记录清除
                 self.evt_applied_major_round = {}
                 self.jingnang_applied_major = {}
+                # 会话级持久技能（隆中定计/一身是胆/星落秋风）仍在生效，重建显示条目
+                self._refresh_session_skill_display()
                 # 大回合级格子效果（空城妙计等 is_major=True）全量清除
                 self.card_effect_manager.clear_all_effects()
                 self._end_full_round()
@@ -1386,14 +1425,17 @@ class GameApp:
         if self.evt_flag_liukang_drawer and _new_c == self.evt_flag_liukang_drawer:
             self.evt_flag_liukang = False
             self.evt_flag_liukang_drawer = ""
+            self._remove_from_major_round("联刘抗曹")
         if self.evt_flag_wuwei_drawer and _new_c == self.evt_flag_wuwei_drawer:
             self.evt_flag_wuwei = False
             self.evt_flag_wuwei_drawer = ""
+            self._remove_from_major_round("吴魏媾和")
         if _new_c == "WEI":  # 割须弃袍兜底：若战斗后未消耗，魏国下次回合开始时清除
             self.gexu_guard_active = False
         if self.evt_all_attack_drawer and _new_c == self.evt_all_attack_drawer:
             self.evt_flag_all_attack = False
             self.evt_all_attack_drawer = ""
+            self._remove_from_major_round("奖率三军")
         self.move_src_provs = {
             k: v for k, v in self.move_src_provs.items() if v != _new_c
         }
@@ -1612,21 +1654,28 @@ class GameApp:
 
         # --- 阶捩0：处理事件卡目标选择（needs_target 类卡牌的 AI 自动选择） ---
         if self.selecting_evt_target and self.pending_evt_card_id:
+            # 若受益国是人类玩家，跳过 AI 自动选择，等待玩家操作
+            if (
+                self.human_country is not None
+                and self.pending_evt_drawer == self.human_country
+            ):
+                return
+            beneficiary = self.pending_evt_drawer or country
             card_def = self.event_card_deck.get_definition(self.pending_evt_card_id)
             if card_def:
                 if card_def.target_type == "unit":
                     chosen_prov = None
                     chosen_slot = 0
-                    border_provs = self._ai_get_border_provinces(country)
+                    border_provs = self._ai_get_border_provinces(beneficiary)
                     border_ids = {p.province_id for p in border_provs}
                     for prov in self.map_manager.provinces:
-                        if prov.country == country and prov.units:
+                        if prov.country == beneficiary and prov.units:
                             if prov.province_id in border_ids:
                                 chosen_prov = prov
                                 break
                     if chosen_prov is None:
                         for prov in self.map_manager.provinces:
-                            if prov.country == country and prov.units:
+                            if prov.country == beneficiary and prov.units:
                                 chosen_prov = prov
                                 break
                     if chosen_prov:
@@ -1643,7 +1692,7 @@ class GameApp:
                         (
                             p
                             for p in self.map_manager.provinces
-                            if p.country == country and p.units
+                            if p.country == beneficiary and p.units
                         ),
                         key=lambda p: len(p.units),
                         default=None,
@@ -1689,7 +1738,11 @@ class GameApp:
             # 玩家点击「确认生效」后由 _confirm_event_card 恢复 AI 行动
             # 若触发了需要目标选择（不懈于内第二张等），立即处理
             if self.selecting_evt_target and self.pending_evt_card_id:
-                self._ai_auto_select_evt_target(country)
+                if (
+                    self.human_country is None
+                    or self.pending_evt_drawer != self.human_country
+                ):
+                    self._ai_auto_select_evt_target(self.pending_evt_drawer or country)
             # 若仍有覆盖层或目标选择，等待玩家确认后再继续
             if self.event_card_overlay or self.selecting_evt_target:
                 self._ai_turn_timer = pg.time.get_ticks() + 200
@@ -5000,6 +5053,7 @@ class GameApp:
         if atk_country == "SHU" and def_country == "WU" and self.evt_lonzhong_skill > 0:
             attacker_dice_bonus += 1
             self.evt_lonzhong_skill -= 1
+            self._refresh_session_skill_display()
             if self.info_panel:
                 remaining = (
                     f"，剩余 {self.evt_lonzhong_skill} 次"
@@ -5018,6 +5072,7 @@ class GameApp:
         if def_country == "SHU" and self.evt_yishen_skill > 0 and col_index > 1:
             col_index = 1
             self.evt_yishen_skill -= 1  # 消耗一次触发机会
+            self._refresh_session_skill_display()
             if self.info_panel:
                 remaining = (
                     f"，剩余 {self.evt_yishen_skill} 次"
@@ -7632,10 +7687,17 @@ class GameApp:
             else:
                 self._exit_evt_draw_phase()
 
-        # ── 若受益方（drawer）是 AI，自动处理目标选择
-        if self.human_country is not None and drawer != self.human_country:
-            if self.selecting_evt_target and self.pending_evt_card_id:
-                self._ai_auto_select_evt_target(drawer)
+        # ── 若目标选择方（受益方 tc）为 AI，自动处理目标选择；
+        #    若受益方是人类，保持 selecting_evt_target=True 等待玩家点击。
+        #    注意：此处必须用 pending_evt_drawer（=tc，实际受益国），而非 drawer
+        #    （抽卡方），否则"AI抽到蜀汉卡"时会错误触发AI自动选择，导致玩家失去点选机会。
+        if (
+            self.human_country is not None
+            and self.selecting_evt_target
+            and self.pending_evt_card_id
+            and self.pending_evt_drawer != self.human_country
+        ):
+            self._ai_auto_select_evt_target(self.pending_evt_drawer)
 
         # ── 恢复 AI 行动：针对实际行动方（is_free_draw 时为 actual_actor，否则为 drawer）
         ai_actor = actual_actor if is_free_draw else drawer
@@ -7686,6 +7748,7 @@ class GameApp:
             # 老迈昏聩：若下次抽到"江东才俊"则无效
             if card.id == "evt_jiangdong_cai" and self.evt_laomaikuai_active:
                 self.evt_laomaikuai_active = False
+                self._remove_from_major_round("老迈昏聩", "WU")
                 if self.info_panel:
                     self.info_panel.show_message(
                         f"「老迈昏聩」使「{card.name}」效果无效", duration=3.0
@@ -7706,6 +7769,7 @@ class GameApp:
         elif et == "flag_xingluo":
             add_pp(tc, ev)
             self.evt_xingluo_active = True
+            self._refresh_session_skill_display()
 
         elif et == "conditional_lonzhong":
             # 无条件生效：每次抽到累积一次触发机会，进攻东吴时消耗一次（与一身是胆机制一致）
@@ -7716,6 +7780,7 @@ class GameApp:
                 msg = f"「{card.name}」：蜀汉获得「隆中定计」触发机会（累计 {self.evt_lonzhong_skill} 次，进攻东吴时+1骰点）；「星落秋风」补偿触发，额外+1政治点数"
             else:
                 msg = f"「{card.name}」：蜀汉获得「隆中定计」触发机会（累计 {self.evt_lonzhong_skill} 次，进攻东吴时+1骰点）"
+            self._refresh_session_skill_display()
 
         elif et == "conditional_jingzhu":
             jingzhou = self.map_manager.get_by_id(35)
@@ -7768,10 +7833,15 @@ class GameApp:
         elif et == "evt_skill_yishen":
             self.evt_yishen_skill += 1
             msg = f"「{card.name}」：蜀汉获得「一身是胆」触发机会（累计 {self.evt_yishen_skill} 次，被进攻低于1:1时自动触发）"
+            self._refresh_session_skill_display()
 
         elif et == "flag_liukang":
             self.evt_flag_liukang = True
             self.evt_flag_liukang_drawer = drawer
+            for _rc in self.turn_order:
+                self.evt_applied_major_round.setdefault(_rc, []).append(
+                    (card.name, card.description)
+                )
 
         elif et == "flag_hefei":
             self.evt_flag_hefei = True
@@ -7801,13 +7871,24 @@ class GameApp:
             add_pp("WU", ev)
             self.evt_flag_wuwei = True
             self.evt_flag_wuwei_drawer = drawer
+            for _rc in self.turn_order:
+                self.evt_applied_major_round.setdefault(_rc, []).append(
+                    (card.name, card.description)
+                )
 
         elif et == "flag_all_attack":
             self.evt_flag_all_attack = True
             self.evt_all_attack_drawer = drawer  # 记录抽取方，用于其下次回合清除
+            for _rc in self.turn_order:
+                self.evt_applied_major_round.setdefault(_rc, []).append(
+                    (card.name, card.description)
+                )
 
         elif et == "flag_laomaikuai":
             self.evt_laomaikuai_active = True
+            self.evt_applied_major_round.setdefault(tc, []).append(
+                (card.name, card.description)
+            )
 
         elif et == "flag_wuzi":
             self.evt_wuzi_rounds = 5
