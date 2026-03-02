@@ -5607,7 +5607,12 @@ class GameApp:
         """画游戏主战场"""
         self.window.fill(pg.Color("white"))
 
-        # 1. 画地图底层（格子+地形）
+        # 1. 画背景图片（左上角对齐屏幕，50% 透明度）
+        bg_surface = self.bg_image.copy()
+        bg_surface.set_alpha(128)
+        self.window.blit(bg_surface, (0, 0))
+
+        # 2. 画地图底层（格子+地形）
         self.map_manager.draw(self.window)
 
         # 2. 画所有兵种单位
@@ -7369,6 +7374,15 @@ class GameApp:
         height = self.screen_height
         width = self.screen_width
 
+        # 加载背景图片（保持原始比例，左上角对齐屏幕）
+        self.bg_image = self._load_ui_image("背景.png", None)
+        # 计算缩放比例，让背景高度匹配屏幕高度
+        bg_orig_width, bg_orig_height = self.bg_image.get_size()
+        scale = height / bg_orig_height
+        self.bg_image = pg.transform.smoothscale(
+            self.bg_image, (int(bg_orig_width * scale), height)
+        )
+
         # 底部回合计数字体
         self.round_counter_font = self._font("msyhbd.ttc", int(height * 0.032))
         # 三国属性（民心/政治点数）显示字体
@@ -7530,24 +7544,27 @@ class GameApp:
             scaled.append(pg.math.Vector2(x, y))
         return scaled
 
-    def _load_ui_image(self, filename: str, size: Tuple[int, int]) -> pg.Surface:
+    def _load_ui_image(self, filename: str, size: Tuple[int, int] | None) -> pg.Surface:
         """
         加载图片并缩放到指定大小。
         如果是 SVG，尽量按需加载；如果失败，回退到普通加载。
+        如果 size 为 None，则返回原始尺寸的图片。
         """
         filepath = self.settings.ui_graphics_dir / filename
 
         # 尝试直接加载 (Pygame 2.0+ 的 SDL_image 对 SVG 支持较好，直接 load 往往比魔改稳)
         try:
             surface = pg.image.load(filepath).convert_alpha()
-            # 如果是 SVG，加载出来的尺寸可能是原始尺寸，我们需要缩放
-            if surface.get_width() != size[0] or surface.get_height() != size[1]:
-                return pg.transform.smoothscale(surface, size)
+            # 如果指定了 size，则缩放到目标尺寸
+            if size is not None:
+                if surface.get_width() != size[0] or surface.get_height() != size[1]:
+                    return pg.transform.smoothscale(surface, size)
             return surface
         except Exception as e:
             logger.error(f"Error loading image {filename}: {e}")
             # 返回一个洋红色的方块作为错误占位符
-            err_surf = pg.Surface(size)
+            err_size = size if size is not None else (100, 100)
+            err_surf = pg.Surface(err_size)
             err_surf.fill(pg.Color("magenta"))
             return err_surf
 
