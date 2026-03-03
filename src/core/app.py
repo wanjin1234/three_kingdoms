@@ -1392,6 +1392,7 @@ class GameApp:
                 self.evt_flag_she_hushu = False
                 self.evt_flag_hu_recruit = False
                 self.evt_jingzhu_skill = 0
+                self.evt_laomaikuai_active = False  # 老迈昏聩效果仅持续至本大回合结束
                 # 大回合持久卡牌记录清除
                 self.evt_applied_major_round = {}
                 self.jingnang_applied_major = {}
