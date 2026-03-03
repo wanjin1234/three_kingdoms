@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import csv
+import heapq
 from pathlib import Path
 from typing import Callable, Dict, List, Sequence, Tuple
 
@@ -51,6 +52,10 @@ class MapManager:
         ] = {}  # 缓存地形图片，避免重复读取硬盘
         self._border_width = 10  # 格子边框的粗细
         self._cached_background: pg.Surface | None = None  # 预渲染的地图背景缓存
+        # 全对最短路径缓存（key=(src_id, dst_id), value=cost）
+        # 地图拓扑不变，只在 set_hex_side 时重建一次，查询 O(1)
+        self._cost_cache: Dict[Tuple[int, int], int] = {}
+        self._cost_nomtn_cache: Dict[Tuple[int, int], int] = {}
 
     @staticmethod
     def _load_provinces(definition_file: Path) -> List[Province]:
@@ -165,6 +170,71 @@ class MapManager:
                                     (p1.province_id, p2.province_id)
                                 ] = True
 
+        # 邻接图构建完毕后，预计算全对最短路径（空间换时间）
+        self._precompute_path_caches()
+
+    def _precompute_path_caches(self) -> None:
+        """预计算所有格子对之间的移动代价，填入两份缓存：
+        - _cost_cache      : 含地形（山地/丘陵 +1）及跨河 +1 惩罚
+        - _cost_nomtn_cache: 忽略山地惩罚，仅保留跨河 +1
+        地图拓扑在一局游戏中固定不变，因此只需在 set_hex_side 时计算一次。
+        """
+        self._cost_cache = {}
+        self._cost_nomtn_cache = {}
+        for src_prov in self._provinces_list:
+            self._dijkstra_from_source(
+                src_prov.province_id, self._cost_cache, ignore_mountain=False
+            )
+            self._dijkstra_from_source(
+                src_prov.province_id, self._cost_nomtn_cache, ignore_mountain=True
+            )
+
+    def _dijkstra_from_source(
+        self, src_id: int, cache: Dict[Tuple[int, int], int], ignore_mountain: bool
+    ) -> None:
+        """从 src_id 出发运行 Dijkstra，将到每个可达节点的最小代价存入 cache。"""
+        src_prov = self._provinces_map.get(src_id)
+        if src_prov is None:
+            return
+
+        if not ignore_mountain:
+            src_t = (src_prov.terrain or "").lower()
+            initial = 1 if src_t in ("hill", "mountain", "hills", "mountains") else 0
+        else:
+            initial = 0
+
+        pq = [(initial, src_id)]
+        best: Dict[int, int] = {src_id: initial}
+
+        while pq:
+            curr_cost, curr_id = heapq.heappop(pq)
+            if curr_cost > best.get(curr_id, 2**31):
+                continue
+            for next_id in self._adjacency.get(curr_id, []):
+                next_prov = self._provinces_map.get(next_id)
+                if next_prov is None:
+                    continue
+                step = 1
+                if not ignore_mountain:
+                    nxt_t = (next_prov.terrain or "").lower()
+                    if nxt_t in ("hill", "mountain", "hills", "mountains"):
+                        step += 1
+                if self._river_crossing_edges.get((curr_id, next_id), False):
+                    step += 1
+                new_cost = curr_cost + step
+                if new_cost < best.get(next_id, 2**31):
+                    best[next_id] = new_cost
+                    heapq.heappush(pq, (new_cost, next_id))
+
+        for dst_id, cost in best.items():
+            cache[(src_id, dst_id)] = cost
+
+    def find_path_cost_ignore_mountain(self, start_id: int, target_id: int) -> int:
+        """计算移动代价（忽略山地额外惩罚，保留基础步耗与跨河 +1）。O(1) 缓存查询。"""
+        if start_id == target_id:
+            return 0
+        return self._cost_nomtn_cache.get((start_id, target_id), 9999)
+
     def _segments_intersect(self, A, B, C, D) -> bool:
         """检测线段 AB 和 CD 是否相交"""
 
@@ -219,72 +289,12 @@ class MapManager:
         return []
 
     def find_path_cost(self, start_id: int, target_id: int) -> int:
-        """
-        计算移动消耗 (Dijkstra 变体)。
-        规则：
-        1. 基础每步消耗为 1。
-        2. 每经过一个山地（Start, Waypoint, End），该点都会贡献 +1 消耗。
-           (如果起点就是山地，初始消耗就已经 +1)
-        3. 每跨越一次河流，该步消耗额外 +1。
-
-        Cost = 路径长度 + sum(1 for node in path if is_mountain(node)) + sum(1 for edge in path if is_river_crossing(edge))
+        """计算移动代价（含山地 +1 及跨河 +1 惩罚）。O(1) 缓存查询。
+        缓存在 set_hex_side → _build_adjacency_graph → _precompute_path_caches 时构建。
         """
         if start_id == target_id:
             return 0
-
-        start_prov = self.get_by_id(start_id)
-        if not start_prov:
-            return 9999
-
-        # 检查起点山地惩罚
-        start_t = start_prov.terrain.lower() if start_prov.terrain else ""
-        start_is_mtn = start_t in ("hill", "mountain", "hills", "mountains")
-
-        # 初始 Cost = 0 (位移) + (1 if 起点是山 else 0)
-        initial_cost = 1 if start_is_mtn else 0
-
-        import heapq
-
-        # Priority Queue: (current_accumulated_cost, current_id)
-        queue = [(initial_cost, start_id)]
-        min_costs = {start_id: initial_cost}
-
-        while queue:
-            curr_total, curr_id = heapq.heappop(queue)
-
-            if curr_total > min_costs.get(curr_id, float("inf")):
-                continue
-
-            if curr_id == target_id:
-                return curr_total
-
-            neighbors = self._adjacency.get(curr_id, [])
-            for next_id in neighbors:
-                next_prov = self.get_by_id(next_id)
-                if not next_prov:
-                    continue
-
-                # 计算这一步 (curr -> next) 的增量消耗
-                step_cost = 1  # 基础移动消耗
-
-                # 1. 目标点是否为山地? (如果是，移动进该点需额外 +1)
-                nxt_t = next_prov.terrain.lower() if next_prov.terrain else ""
-                is_nxt_mtn = nxt_t in ("hill", "mountain", "hills", "mountains")
-                if is_nxt_mtn:
-                    step_cost += 1
-
-                # 2. 是否跨河?
-                is_crossing = self._river_crossing_edges.get((curr_id, next_id), False)
-                if is_crossing:
-                    step_cost += 1
-
-                new_total = curr_total + step_cost
-
-                if new_total < min_costs.get(next_id, float("inf")):
-                    min_costs[next_id] = new_total
-                    heapq.heappush(queue, (new_total, next_id))
-
-        return 9999
+        return self._cost_cache.get((start_id, target_id), 9999)
 
     @property
     def provinces(self) -> Sequence[Province]:
