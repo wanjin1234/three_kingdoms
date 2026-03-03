@@ -24,6 +24,7 @@ except ImportError:
 from settings import Settings
 
 from src.core.ai_service import AIService
+from src.core.asset_build_service import AssetBuildService
 from src.core.camera import Camera
 from src.core.combat import (
     COMBAT_TABLE,
@@ -40,12 +41,17 @@ from src.core.event_card_service import EventCardService
 from src.core.evt_info_tooltip_service import EvtInfoTooltipService
 from src.core.events import EventManager
 from src.core.gameplay_render_service import GameplayRenderService
+from src.core.game_event_router_service import GameEventRouterService
+from src.core.game_reset_service import GameResetService
 from src.core.help_rule_load_service import HelpRuleLoadService
 from src.core.map_bounds_service import MapBoundsService
 from src.core.music_manager import MUSIC_END_EVENT, MusicManager
 from src.core.movement_service import MovementService
 from src.core.overlay_ui_service import OverlayUIService
 from src.core.playing_input_service import PlayingInputService
+from src.core.playing_input_args_service import PlayingInputArgsService
+from src.core.playing_event_orchestrator_service import PlayingEventOrchestratorService
+from src.core.playing_command_service import PlayingCommandService
 from src.core.polyline_render_service import PolylineRenderService
 from src.core.province_query_service import ProvinceQueryService
 from src.core.selection_service import SelectionService
@@ -53,8 +59,12 @@ from src.core.turn_presentation_coordinator import TurnPresentationCoordinator
 from src.core.screen_render_service import ScreenRenderService
 from src.core.score_manager import ScoreManager
 from src.core.state_models import CombatState, EventCardState, TurnState, UIState
+from src.core.runtime_loop_service import RuntimeLoopService
+from src.core.turn_orchestration_service import TurnOrchestrationService
+from src.core.ui_render_helper_service import UIRenderHelperService
 from src.core.turn_runtime_coordinator import TurnRuntimeCoordinator
 from src.core.turn_service import TurnService
+from src.core.view_models import GameplayViewModel, MainSceneViewModel
 from src.core.volume_ui_service import VolumeUIService
 from src.game_objects.card import CardManager, CardRepository
 from src.game_objects.card_effects import CardEffectManager
@@ -267,7 +277,16 @@ class GameApp:
         self.polyline_render_service = PolylineRenderService()
         self.map_bounds_service = MapBoundsService()
         self.help_rule_load_service = HelpRuleLoadService()
+        self.game_event_router_service = GameEventRouterService()
+        self.game_reset_service = GameResetService()
+        self.runtime_loop_service = RuntimeLoopService()
+        self.turn_orchestration_service = TurnOrchestrationService()
+        self.ui_render_helper_service = UIRenderHelperService()
         self.playing_input_service = PlayingInputService()
+        self.playing_input_args_service = PlayingInputArgsService()
+        self.playing_event_orchestrator_service = PlayingEventOrchestratorService()
+        self.playing_command_service = PlayingCommandService()
+        self.asset_build_service = AssetBuildService()
         self.province_query_service = ProvinceQueryService()
         self.movement_service = MovementService()
         self.selection_service = SelectionService()
@@ -1355,83 +1374,27 @@ class GameApp:
 
     def _clear_for_turn_switch(self, keep_info_message: bool = False) -> None:
         """切换国家前清理交互状态，可选保留信息面板内容（用于保留战果）。"""
-        self.selected_units.clear()
-        self.show_combat_ui = False
-        self.combat_target = None
-        self.combat_callback = None
-        self.defense_jiangdong_btn_rect = None
-        self.defense_jiangdong_skip_btn_rect = None
-        self.defense_hold_btn_rect = None
-        self.defense_hold_skip_btn_rect = None
-        self.defender_can_use_jiangdong = False
-        self.defender_jiangdong_decided = True
-        self.defender_use_jiangdong = False
-        self.defender_can_hold_position = False
-        self.defender_hold_decided = True
-        self.defender_use_hold_position = False
-        self.waiting_defender_response = False
-        self.allow_jiangdong_selection = False
-        self.no_attack_btn_rect = None
-        self.skip_jiangdong_card_btn_rect = None
-        # 民心效果模式清除
-        self.morale_free_move_mode = False
-        self.morale_bonus_mp_mode = False
-        self.morale_cure_mode = False
-        # PP行动模式清除
-        self.pp_spend_mode = False
-        self.pp_summon_target_prov = None
-        self.pp_summon_btns = []
-
-        if not keep_info_message:
-            self.combat_result_title = None
-            self.combat_result_timer = 0
-            if self.info_panel:
-                self.info_panel.show_properties("")
+        self.turn_orchestration_service.clear_for_turn_switch(
+            self,
+            keep_info_message=keep_info_message,
+        )
 
     def _advance_country_turn(self, keep_info_message: bool = False) -> None:
         """切换到下一个国家。"""
-        if self.turn_game_finished:
-            return
-
-        self.turn_runtime.prepare_turn_switch(
-            self, keep_info_message=keep_info_message
+        self.turn_orchestration_service.advance_country_turn(
+            self,
+            keep_info_message=keep_info_message,
         )
-
-        advance = self.turn_service.advance_turn(
-            turn_index=self.turn_index,
-            minor_round=self.minor_round,
-            major_round=self.major_round,
-        )
-        self.turn_index = advance.turn_index
-        self.minor_round = advance.minor_round
-        self.major_round = advance.major_round
-
-        if advance.game_finished:
-            # 5个大回合 * 6个小回合结束，对局终止
-            self.turn_presentation.handle_game_finished(self)
-            return
-
-        if advance.completed_minor_round:
-            # 一个小回合（蜀->吴->魏）结束
-            self._end_full_round()
-        elif advance.started_new_major_round:
-            # 小回合满6后进入下一个大回合
-            self.turn_runtime.apply_major_round_rollover(self)
-
-        self.player_country = self.turn_order[self.turn_index]
-        # 该国开始自己的回合时，仅清除本国上一回合遗留的移动高亮
-        # （不再区分人类/AI：让所有国家的高亮保持到下轮轮到该国时才清除，
-        #   确保魏国行动的蓝框在蜀汉回合开始时仍可见，直到魏国下次行动时清除）
-        _new_c = self.player_country
-        # 事件卡"持续到抽取者下次回合"与该国移动高亮，在该国下次回合开始时清除
-        self.turn_runtime.on_country_turn_start(self, new_country=_new_c)
-        self.turn_presentation.on_country_activated(self)
 
     def _finish_country_action(
         self, action_name: str, keep_info_message: bool = False
     ) -> None:
         """当前国家执行完一个动作后，自动轮换到下一国家。"""
-        self._advance_country_turn(keep_info_message=keep_info_message)
+        self.turn_orchestration_service.finish_country_action(
+            self,
+            action_name,
+            keep_info_message=keep_info_message,
+        )
 
     # ---------------------------------------------------------------
     # AI TURN
@@ -1445,103 +1408,17 @@ class GameApp:
 
     def _restart_game(self) -> None:
         """重置游戏状态并返回选人界面"""
-        # 1. 重新加载地图以重置单位
-        self.map_manager = MapManager(
-            definition_file=self.settings.map_definition_file,
-            terrain_graphics_dir=self.settings.map_graphics_dir,
-            color_resolver=self.kingdom_repository.get_color,
-            river_polylines=(
-                YANGTZE_POINTS_1,
-                YANGTZE_POINTS_2,
-                YELLOW_RIVER_POINTS,
-            ),
-            ban_polylines=(BAN_LINE_POINTS,),
+        self.game_reset_service.restart_game(
+            self,
+            map_manager_cls=MapManager,
+            card_manager_cls=CardManager,
+            event_card_deck_cls=EventCardDeck,
+            game_state=GameState,
+            yangtze_points_1=YANGTZE_POINTS_1,
+            yangtze_points_2=YANGTZE_POINTS_2,
+            yellow_river_points=YELLOW_RIVER_POINTS,
+            ban_line_points=BAN_LINE_POINTS,
         )
-        self.map_manager.set_hex_side(self.hex_side)
-
-        # 2. 初始化单位的行动力和状态
-        self._replenish_action_points()
-
-        # 3. 清理选择和UI
-        self.clear_selection()
-        self.show_combat_ui = False
-        self.combat_result_title = None
-        if self.info_panel:
-            self.info_panel.show_properties("")
-
-        # 3.5 重置卡牌系统
-        self.card_managers = {
-            country: CardManager(self.card_repository, country)
-            for country in self.turn_order
-        }
-        self.card_manager = None
-        self.card_effect_manager.clear_all_effects()  # 清除卡牌效果
-        self.selecting_card_target = False  # 退出卡牌目标选择模式
-        self.selected_card_for_effect = None
-        if self.card_panel:
-            self.card_panel.set_available_cards([])
-
-        self.pending_post_move_attack = False
-        self.pending_attacker = None
-
-        # 4. 切换状态
-        self.player_country = None
-        self.human_country = None
-        self.turn_index = 0
-        self.major_round = 1
-        self.minor_round = 1
-        self.turn_game_finished = False
-        # 4.5 重置三国政治点数和民心
-        self.country_stats = self.turn_service.create_country_stats()
-        # 5. 重置事件卡系统（重新开局）
-        from settings import SETTINGS as settings_module
-
-        self.event_card_deck = EventCardDeck(settings_module.event_cards_file)
-        self.event_card_overlay = None
-        self.evt_overlay_ok_btn = None
-        self.selecting_evt_target = False
-        self.pending_evt_card_id = None
-        self.pending_evt_drawer = None
-        self.evt_flag_liukang = False
-        self.evt_flag_liukang_drawer = ""
-        self.evt_flag_she_hushu = False
-        self.evt_flag_hu_recruit = False
-        self.evt_flag_wuwei = False
-        self.evt_flag_wuwei_drawer = ""
-        self.evt_temp_pp = {}
-        self.evt_flag_hefei = False
-        self.evt_flag_all_attack = False
-        self.evt_all_attack_drawer = ""
-        self.gexu_guard_active = False
-        self.jingnang_applied = {}
-        self.evt_applied_this_round = {}
-        self.evt_applied_major_round = {}
-        self.jingnang_applied_major = {}
-        self.evt_wuzi_rounds = 0
-        self.evt_wuzi_bonus = 0
-        self.evt_xingluo_active = False
-        self.evt_laomaikuai_active = False
-        self.evt_lonzhong_skill = 0
-        self.evt_jingzhu_skill = 0
-        self.evt_yishen_skill = 0
-        self.evt_draw_again_safe = False
-        self.evt_draw_phase = False
-        self.evt_skip_draw_btn_rect = None
-        # 民心等级效果重置
-        self.morale_lv2_used = {}
-        self.morale_lv3_used = {}
-        self.morale_lv4_pending = {}
-        self.morale_free_move_mode = False
-        self.morale_bonus_mp_mode = False
-        self.morale_cure_mode = False
-        # PP行动系统重置
-        self.pp_spend_mode = False
-        self.pp_summon_target_prov = None
-        self.pp_summon_btns = []
-        self.state = GameState.MODE_SELECT
-        if self.music_manager:
-            self.music_manager.play_menu()
-        logger.info("Game restarted.")
 
     def run(self) -> None:
         """
@@ -1549,241 +1426,47 @@ class GameApp:
         这是一个死循环，直到 _running 变为 False。
         顺序：处理事件 -> 更新数据 -> 重新绘制
         """
-        self._running = True
-        logger.info(
-            "Starting game loop at %s FPS, resolution %sx%s",
-            self.settings.fps,
-            self.screen_width,
-            self.screen_height,
-        )
-        while self._running:
-            self.event_manager.process()  # 1. 处理鼠标键盘输入
-            self._update()  # 2. 更新游戏逻辑
-            self._render()  # 3. 绘制画面
-            self._present_frame()
-            # 休息一小会儿，以保持稳定的 FPS
-            self.clock.tick(self.settings.fps)
-
-        pg.quit()
+        self.runtime_loop_service.run(self)
 
     def stop(self) -> None:
         """停止游戏循环，准备退出"""
-        self._running = False
+        self.runtime_loop_service.stop(self)
 
     def _reflow_after_window_change(self) -> None:
         """更新逻辑画布到真实窗口的缩放比例与留白区域。"""
-        self.display_width, self.display_height = self.display_surface.get_size()
-        if self._direct_render:
-            # 全屏：铺满屏幕不留白
-            self._viewport_scale = 1.0
-            self.viewport_rect = pg.Rect(0, 0, self.display_width, self.display_height)
-            return
-
-        base_w = self._base_screen_width
-        base_h = self._base_screen_height
-        scale_x = self.display_width / base_w
-        scale_y = self.display_height / base_h
-
-        if scale_x > scale_y:
-            # 矮胖：以高度为基准缩放，扩展逻辑画布宽度
-            # 右侧面板锚定到新的 screen_width 右边缘，中间自然留白
-            self._viewport_scale = scale_y
-            new_logical_w = max(base_w, int(round(self.display_width / scale_y)))
-            self.viewport_rect = pg.Rect(0, 0, self.display_width, self.display_height)
-            if new_logical_w != self.screen_width or self.screen_height != base_h:
-                self.screen_width = new_logical_w
-                self.screen_height = base_h
-                self.window = pg.Surface(
-                    (self.screen_width, self.screen_height)
-                ).convert()
-                self._rebuild_layout_for_screen_size()
-        else:
-            # 瘦高/等比：以宽度为基准缩放，上下留白
-            self._viewport_scale = min(scale_x, scale_y)
-            target_w = max(1, int(base_w * self._viewport_scale))
-            target_h = max(1, int(base_h * self._viewport_scale))
-            offset_x = (self.display_width - target_w) // 2
-            offset_y = (self.display_height - target_h) // 2
-            self.viewport_rect = pg.Rect(offset_x, offset_y, target_w, target_h)
-            if self.screen_width != base_w or self.screen_height != base_h:
-                self.screen_width = base_w
-                self.screen_height = base_h
-                self.window = pg.Surface(
-                    (self.screen_width, self.screen_height)
-                ).convert()
-                self._rebuild_layout_for_screen_size()
+        self.runtime_loop_service.reflow_after_window_change(self)
 
     def _rebuild_layout_for_screen_size(self) -> None:
         """当逻辑分辨率变化时，重建地图比例、字体与UI布局。"""
-        self.hex_side = self.screen_height * 2 / (19 * SQRT3)
-        self.map_manager.set_hex_side(self.hex_side)
-        self.unit_renderer.on_hex_side_changed(self.hex_side)
-
-        # 全屏模式：面板按当前分辨率比例缩放（整体铺满屏幕）
-        # 窗口模式：面板宽度固定（基于原始设计宽度），位置锚定到逻辑画布右边缘，中间留白
-        if self._direct_render:
-            panel_w = int(self.screen_width * 0.30)
-        else:
-            panel_w = int(self._base_screen_width * 0.30)
-        panel_x = self.screen_width - panel_w
-        panel_y = int(self.screen_height * 0.15)
-        panel_h = int(self.screen_height * 0.45)
-        panel_rect = pg.Rect(panel_x, panel_y, panel_w, panel_h)
-
-        font_size = int(self.screen_height * 0.025)
-        info_font = self._font("msyh.ttc", font_size)
-        font_path = str(self.settings.fonts_dir / "msyh.ttc")
-
-        if self.info_panel:
-            self.info_panel.rect = panel_rect
-            self.info_panel.font = info_font
-            self.info_panel.font_path = font_path
-            self.info_panel.base_font_size = font_size
-            self.info_panel._font_cache = {}
-
-        if self.card_panel:
-            self.card_panel.rect = pg.Rect(
-                panel_x,
-                int(self.screen_height * 0.60),
-                panel_w,
-                int(self.screen_height * 0.25),
-            )
-            self.card_panel.font = info_font
-            self.card_panel.font_path = font_path
-            self.card_panel.base_font_size = font_size
-            self.card_panel._font_cache = {}
-            self.card_panel.tooltip_font = None
-
-        self.combat_ui_font = info_font
-        self._recover_btn_surf = self.combat_ui_font.render(
-            "解除混乱", True, pg.Color("white")
-        )
-        self._no_attack_btn_surf = self.combat_ui_font.render(
-            "不攻击", True, pg.Color("white")
-        )
-        self._morale_lv2_btn_surf = self.combat_ui_font.render(
-            "令行禁止", True, pg.Color("white")
-        )
-        self._morale_lv3_btn_surf = self.combat_ui_font.render(
-            "老乡指路", True, pg.Color("white")
-        )
-        self._morale_lv4_btn_surf = self.combat_ui_font.render(
-            "军容严整", True, pg.Color("white")
-        )
-        self._combat_table_btn_surf = self.combat_ui_font.render(
-            "战斗判定表", True, pg.Color("white")
-        )
-        self._pp_btn_surf = self.combat_ui_font.render(
-            "使用政治点数", True, pg.Color("white")
-        )
-        self._pp_end_btn_surf = self.combat_ui_font.render(
-            "结束行动", True, pg.Color("white")
-        )
-
-        tooltip_size = max(12, int(self.screen_height * 0.018))
-        self.tooltip_font = self._font("msyh.ttc", tooltip_size)
-        self.tooltip_bold_font = self._font("msyhbd.ttc", tooltip_size)
-        morale_tt_size = max(10, int(self.screen_height * 0.014))
-        self.morale_tt_font = self._font("msyh.ttc", morale_tt_size)
-        console_font_size = max(14, int(self.screen_height * 0.022))
-        self.console_font = self._font("msyh.ttc", console_font_size)
-
-        self._build_loading_assets()
-        self._build_mode_select_assets()
-        self._build_choosing_assets()
-        self._build_play_assets()
-        self._cached_tooltip_surface = None
-        self._last_tooltip_data = None
+        self.runtime_loop_service.rebuild_layout_for_screen_size(self)
 
     def _present_frame(self) -> None:
         """将逻辑画布按比例缩放并显示到真实窗口。"""
-        if not self.display_surface:
-            return
-
-        if self._direct_render:
-            pg.display.flip()
-            return
-
-        self.display_surface.fill(pg.Color("white"))
-        scaled = pg.transform.smoothscale(
-            self.window, (self.viewport_rect.width, self.viewport_rect.height)
-        )
-        self.display_surface.blit(scaled, self.viewport_rect.topleft)
-        pg.display.flip()
+        self.runtime_loop_service.present_frame(self)
 
     def _to_logical_pos(self, pos: Tuple[int, int]) -> Tuple[int, int]:
         """把真实窗口坐标转换为逻辑画布坐标。"""
-        x, y = pos
-        if self._direct_render:
-            return (x, y)
-        if not self.viewport_rect.collidepoint((x, y)):
-            return (-10_000, -10_000)
-
-        lx = int(
-            (x - self.viewport_rect.x) * self.screen_width / self.viewport_rect.width
-        )
-        ly = int(
-            (y - self.viewport_rect.y) * self.screen_height / self.viewport_rect.height
-        )
-        lx = max(0, min(self.screen_width - 1, lx))
-        ly = max(0, min(self.screen_height - 1, ly))
-        return (lx, ly)
+        return self.runtime_loop_service.to_logical_pos(self, pos)
 
     def _get_logical_mouse_pos(self) -> Tuple[int, int]:
         """获取当前鼠标在逻辑画布中的坐标。"""
-        return self._to_logical_pos(pg.mouse.get_pos())
+        return self.runtime_loop_service.get_logical_mouse_pos(self)
 
     def _adapt_event_to_logical(self, event: pg.event.Event) -> pg.event.Event:
         """将带坐标的鼠标事件转换到逻辑画布坐标系。"""
-        if hasattr(event, "pos"):
-            data = dict(event.dict)
-            data["pos"] = self._to_logical_pos(event.pos)
-            return pg.event.Event(event.type, data)
-        return event
+        return self.runtime_loop_service.adapt_event_to_logical(self, event)
 
     def _resize_windowed(self, width: int, height: int) -> None:
         """调整窗口模式尺寸（带边框，可拖拽，可缩放）。"""
-        width = max(self.min_window_width, width)
-        height = max(self.min_window_height, height)
-        self.display_surface = pg.display.set_mode((width, height), pg.RESIZABLE)
-        self._windowed_size = (width, height)
-        self.is_fullscreen = False
-        self._direct_render = False
-        self._reflow_after_window_change()
+        self.runtime_loop_service.resize_windowed(self, width, height)
 
     def _toggle_fullscreen_mode(self) -> None:
         """在窗口模式与真正全屏之间切换，不改系统分辨率。"""
-        if not self.is_fullscreen:
-            self._windowed_size = self.display_surface.get_size()
-            # (0, 0) + FULLSCREEN：SDL2 标准桌面全屏，以当前桌面分辨率进入，无偏移。
-            self.display_surface = pg.display.set_mode((0, 0), pg.FULLSCREEN)
-            self.is_fullscreen = True
-            self._direct_render = True
-            self.window = self.display_surface
-            self.screen_width, self.screen_height = self.display_surface.get_size()
-            self._rebuild_layout_for_screen_size()
-        else:
-            self.display_surface = pg.display.set_mode(
-                self._windowed_size, pg.RESIZABLE
-            )
-            self.is_fullscreen = False
-            self._direct_render = False
-            # screen_width/height 此时还是全屏分辨率，_reflow 会检测差异并重建
-            self.window = pg.Surface(
-                (self._base_screen_width, self._base_screen_height)
-            ).convert()
-        self._reflow_after_window_change()
+        self.runtime_loop_service.toggle_fullscreen_mode(self)
 
     def _draw_global_fullscreen_btn(self) -> None:
         """在逻辑画布底部居中绘制全屏提示文字（所有界面通用）。"""
-        font_size = max(10, int(self.screen_height * 0.018))
-        hint_font = self._font("msyh.ttc", font_size)
-        hint_surf = hint_font.render(
-            "按 F11 切换全屏/窗口模式", True, pg.Color("#888888")
-        )
-        x = (self.screen_width - hint_surf.get_width()) // 2
-        y = self.screen_height - hint_surf.get_height() - 8
-        self.window.blit(hint_surf, (x, y))
+        self.runtime_loop_service.draw_global_fullscreen_btn(self)
 
     def clear_selection(self, clear_ui: bool = True) -> None:
         """清空当前选中的单位"""
@@ -1950,58 +1633,12 @@ class GameApp:
         分发处理具体的事件。
         根据当前的游戏状态（LOADING/CHOOSING/PLAYING），交给不同的函数处理。
         """
-        # 背景音乐：曲目结束时自动播放下一首
-        if event.type == MUSIC_END_EVENT:
-            if self.music_manager:
-                self.music_manager.on_track_end()
-            return
-
-        if event.type == pg.QUIT:
-            self.stop()
-            return
-
-        if event.type in (pg.VIDEORESIZE, pg.WINDOWSIZECHANGED):
-            if not self.is_fullscreen:
-                if event.type == pg.VIDEORESIZE:
-                    new_w, new_h = event.w, event.h
-                else:
-                    new_w = getattr(event, "x", self.display_width)
-                    new_h = getattr(event, "y", self.display_height)
-
-                if (new_w, new_h) != (self.display_width, self.display_height):
-                    self._resize_windowed(new_w, new_h)
-            return
-
-        event = self._adapt_event_to_logical(event)
-
-        # F11 全局切换全屏
-        if event.type == pg.KEYDOWN and event.key == pg.K_F11:
-            self._toggle_fullscreen_mode()
-            return
-
-        # ` 键（反引号）切换控制台显示/隐藏
-        if event.type == pg.KEYDOWN and event.key == pg.K_BACKQUOTE:
-            self._toggle_console()
-            return
-
-        # 控制台打开时，所有后续事件交由控制台处理，不传递给游戏逻辑
-        if self.console_visible:
-            self._handle_console_event(event)
-            return
-
-        # 如果正在显示分数屏，优先处理
-        if self.show_score_screen:
-            self._handle_score_screen_event(event)
-            return
-
-        if self.state == GameState.LOADING:
-            self._handle_loading_event(event)
-        elif self.state == GameState.MODE_SELECT:
-            self._handle_mode_select_event(event)
-        elif self.state == GameState.CHOOSING:
-            self._handle_choosing_event(event)
-        elif self.state == GameState.PLAYING:
-            self._handle_playing_event(event)
+        self.game_event_router_service.handle_event(
+            self,
+            event,
+            music_end_event=MUSIC_END_EVENT,
+            game_state=GameState,
+        )
 
     # ====================================================================
     # 控制台系统
@@ -2031,178 +1668,65 @@ class GameApp:
 
     def _handle_loading_event(self, event: pg.event.Event) -> None:
         """处理加载界面的事件（比如点击开始按钮）"""
-        if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
-            if self.start_button_rect.collidepoint(event.pos):
-                self.state = GameState.MODE_SELECT
+        self.game_event_router_service.handle_loading_event(
+            self,
+            event,
+            game_state=GameState,
+        )
 
     def _handle_mode_select_event(self, event: pg.event.Event) -> None:
         """处理选择游戏模式界面的事件"""
-        if event.type != pg.MOUSEBUTTONDOWN or event.button != 1:
-            return
-        if self.mode_single_rect.collidepoint(event.pos):
-            # 单人游戏：跳到选择势力界面
-            self.state = GameState.CHOOSING
-        elif self.mode_multi_rect.collidepoint(event.pos):
-            # 三人游戏：直接开始，所有国家均由玩家操控
-            self._start_turn_based_game(human_country=None)
+        self.game_event_router_service.handle_mode_select_event(
+            self,
+            event,
+            game_state=GameState,
+        )
 
     def _handle_choosing_event(self, event: pg.event.Event) -> None:
         """处理选择势力界面的事件"""
-        if event.type != pg.MOUSEBUTTONDOWN or event.button != 1:
-            return
-        for country, button in self.faction_buttons.items():
-            cx, cy = button["center"]
-            dx = event.pos[0] - cx
-            dy = event.pos[1] - cy
-            if (dx * dx + dy * dy) <= self.faction_button_radius**2:
-                self._start_turn_based_game(human_country=country)
-                return
+        self.game_event_router_service.handle_choosing_event(self, event)
 
     def _handle_score_screen_event(self, event: pg.event.Event) -> None:
         """处理分数屏幕的事件"""
-        if event.type == pg.KEYDOWN:
-            if event.key == pg.K_ESCAPE:
-                # 关闭分数屏幕
-                self.show_score_screen = None
-                # 如果是游戏结束，按 ESC 后返回模式选择界面
-                if self.state == GameState.PLAYING and self.turn_game_finished:
-                    self._restart_game()
+        self.game_event_router_service.handle_score_screen_event(
+            self,
+            event,
+            game_state=GameState,
+        )
 
     def _handle_playing_event(self, event: pg.event.Event) -> None:
         """处理游戏中的事件"""
-        if self.playing_input_service.handle_help_overlay_wheel(self, event):
-            return
+        self.playing_event_orchestrator_service.handle_playing_event(self, event)
 
-        if self.playing_input_service.handle_help_overlay_click(self, event):
-            return
+    def _execute_playing_input_commands(
+        self,
+        commands: list[dict],
+        *,
+        on_show_message: Callable[[str], None] | None,
+    ) -> None:
+        """执行输入服务发出的命令（阶段4：执行逻辑下沉到服务）。"""
+        self.playing_command_service.execute(
+            app=self,
+            commands=commands,
+            on_show_message=on_show_message,
+        )
 
-        if event.type == pg.KEYDOWN:
-            if self.playing_input_service.handle_keydown(self, event):
-                return
-        elif event.type == pg.MOUSEBUTTONDOWN:
-            if event.button == 1:
-                # ---- 事件卡覆盖层：优先处理（模态） ----
-                if self.event_card_overlay:
-                    if self.evt_overlay_ok_btn and self.evt_overlay_ok_btn.collidepoint(
-                        event.pos
-                    ):
-                        self._confirm_event_card()
-                    return
+    def _set_help_overlay_visible(self, visible: bool) -> None:
+        self.help_overlay_visible = visible
 
-                # 0.0 检查功能按钮
-                if self.playing_input_service.handle_control_button_click(
-                    self,
-                    event.pos,
-                ):
-                    return
+    def _reset_morale_modes(self) -> None:
+        self.morale_free_move_mode = False
+        self.morale_bonus_mp_mode = False
+        self.morale_cure_mode = False
 
-                if self.playing_input_service.handle_volume_slider_click(
-                    volume_slider_visible=self.volume_slider_visible,
-                    slider_rect=self._vol_slider_rect,
-                    pos=event.pos,
-                    on_start_drag=lambda: setattr(self, "_vol_dragging", True),
-                    on_update_volume=self._update_volume_from_y,
-                    on_hide_slider=lambda: setattr(self, "volume_slider_visible", False),
-                ):
-                    return
+    def _set_pp_summon_target_prov(self, prov) -> None:
+        self.pp_summon_target_prov = prov
 
-                # 0.0x 大回合开始加点按钮（三国）
-                if self.playing_input_service.handle_major_round_choice_click(
-                    self,
-                    event.pos,
-                ):
-                    return
+    def _clear_pp_summon_btns(self) -> None:
+        self.pp_summon_btns = []
 
-                # 0.0y 事件卡抽取阶段：仅允许「抽取」和「跳过」，阻挡所有其他操作
-                # 例外：若正在等待玩家点选事件卡目标，放行到下方目标选择处理
-                if self.playing_input_service.handle_evt_draw_phase_click(
-                    self,
-                    event.pos,
-                ):
-                    return
-
-                # 0. 优先处理顶部的战斗按钮
-                if self.playing_input_service.handle_combat_ui_click(self, event.pos):
-                    return
-
-                # 0.05 事件卡目标选择
-                if self.playing_input_service.handle_evt_target_click(self, event.pos):
-                    return
-
-                # 0.06 抽事件卡按钮
-                if self.playing_input_service.handle_draw_event_button_click(
-                    self,
-                    event.pos,
-                ):
-                    return
-
-                # 0.07 使用政治点数（PP）系统
-                if self.playing_input_service.handle_pp_click(self, event.pos):
-                    return
-
-                # 0.08 民心等级效果按钮（令行禁止 / 老乡指路 / 军容严整）
-                if self.playing_input_service.handle_morale_click(self, event.pos):
-                    return
-
-                # 0.1 检查“解除混乱”按钮
-                if self.playing_input_service.handle_recover_click(self, event.pos):
-                    return
-
-                # 0.15 检查“移动后不攻击”按钮
-                if self.playing_input_service.handle_no_attack_click(self, event.pos):
-                    return
-
-                # 0.2 检查卡牌面板点击
-                if self.playing_input_service.handle_card_panel_click(
-                    self,
-                    event.pos,
-                ):
-                    return
-
-                # 优先处理 UI 面板点击
-                if self.playing_input_service.handle_info_panel_click(self, event.pos):
-                    return
-
-                # 如果正在选择卡牌目标，检查是否点击了一个格子
-                if self.playing_input_service.handle_card_target_click(
-                    self,
-                    event.pos,
-                ):
-                    return
-
-                if self.playing_input_service.handle_unit_selection_click(
-                    self,
-                    event.pos,
-                ):
-                    return
-
-            elif event.button == 3:
-                if self.playing_input_service.should_block_right_click(
-                    major_round_choice_pending=self.major_round_choice_pending,
-                    evt_draw_phase=self.evt_draw_phase,
-                    selecting_evt_target=self.selecting_evt_target,
-                    on_block_message=(
-                        (lambda msg: self.info_panel.show_message(msg))
-                        if self.info_panel
-                        else None
-                    ),
-                ):
-                    return
-                self._handle_game_right_click(event.pos)
-        elif event.type == pg.MOUSEMOTION:
-            self.playing_input_service.handle_mouse_motion(
-                vol_dragging=self._vol_dragging,
-                volume_slider_visible=self.volume_slider_visible,
-                slider_rect=self._vol_slider_rect,
-                pos=event.pos,
-                on_update_volume=self._update_volume_from_y,
-                card_panel=self.card_panel,
-            )
-        elif event.type == pg.MOUSEBUTTONUP:
-            if event.button == 1:
-                self.playing_input_service.handle_left_button_up(
-                    on_stop_drag=lambda: setattr(self, "_vol_dragging", False)
-                )
+    def _set_pp_spend_mode(self, enabled: bool) -> None:
+        self.pp_spend_mode = enabled
 
     def _get_unit_slot_at(self, pos: Tuple[int, int]) -> Tuple[int, int] | None:
         """根据鼠标点击位置获取被点击的单位"""
@@ -2225,7 +1749,28 @@ class GameApp:
 
     def _handle_game_right_click(self, pos: Tuple[int, int]) -> None:
         """处理游戏场景的右键逻辑"""
-        self.playing_input_service.handle_game_right_click(self, pos)
+        self.playing_input_service.handle_game_right_click(
+            pos=pos,
+            pp_spend_mode=self.pp_spend_mode,
+            pp_summon_target_prov=self.pp_summon_target_prov,
+            get_province_at=self._get_province_at,
+            player_country=self.player_country,
+            evt_flag_hu_recruit=self.evt_flag_hu_recruit,
+            on_set_pp_summon_target_prov=(
+                lambda prov: setattr(self, "pp_summon_target_prov", prov)
+            ),
+            selected_units=self.selected_units,
+            card_effect_manager=self.card_effect_manager,
+            on_get_people_support_level=self._get_people_support_level,
+            is_fort_or_city=self._is_fort_or_city,
+            morale_free_move_mode=self.morale_free_move_mode,
+            combat_target=self.combat_target,
+            on_cancel_combat_preview=self._cancel_combat_preview,
+            on_handle_combat=self._handle_combat,
+            pending_post_move_attack=self.pending_post_move_attack,
+            on_handle_movement=self._handle_movement,
+            on_show_message=(self.info_panel.show_message if self.info_panel else None),
+        )
 
     def _handle_movement(self, target: object) -> None:  # target: Province
         """处理移动逻辑：同一格子上的单位可作为整体一起移动。"""
@@ -2545,46 +2090,7 @@ class GameApp:
         条件：民心等级达 5 级，且同时占领洛阳、成都、建邺。
         如果达成，立即显示分数屏并结束游戏。
         """
-        winner = self.score_manager.check_tianxia_guixin(
-            self.map_manager.provinces, self.country_stats
-        )
-
-        if winner:
-            # 达成天下归心胜利
-            self.turn_game_finished = True
-            self.player_country = None
-            self.card_manager = None
-            if self.card_panel:
-                self.card_panel.set_available_cards([])
-
-            # 准备胜利信息
-            if not self.score_manager_initial_recorded:
-                self.score_manager.record_initial_scores(self.map_manager.provinces)
-                self.score_manager_initial_recorded = True
-
-            record = self.score_manager.get_detailed_scores(
-                self.map_manager.provinces, self.country_stats
-            )
-
-            net_scores = {
-                "SHU": record.shu_score - record.shu_initial,
-                "WEI": record.wei_score - record.wei_initial,
-                "WU": record.wu_score - record.wu_initial,
-            }
-
-            self.show_score_screen = {
-                "type": "game_over",
-                "record": record,
-                "net_scores": net_scores,
-                "tianxia_winner": winner,
-            }
-
-            # 显示胜利消息
-            winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
-            if self.info_panel:
-                self.info_panel.show_message(
-                    f"{winner_names.get(winner, winner)} 达成「天下归心」胜利！"
-                )
+        self.turn_orchestration_service.check_tianxia_guixin_victory(self)
 
     def _get_neighbors(self, unit_prov: object) -> List[object]:
         """获取邻居"""
@@ -2626,8 +2132,25 @@ class GameApp:
 
     def _render(self) -> None:
         """渲染总控：根据状态画对应的界面"""
-        self.screen_render_service.render_main_scene(self)
+        scene_vm = self._build_main_scene_view_model()
+        self.screen_render_service.render_main_scene(self, scene_vm)
         self.screen_render_service.render_top_overlays(self)
+
+    def _build_main_scene_view_model(self) -> MainSceneViewModel:
+        """构建主场景只读视图模型。"""
+        return MainSceneViewModel(
+            show_score_screen=bool(self.show_score_screen),
+            state=self.state,
+        )
+
+    def _build_gameplay_view_model(self) -> GameplayViewModel:
+        """构建PLAYING场景只读视图模型。"""
+        return GameplayViewModel(
+            major_round=self.major_round,
+            minor_round=self.minor_round,
+            player_country=self.player_country,
+            country_labels=self.country_labels,
+        )
 
     def _render_console(self) -> None:
         """渲染控制台浮层（位于屏幕底部，按 ` 键开关）。"""
@@ -2646,7 +2169,8 @@ class GameApp:
         self.screen_render_service.render_choosing_screen(self)
 
     def _render_gameplay(self) -> None:
-        self.gameplay_render_service.render_gameplay(self)
+        gameplay_vm = self._build_gameplay_view_model()
+        self.gameplay_render_service.render_gameplay(self, gameplay_vm)
 
     def _render_pp_summon_panel(self) -> None:
         """绘制PP召唤子面板（居中覆盖层），并填充 self.pp_summon_btns。"""
@@ -2698,282 +2222,41 @@ class GameApp:
 
     def _build_mode_select_assets(self) -> None:
         """准备选择游戏模式界面的文字和按钮"""
-        height = self.screen_height
-        width = self.screen_width
-
-        self.mode_select_title_surface = self._render_text(
-            "STLITI.TTF", int(width * 0.08), "选择模式"
-        )
-        self.mode_select_title_pos = (int(width * 0.32), 0)
-
-        btn_w = int(width * 0.28)
-        btn_h = int(height * 0.12)
-        btn_y = int(height * 0.65)
-
-        self.mode_single_rect = pg.Rect(int(width * 0.18), btn_y, btn_w, btn_h)
-        self.mode_multi_rect = pg.Rect(int(width * 0.54), btn_y, btn_w, btn_h)
-
-        self.mode_single_surface = self._render_text(
-            "STXINGKA.TTF", int(height * 0.08), "单人游戏"
-        )
-        self.mode_multi_surface = self._render_text(
-            "STXINGKA.TTF", int(height * 0.08), "三人游戏"
-        )
-
-        sw = self.mode_single_surface.get_width()
-        sh = self.mode_single_surface.get_height()
-        self.mode_single_text_pos = (
-            self.mode_single_rect.centerx - sw // 2,
-            self.mode_single_rect.centery - sh // 2,
-        )
-        mw = self.mode_multi_surface.get_width()
-        mh = self.mode_multi_surface.get_height()
-        self.mode_multi_text_pos = (
-            self.mode_multi_rect.centerx - mw // 2,
-            self.mode_multi_rect.centery - mh // 2,
-        )
+        self.asset_build_service.build_mode_select_assets(self)
 
     def _build_loading_assets(self) -> None:
         """准备加载界面的图片和文字"""
-        height = self.screen_height
-        width = self.screen_width
-
-        self.loading_image_right = self._load_ui_image(
-            "start_ZHUGELIANG.jpg", (int(height * 0.6), int(height * 0.7))
-        )
-        self.loading_image_right_pos = (int(width - height * 0.65), int(height * 0.2))
-
-        raw_left = self._load_ui_image(
-            "start_SIMAYI.jpg", (int(height * 0.5), int(height * 0.625))
-        )
-        self.loading_image_left = pg.transform.flip(raw_left, True, False)  # 镜像翻转
-        self.loading_image_left_pos = (int(height * 0.03), int(height * 0.25))
-
-        self.start_button_rect = pg.Rect(
-            int(width * 0.3),
-            int(height * 0.75),
-            int(width * 0.4),
-            int(height * 0.1),
-        )
-
-        self.loading_title_surface = self._render_text(
-            "STLITI.TTF", int(width * 0.1), "三足鼎立"
-        )
-        self.loading_title_pos = (int(width * 0.3), 0)
-
-        self.loading_button_surface = self._render_text(
-            "STXINGKA.TTF", int(height * 0.1), "开始游戏"
-        )
-        self.loading_button_pos = (int(width * 0.5 - height * 0.2), int(height * 0.75))
+        self.asset_build_service.build_loading_assets(self)
 
     def _build_choosing_assets(self) -> None:
         """准备选人界面的图片和文字"""
-        height = self.screen_height
-        width = self.screen_width
-        image_size = (int(height * 0.3), int(height * 0.3))
-        self.choosing_portraits = [
-            (
-                self._load_ui_image("choosing_LIUBEI.jpg", image_size),
-                (int(width * 0.4 - height * 0.45), int(height * 0.2)),
-            ),
-            (
-                self._load_ui_image("choosing_SUNQUAN.jpg", image_size),
-                (int(width * 0.5 - height * 0.15), int(height * 0.2)),
-            ),
-            (
-                self._load_ui_image("choosing_CAOCAO.jpg", image_size),
-                (int(width * 0.6 + height * 0.15), int(height * 0.2)),
-            ),
-        ]
-
-        self.choosing_title_surface = self._render_text(
-            "SIMLI.TTF", int(height * 0.1), "选择势力"
-        )
-        self.choosing_title_pos = (int(width * 0.5 - height * 0.2), 0)
-
-        self.faction_button_radius = int(height * 0.1)
-        self.faction_buttons: Dict[str, Dict[str, object]] = {}
-
-        label_surfaces = {
-            country: self._render_text("STLITI.TTF", int(height * 0.1), label)
-            for country, label in self.country_labels.items()
-        }
-
-        self.faction_buttons["SHU"] = {
-            "center": (int(width * 0.4 - height * 0.3), int(height * 0.7)),
-            "color": self.country_button_colors["SHU"],
-            "label_surface": label_surfaces["SHU"],
-            "label_pos": (int(width * 0.4 - height * 0.35), int(height * 0.65)),
-        }
-        self.faction_buttons["WU"] = {
-            "center": (int(width * 0.5), int(height * 0.7)),
-            "color": self.country_button_colors["WU"],
-            "label_surface": label_surfaces["WU"],
-            "label_pos": (int(width * 0.5 - height * 0.05), int(height * 0.65)),
-        }
-        self.faction_buttons["WEI"] = {
-            "center": (int(width * 0.6 + height * 0.3), int(height * 0.7)),
-            "color": self.country_button_colors["WEI"],
-            "label_surface": label_surfaces["WEI"],
-            "label_pos": (int(width * 0.6 + height * 0.25), int(height * 0.65)),
-        }
+        self.asset_build_service.build_choosing_assets(self)
 
     def _build_play_assets(self) -> None:
         """准备游戏主界面的图片（箭头、标签等）"""
-        height = self.screen_height
-        width = self.screen_width
-
-        # 加载背景图片（保持原始比例，左上角对齐屏幕）
-        self.bg_image = self._load_ui_image("背景.png", None)
-        # 计算缩放比例，让背景高度匹配屏幕高度
-        bg_orig_width, bg_orig_height = self.bg_image.get_size()
-        scale = height / bg_orig_height
-        self.bg_image = pg.transform.smoothscale(
-            self.bg_image, (int(bg_orig_width * scale), height)
+        self.asset_build_service.build_play_assets(
+            self,
+            yangtze_points_1=YANGTZE_POINTS_1,
+            yangtze_points_2=YANGTZE_POINTS_2,
+            yellow_river_points=YELLOW_RIVER_POINTS,
+            ban_line_points=BAN_LINE_POINTS,
         )
-
-        # 底部回合计数字体
-        self.round_counter_font = self._font("msyhbd.ttc", int(height * 0.032))
-        # 三国属性（民心/政治点数）显示字体
-        self.country_stat_title_font = self._font("STZHONGS.TTF", int(height * 0.038))
-        self.country_stat_font = self._font("msyh.ttc", int(height * 0.022))
-
-        self.country_tag_font = self._font("STZHONGS.TTF", int(height * 0.1))
-        self.country_tag_surfaces = {
-            country: self.country_tag_font.render(label, True, pg.Color("black"))
-            for country, label in self.country_labels.items()
-        }
-
-        # --- 右下角功能按钮 ---
-        # 视觉顺序从左到右: [退出] [重开]
-        btn_font = self._font("msyh.ttc", int(height * 0.025))
-
-        labels = ["重开一局", "退出游戏", "当前各国分数", "", ""]
-        actions = ["RESTART", "EXIT", "SCORE", "VOLUME", "HELP"]
-
-        self.control_btns = []
-
-        # 起始X坐标：右侧内边距
-        current_x_right = int(width - 20)
-
-        for label, action in zip(labels, actions):
-            surf = btn_font.render(label, True, pg.Color("white"))
-            base_h = surf.get_height() + 10
-            # 音量/帮助按钮做成正方形（渲染时画圆）
-            if action in ("VOLUME", "HELP"):
-                w = h = base_h
-            else:
-                w = surf.get_width() + 20
-                h = base_h
-
-            x = current_x_right - w
-            # 贴近底部
-            y = int(height - h - 12)
-
-            rect = pg.Rect(x, y, w, h)
-
-            btn_color = (
-                pg.Color("#1a5276")
-                if action == "SCORE"
-                else pg.Color("#2d6a4f")
-                if action == "VOLUME"
-                else pg.Color("#7b3f00")
-                if action == "HELP"
-                else pg.Color("#444444")
-            )
-            # 圆形按钮文字居中
-            if action in ("VOLUME", "HELP"):
-                text_pos = surf.get_rect(center=rect.center).topleft
-            else:
-                text_pos = (x + 10, y + 5)
-            self.control_btns.append(
-                {
-                    "rect": rect,
-                    "surface": surf,
-                    "text_pos": text_pos,
-                    "action": action,
-                    "bg_color": btn_color,
-                    "border_color": pg.Color("white"),
-                    "shape": "circle" if action in ("VOLUME", "HELP") else "rect",
-                }
-            )
-
-            # 往左移，留出间隙
-            current_x_right -= w + 10
-
-        # 初始化音量滑块几何信息（在按钮布局完之后计算）
-        vol_btn_entry = next(
-            (b for b in self.control_btns if b["action"] == "VOLUME"), None
-        )
-        if vol_btn_entry:
-            vr = vol_btn_entry["rect"]
-            slider_w, slider_h = 72, 140
-            sx = vr.centerx - slider_w // 2
-            sy = vr.top - slider_h - 8
-            self._vol_slider_rect = pg.Rect(sx, sy, slider_w, slider_h)
-            self._vol_track_top = sy + 14
-            self._vol_track_bottom = sy + slider_h - 30
-            self._vol_track_x = sx + slider_w // 2
-
-        # 往右调一点，之前是 width - height * 0.15，现在改为 0.05，更靠右
-        self.country_tag_pos = (int(width - height * 0.12), 0)
-
-        # 预计算河流的像素点
-        self.yangtze_polylines = tuple(
-            self._scale_points(points)
-            for points in (YANGTZE_POINTS_1, YANGTZE_POINTS_2)
-        )
-        self.yellow_river_polyline = tuple(self._scale_points(YELLOW_RIVER_POINTS))
-        self.ban_line_polyline = tuple(self._scale_points(BAN_LINE_POINTS))
 
     def _is_hovering_ban_line(self, mouse_pos: Tuple[int, int]) -> bool:
         """检查鼠标是否悬停在黑线上"""
-        return self._is_hovering_polyline(mouse_pos, [self.ban_line_polyline])
+        return self.ui_render_helper_service.is_hovering_ban_line(self, mouse_pos)
 
     def _is_hovering_river(self, mouse_pos: Tuple[int, int]) -> bool:
         """检查鼠标是否悬停在河流上"""
-        polylines = []
-        polylines.extend(self.yangtze_polylines)
-        polylines.append(self.yellow_river_polyline)
-        return self._is_hovering_polyline(mouse_pos, polylines)
+        return self.ui_render_helper_service.is_hovering_river(self, mouse_pos)
 
     def _is_hovering_polyline(self, mouse_pos: Tuple[int, int], polylines_list) -> bool:
         """通用检查鼠标是否悬停在某组Polyline上"""
-        threshold = 10.0  # 像素距离阈值
-        m_vec = pg.math.Vector2(mouse_pos)
-
-        for polyne in polylines_list:
-            # polyne is a sequence of points
-            if len(polyne) < 2:
-                continue
-
-            for i in range(len(polyne) - 1):
-                p1 = polyne[i]
-                p2 = polyne[i + 1]
-
-                # 计算点到线段距离
-                # Vector P1->P2
-                line_vec = p2 - p1
-                # Vector P1->Mouse
-                p1_m_vec = m_vec - p1
-
-                line_len_sq = line_vec.length_squared()
-                if line_len_sq == 0:
-                    continue
-
-                # Project p1_m onto line_vec
-                # t = dot(p1_m, line) / len_sq
-                t = p1_m_vec.dot(line_vec) / line_len_sq
-
-                # Clamp t to segment
-                t = max(0.0, min(1.0, t))
-
-                closest_point = p1 + line_vec * t
-                dist_sq = m_vec.distance_squared_to(closest_point)
-
-                if dist_sq < threshold * threshold:
-                    return True
-        return False
+        return self.ui_render_helper_service.is_hovering_polyline(
+            self,
+            mouse_pos,
+            polylines_list,
+        )
 
     # --- 辅助工具方法 (Helpers) --------------------------------------------------------
 
@@ -2985,13 +2268,7 @@ class GameApp:
         逻辑坐标 -> (乘以边长) -> 像素坐标
         Y轴需要额外乘以 根号3，这是六边形几何的特性。
         """
-        scaled = []
-        for point in normalized_points:
-            x_factor, y_factor = point
-            x = x_factor * self.hex_side
-            y = y_factor * SQRT3 * self.hex_side
-            scaled.append(pg.math.Vector2(x, y))
-        return scaled
+        return self.ui_render_helper_service.scale_points(self, normalized_points)
 
     def _load_ui_image(self, filename: str, size: Tuple[int, int] | None) -> pg.Surface:
         """
@@ -2999,34 +2276,23 @@ class GameApp:
         如果是 SVG，尽量按需加载；如果失败，回退到普通加载。
         如果 size 为 None，则返回原始尺寸的图片。
         """
-        filepath = self.settings.ui_graphics_dir / filename
-
-        # 尝试直接加载 (Pygame 2.0+ 的 SDL_image 对 SVG 支持较好，直接 load 往往比魔改稳)
-        try:
-            surface = pg.image.load(filepath).convert_alpha()
-            # 如果指定了 size，则缩放到目标尺寸
-            if size is not None:
-                if surface.get_width() != size[0] or surface.get_height() != size[1]:
-                    return pg.transform.smoothscale(surface, size)
-            return surface
-        except Exception as e:
-            logger.error(f"Error loading image {filename}: {e}")
-            # 返回一个洋红色的方块作为错误占位符
-            err_size = size if size is not None else (100, 100)
-            err_surf = pg.Surface(err_size)
-            err_surf.fill(pg.Color("magenta"))
-            return err_surf
+        return self.ui_render_helper_service.load_ui_image(self, filename, size)
 
     def _font(self, filename: str, size: int) -> pg.font.Font:
         """加载字体"""
-        return pg.font.Font(self.settings.fonts_dir / filename, size)
+        return self.ui_render_helper_service.font(self, filename, size)
 
     def _render_text(
         self, filename: str, size: int, text: str, color: pg.Color | str = "black"
     ) -> pg.Surface:
         """使用指定字体和大小渲染一段文字，返回图片表面"""
-        font = self._font(filename, size)
-        return font.render(text, True, pg.Color(color))
+        return self.ui_render_helper_service.render_text(
+            self,
+            filename,
+            size,
+            text,
+            color,
+        )
 
     # ====================================================================
     # 事件卡系统 — 抽卡、效果应用、渲染

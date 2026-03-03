@@ -8,22 +8,33 @@ from typing import Any
 
 import pygame as pg
 
+from src.core.view_models import MainSceneViewModel
+
 
 class ScreenRenderService:
     """加载/模式选择/势力选择/控制台渲染服务。"""
 
-    def render_main_scene(self, app: Any) -> None:
+    def render_main_scene(
+        self,
+        app: Any,
+        view_model: MainSceneViewModel | None = None,
+    ) -> None:
         """根据当前状态渲染主场景内容。"""
-        if app.show_score_screen:
+        vm = view_model or MainSceneViewModel(
+            show_score_screen=bool(app.show_score_screen),
+            state=app.state,
+        )
+
+        if vm.show_score_screen:
             app._render_score_screen()
             return
 
-        state_type = type(app.state)
-        if app.state == getattr(state_type, "LOADING", None):
+        state_type = type(vm.state)
+        if vm.state == getattr(state_type, "LOADING", None):
             app._render_loading_screen()
-        elif app.state == getattr(state_type, "MODE_SELECT", None):
+        elif vm.state == getattr(state_type, "MODE_SELECT", None):
             app._render_mode_select_screen()
-        elif app.state == getattr(state_type, "CHOOSING", None):
+        elif vm.state == getattr(state_type, "CHOOSING", None):
             app._render_choosing_screen()
         else:
             app._render_gameplay()

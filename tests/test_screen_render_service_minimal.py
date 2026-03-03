@@ -1,6 +1,7 @@
 import unittest
 
 from src.core.screen_render_service import ScreenRenderService
+from src.core.view_models import MainSceneViewModel
 
 
 class ScreenRenderServiceMinimalTest(unittest.TestCase):
@@ -47,6 +48,23 @@ class ScreenRenderServiceMinimalTest(unittest.TestCase):
         app._render_gameplay = lambda: calls.__setitem__("gameplay", calls["gameplay"] + 1)
 
         self.service.render_main_scene(app)
+
+        self.assertEqual(calls["score"], 1)
+        self.assertEqual(calls["gameplay"], 0)
+
+    def test_render_main_scene_uses_view_model(self):
+        app = type("App", (), {})()
+        app.show_score_screen = False
+        app.state = object()
+        calls = {"score": 0, "gameplay": 0}
+        app._render_score_screen = lambda: calls.__setitem__("score", calls["score"] + 1)
+        app._render_loading_screen = lambda: None
+        app._render_mode_select_screen = lambda: None
+        app._render_choosing_screen = lambda: None
+        app._render_gameplay = lambda: calls.__setitem__("gameplay", calls["gameplay"] + 1)
+
+        vm = MainSceneViewModel(show_score_screen=True, state=object())
+        self.service.render_main_scene(app, vm)
 
         self.assertEqual(calls["score"], 1)
         self.assertEqual(calls["gameplay"], 0)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pygame as pg
 
 from src.map.geometry import hex_vertices
+from src.core.view_models import GameplayViewModel
 
 
 class GameplayRenderService:
@@ -15,7 +16,11 @@ class GameplayRenderService:
             round_text = f"{round_text} · {country_label}"
         return round_text
 
-    def render_gameplay(self, app) -> None:
+    def render_gameplay(
+        self,
+        app,
+        view_model: GameplayViewModel | None = None,
+    ) -> None:
         self = app
         self.window.fill(pg.Color("white"))
 
@@ -156,14 +161,18 @@ class GameplayRenderService:
             self._render_volume_slider()
 
         # 4. 右下角显示回合信息（避开功能按钮）
+        vm = view_model or GameplayViewModel(
+            major_round=self.major_round,
+            minor_round=self.minor_round,
+            player_country=self.player_country,
+            country_labels=self.country_labels,
+        )
         country_label = (
-            self.country_labels.get(self.player_country, "")
-            if self.player_country
-            else ""
+            vm.country_labels.get(vm.player_country, "") if vm.player_country else ""
         )
         round_text = GameplayRenderService.build_round_text(
-            self.major_round,
-            self.minor_round,
+            vm.major_round,
+            vm.minor_round,
             country_label,
         )
         round_surf = self.round_counter_font.render(round_text, True, pg.Color("black"))

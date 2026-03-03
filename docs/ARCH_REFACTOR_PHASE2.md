@@ -27,11 +27,38 @@
   - `should_block_right_click()` 改为显式状态 + 可选消息回调
   - `handle_mouse_motion()` 改为显式状态 + 回调契约
   - `handle_left_button_up()` 改为显式回调契约
+  - `handle_unit_selection_click()` 改为显式状态 + 回调契约
+  - `handle_card_panel_click()` 改为显式状态 + 回调契约
+  - `handle_info_panel_click()` 改为显式参数契约
+  - `handle_card_target_click()` 改为显式状态 + 回调契约
+  - `handle_major_round_choice_click()` 改为显式状态 + 回调契约
+  - `handle_evt_draw_phase_click()` 改为显式状态 + 回调契约
+  - `handle_draw_event_button_click()` 改为显式状态 + 回调契约
+  - `handle_help_overlay_wheel()` 改为显式状态 + 回调契约
+  - `handle_help_overlay_click()` 改为显式状态 + 回调契约
+  - `handle_keydown()` 改为显式状态 + 回调契约
+  - `handle_control_button_click()` 改为显式状态 + 回调契约
+  - `handle_recover_click()` 改为显式状态 + 回调契约
+  - `handle_no_attack_click()` 改为显式状态 + 回调契约
+  - `handle_game_right_click()` 改为显式状态 + 回调契约
+  - `handle_evt_target_click()` 改为显式状态 + 回调契约
+  - `handle_morale_click()` 改为显式状态 + 回调契约
+  - `handle_combat_ui_click()` 改为显式状态 + 回调契约
+  - `handle_pp_click()` 改为显式状态 + 回调契约
 
 ## App 侧配套
 
 - `GameApp` 对上述服务调用已全部改为显式参数。
 - 业务副作用（如 `volume_level` 赋值、`mixer` 同步、帮助加载状态写回）回收到 `GameApp` 编排层。
+
+## 阶段2收口归并（3轮）
+
+- 第1轮：输入入口归并
+  - `PlayingInputService` 新增三聚合入口：`handle_keyboard_input()`、`handle_left_click()`、`handle_right_click()`。
+- 第2轮：左键按业务域归并
+  - 拆分为 `_handle_left_click_global_ui()`、`_handle_left_click_combat_and_event()`、`_handle_left_click_panels_and_selection()`。
+- 第3轮：调用侧收敛
+  - `GameApp._handle_playing_event()` 收敛为三入口路由，统一消息回调，减少分散分支。
 
 ## 价值
 
