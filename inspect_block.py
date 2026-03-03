@@ -1,3 +1,9 @@
+"""
+历史检查脚本（保留用于追溯）。
+
+注意：该文件用于一次性问题定位记录，不应作为常规开发流程的一部分。
+"""
+
 with open("src/core/app.py", encoding="utf-8") as f:
     lines = f.readlines()
 
