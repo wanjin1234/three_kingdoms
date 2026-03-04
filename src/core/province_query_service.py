@@ -38,7 +38,9 @@ class ProvinceQueryService:
     ):
         best_p = None
         min_dist = float("inf")
-        threshold = hex_side * 0.9
+        # 平顶六边形外接圆半径 = hex_side（中心到顶点距离）
+        # 阈值取外接圆半径，确保 6 个顶点附近的点击也能命中
+        threshold = hex_side
 
         for province in provinces:
             center = (

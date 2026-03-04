@@ -125,6 +125,75 @@ class GameplayRenderService:
 
         return cached_layer
 
+    @staticmethod
+    def _build_combat_table_surf(font: pg.font.Font) -> pg.Surface:
+        """O3: 将战斗判定表预渲染为独立 Surface（内容完全静态，仅字体对象为变量）。"""
+        headers = ["\u9ab0\u70b9", "1:2", "1:1", "2:1", "3:1", "4:1", "5:1"]
+        rows = [
+            ["1", "\u653b\u635f2", "\u653b\u635f1", "\u653b\u635f1", "\u65e0\u6548", "\u65e0\u6548", "\u9632\u4e71"],
+            ["2", "\u653b\u635f1", "\u653b\u4e71", "\u53cc\u4e71", "\u9632\u4e71", "\u9632\u4e71", "\u9632\u4e71"],
+            ["3", "\u653b\u4e71", "\u53cc\u4e71", "\u65e0\u6548", "\u9632\u4e71", "\u9632\u9000", "\u9632\u9000"],
+            ["4", "\u653b\u4e71", "\u65e0\u6548", "\u9632\u4e71", "\u9632\u9000", "\u9632\u9000", "\u9632\u9000"],
+            ["5", "\u65e0\u6548", "\u9632\u4e71", "\u9632\u9000", "\u9632\u9000", "\u9632\u635f1", "\u9632\u635f1"],
+            ["6", "\u9632\u4e71", "\u9632\u9000", "\u9632\u635f1", "\u9632\u635f1", "\u9632\u635f1", "\u9632\u635f1\u9000"],
+        ]
+        all_rows = [headers] + rows
+        col_widths = [
+            max(font.size(all_rows[ri][ci])[0] for ri in range(7)) + 14
+            for ci in range(7)
+        ]
+        row_h = font.get_height() + 8
+        tbl_w = sum(col_widths) + 2
+        tbl_h = len(all_rows) * row_h + 2
+
+        surf = pg.Surface((tbl_w, tbl_h), pg.SRCALPHA)
+        surf.fill((12, 20, 40, 220))
+        pg.draw.rect(surf, pg.Color("#00FFCC"), pg.Rect(0, 0, tbl_w, tbl_h), 1, border_radius=4)
+
+        cx_start = 1
+        cy = 1
+        for ri, row_data in enumerate(all_rows):
+            is_header = ri == 0
+            cx = cx_start
+            if is_header:
+                hdr_bg = pg.Surface((sum(col_widths), row_h), pg.SRCALPHA)
+                hdr_bg.fill((30, 60, 100, 180))
+                surf.blit(hdr_bg, (cx, cy))
+            for ci, cell in enumerate(row_data):
+                tc = pg.Color("#FFD700") if is_header else pg.Color("#E0FFFF")
+                if not is_header and ci > 0:
+                    if cell in ("\u653b\u635f2", "\u653b\u635f1", "\u653b\u4e71", "\u53cc\u4e71"):
+                        tc = pg.Color("#FF8080")
+                    elif cell in ("\u9632\u9000", "\u9632\u635f1", "\u9632\u635f1\u9000"):
+                        tc = pg.Color("#80FF80")
+                    elif cell == "\u9632\u4e71":
+                        tc = pg.Color("#AAFFCC")
+                    elif cell == "\u65e0\u6548":
+                        tc = pg.Color("#888888")
+                cell_surf = font.render(cell, True, tc)
+                surf.blit(cell_surf, cell_surf.get_rect(
+                    centerx=cx + col_widths[ci] // 2, centery=cy + row_h // 2
+                ))
+                if ci < 6:
+                    pg.draw.line(surf, pg.Color("#334466"),
+                                 (cx + col_widths[ci], cy), (cx + col_widths[ci], cy + row_h))
+                cx += col_widths[ci]
+            if ri < len(all_rows) - 1:
+                pg.draw.line(surf, pg.Color("#334466"),
+                             (cx_start, cy + row_h), (cx_start + sum(col_widths), cy + row_h))
+            cy += row_h
+        return surf
+
+    @staticmethod
+    def _get_combat_table_surf(app) -> pg.Surface:
+        """O3: 按字体对象 id 缓存战斗判定表 Surface，字体重建时自动失效。"""
+        font = app.morale_tt_font
+        cache_key = id(font)
+        if getattr(app, "_combat_table_cache_key", None) != cache_key:
+            app._combat_table_cache_surf = GameplayRenderService._build_combat_table_surf(font)
+            app._combat_table_cache_key = cache_key
+        return app._combat_table_cache_surf
+
     def render_gameplay(
         self,
         app,
@@ -136,10 +205,19 @@ class GameplayRenderService:
         # 同一帧内只计算一次逻辑鼠标坐标
         mouse_pos = self._get_logical_mouse_pos()
 
-        # 1. 画背景图片（左上角对齐屏幕，50% 透明度）
+        # 1. 画背景图片（左上角对齐屏幕，50% 透明度，截止到信息面板左边界）
         bg_surface = GameplayRenderService._get_bg_alpha_surface(self, alpha=128)
         if bg_surface is not None:
+            panel_left = (
+                self.info_panel.rect.left
+                if self.info_panel
+                else self.screen_width
+            )
+            # 用 clip 区域限制绘制范围，避免底图延伸到信息面板下方
+            old_clip = self.window.get_clip()
+            self.window.set_clip(pg.Rect(0, 0, panel_left, self.screen_height))
             self.window.blit(bg_surface, (0, 0))
+            self.window.set_clip(old_clip)
 
         # 2. 画地图底层（格子+地形）
         self.map_manager.draw(self.window)
@@ -170,6 +248,8 @@ class GameplayRenderService:
             for _i in _slots:
                 if _i < len(_all_rects):
                     _fr = _all_rects[_i].inflate(4, 4)
+                    pg.draw.rect(self.window, _col, _fr, 3)
+                    pg.draw.rect(self.window, pg.Color("white"), _fr.inflate(-4, -4), 1)
         # 目的格/招募格：只框住实际移入/招募的那几个槽位
         for _dst_id, _dst_c in self.move_dst_provs.items():
             _dp = self.map_manager.get_by_id(_dst_id)
@@ -769,79 +849,14 @@ class GameplayRenderService:
         if self.combat_table_btn_rect and self.combat_table_btn_rect.collidepoint(
             mouse_pos
         ):
+            # O3: 使用预渲染 Surface，单次 blit 替代 49 次 font.render
+            _ct_surf = GameplayRenderService._get_combat_table_surf(self)
+            _tbl_w, _tbl_h = _ct_surf.get_size()
             _ct_bx = self.combat_table_btn_rect.left
             _ct_by = self.combat_table_btn_rect.top
-            _tt_ft = self.morale_tt_font
-            _ct_headers = ["骰点", "1:2", "1:1", "2:1", "3:1", "4:1", "5:1"]
-            _ct_rows = [
-                ["1", "攻损2", "攻损1", "攻损1", "无效", "无效", "防乱"],
-                ["2", "攻损1", "攻乱", "双乱", "防乱", "防乱", "防乱"],
-                ["3", "攻乱", "双乱", "无效", "防乱", "防退", "防退"],
-                ["4", "攻乱", "无效", "防乱", "防退", "防退", "防退"],
-                ["5", "无效", "防乱", "防退", "防退", "防损1", "防损1"],
-                ["6", "防乱", "防退", "防损1", "防损1", "防损1", "防损1退"],
-            ]
-            _all_rows = [_ct_headers] + _ct_rows
-            _col_widths = []
-            for _ci in range(7):
-                _max_w = max(_tt_ft.size(_all_rows[_ri][_ci])[0] for _ri in range(7))
-                _col_widths.append(_max_w + 14)
-            _row_h = _tt_ft.get_height() + 8
-            _tbl_w = sum(_col_widths) + 2
-            _tbl_h = len(_all_rows) * _row_h + 2
             _tbl_x = max(0, min(_ct_bx, self.screen_width - _tbl_w - 4))
             _tbl_y = max(0, _ct_by - _tbl_h - 6)
-            _tbl_bg = pg.Surface((_tbl_w, _tbl_h), pg.SRCALPHA)
-            _tbl_bg.fill((12, 20, 40, 220))
-            self.window.blit(_tbl_bg, (_tbl_x, _tbl_y))
-            pg.draw.rect(
-                self.window,
-                pg.Color("#00FFCC"),
-                pg.Rect(_tbl_x, _tbl_y, _tbl_w, _tbl_h),
-                1,
-                border_radius=4,
-            )
-            _cx_start = _tbl_x + 1
-            _cy = _tbl_y + 1
-            for _ri, _row_data in enumerate(_all_rows):
-                _is_header = _ri == 0
-                _cx = _cx_start
-                if _is_header:
-                    _hdr_bg = pg.Surface((sum(_col_widths), _row_h), pg.SRCALPHA)
-                    _hdr_bg.fill((30, 60, 100, 180))
-                    self.window.blit(_hdr_bg, (_cx, _cy))
-                for _ci, _cell in enumerate(_row_data):
-                    _tc = pg.Color("#FFD700") if _is_header else pg.Color("#E0FFFF")
-                    if not _is_header and _ci > 0:
-                        if _cell in ("攻损2", "攻损1", "攻乱", "双乱"):
-                            _tc = pg.Color("#FF8080")
-                        elif _cell in ("防退", "防损1", "防损1退"):
-                            _tc = pg.Color("#80FF80")
-                        elif _cell == "防乱":
-                            _tc = pg.Color("#AAFFCC")
-                        elif _cell == "无效":
-                            _tc = pg.Color("#888888")
-                    _cell_surf = _tt_ft.render(_cell, True, _tc)
-                    _cell_rect = _cell_surf.get_rect(
-                        centerx=_cx + _col_widths[_ci] // 2, centery=_cy + _row_h // 2
-                    )
-                    self.window.blit(_cell_surf, _cell_rect)
-                    if _ci < 6:
-                        pg.draw.line(
-                            self.window,
-                            pg.Color("#334466"),
-                            (_cx + _col_widths[_ci], _cy),
-                            (_cx + _col_widths[_ci], _cy + _row_h),
-                        )
-                    _cx += _col_widths[_ci]
-                if _ri < len(_all_rows) - 1:
-                    pg.draw.line(
-                        self.window,
-                        pg.Color("#334466"),
-                        (_cx_start, _cy + _row_h),
-                        (_cx_start + sum(_col_widths), _cy + _row_h),
-                    )
-                _cy += _row_h
+            self.window.blit(_ct_surf, (_tbl_x, _tbl_y))
 
         # 8.5 事件卡覆盖层（最顶层，覆盖一切）
         self._render_event_card_overlay()

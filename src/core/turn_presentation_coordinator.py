@@ -41,6 +41,15 @@ class TurnPresentationCoordinator:
             and app.player_country != app.human_country
             and not app.turn_game_finished
         ):
-            app._ai_turn_timer = pg.time.get_ticks() + 600
+            # 判断上一个行动的国家：若上家是人类玩家，则为"第一台电脑"（等1秒）；
+            # 若上家也是 AI，则为"第二台电脑"（等2秒，给玩家更多时间阅读上一台电脑的行动结果）
+            turn_order = list(app.turn_order)
+            prev_idx = (app.turn_index - 1) % len(turn_order)
+            prev_country = turn_order[prev_idx]
+            if prev_country == app.human_country:
+                delay_ms = 1000   # 人类刚操作完，第一台电脑等1秒
+            else:
+                delay_ms = 2000   # 第一台电脑操作完，第二台电脑等2秒
+            app._ai_turn_timer = pg.time.get_ticks() + delay_ms
         else:
             app._ai_turn_timer = None

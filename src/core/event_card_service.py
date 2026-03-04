@@ -263,7 +263,7 @@ class EventCardService:
 
         elif et == "evt_skill_yishen":
             app.evt_yishen_skill += 1
-            msg = f"「{card.name}」：蜀汉获得「一身是胆」触发机会（累计 {app.evt_yishen_skill} 次，被进攻低于1:1时自动触发）"
+            msg = f"「{card.name}」：蜀汉获得「一身是胆」触发机会（累计 {app.evt_yishen_skill} 次，被敌军以高于1:1的比例进攻时自动触发，强制按1:1档计算）"
             app._refresh_session_skill_display()
 
         elif et == "flag_liukang":
@@ -322,14 +322,14 @@ class EventCardService:
             )
 
         elif et == "flag_wuzi":
-            app.evt_wuzi_rounds = 5
+            app.evt_wuzi_rounds = 1
             app.evt_wuzi_bonus = min(3, app.evt_wuzi_bonus + 1)
             r = app.turn_order if tc == "ALL" else [tc]
             for rc in r:
                 app.evt_applied_major_round.setdefault(rc, []).append(
                     (card.name, card.description)
                 )
-            msg = f"「{card.name}」：曹魏进攻骰点+{app.evt_wuzi_bonus}（剩余 {app.evt_wuzi_rounds} 小回合）"
+            msg = f"「{card.name}」：曹魏进攻骰点+{app.evt_wuzi_bonus}（本大回合有效）"
 
         elif et in (
             "unit_mp_plus",
@@ -405,7 +405,7 @@ class EventCardService:
             unit.temp_dice_bonus += 1
             unit.defense_bonus = getattr(unit, "defense_bonus", 0) - 1
             if context.show_message:
-                context.show_message("「{card.name}」：本回合骰点+1，永久防御-1")
+                context.show_message(f"「{card.name}」：本回合骰点+1，永久防御-1")
 
         elif card_id == "evt_xiedie":
             unit.attack_bonus = getattr(unit, "attack_bonus", 0) + card.effect_value

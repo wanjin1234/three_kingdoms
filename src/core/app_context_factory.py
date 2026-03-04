@@ -166,7 +166,11 @@ def build_clear_for_turn_switch_context(app: Any) -> ClearForTurnSwitchContext:
                 setattr(app, "combat_result_timer", 0),
             )
         ),
-        show_properties=(app.info_panel.show_properties if app.info_panel else None),
+        # 仅清除「选中单位属性」类消息，保留行动结果（战斗报告、移动通知等）
+        show_properties=(
+            (lambda _s: app.info_panel.clear_if_properties())
+            if app.info_panel else None
+        ),
     )
 
 

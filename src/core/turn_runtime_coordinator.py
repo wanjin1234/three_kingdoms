@@ -27,12 +27,6 @@ class TurnRuntimeCoordinator:
         app.pending_evt_card_id = None
         app.pending_evt_drawer = None
 
-        # 五子良将递减计数
-        if app.evt_wuzi_rounds > 0:
-            app.evt_wuzi_rounds -= 1
-            if app.evt_wuzi_rounds == 0:
-                app.evt_wuzi_bonus = 0
-
         app._clear_for_turn_switch(keep_info_message=keep_info_message)
 
     def apply_major_round_rollover(self, app: Any) -> None:
@@ -64,8 +58,10 @@ class TurnRuntimeCoordinator:
         app.evt_flag_hefei = False
         app.evt_flag_she_hushu = False
         app.evt_flag_hu_recruit = False
-        app.evt_jingzhu_skill = 0
         app.evt_laomaikuai_active = False
+        # 五子良将：本大回合结束，清除效果（bonus 在下次抽卡时重新积累）
+        app.evt_wuzi_rounds = 0
+        app.evt_wuzi_bonus = 0
 
         # 大回合显示记录清除后重建会话级技能显示
         app.evt_applied_major_round = {}

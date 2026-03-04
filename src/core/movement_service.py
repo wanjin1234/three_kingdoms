@@ -68,11 +68,7 @@ class MovementService:
                 _full_path = self.map_manager.find_path(source.province_id, target.province_id)
 
             if _full_path and len(_full_path) >= 2:
-                if ignore_mountain:
-                    _cumulative = 0
-                else:
-                    _src_t = (source.terrain or "").lower()
-                    _cumulative = 1 if _src_t in ("hill", "mountain", "hills", "mountains") else 0
+                _cumulative = 0
                 _intercept_prov = None
                 _effective_target = target
                 _effective_cost = path_cost
@@ -211,4 +207,14 @@ class MovementService:
             self.info_panel.show_message("令行禁止：移动完成，继续行动")
             return
 
-        self._finish_country_action("移动")
+        # 显示移动结果通知（永久显示直到下一条消息，跨回合保留）
+        if moving_units:
+            country_label = (
+                getattr(self, "country_labels", {}).get(self.player_country, self.player_country)
+                if self.player_country else ""
+            )
+            n_moved = len(moving_units)
+            move_msg = f"{country_label}：移动了{n_moved}支部队"
+            self.info_panel.show_properties(move_msg)
+
+        self._finish_country_action("移动", keep_info_message=True)

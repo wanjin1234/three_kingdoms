@@ -719,6 +719,8 @@ class InfoPanel(BasePanel):
 
         self._message: str | None = None
         self._message_end_time: float = 0.0
+        # True 表示当前内容来自 show_properties（选中属性/行动结果），False 表示来自 show_message（临时通知）
+        self._is_properties_display: bool = False
 
         # 战斗相关状态
         self.dice_result: int | None = None
@@ -727,9 +729,10 @@ class InfoPanel(BasePanel):
         self._combat_enemy_info: str | None = None
 
     def show_properties(self, props: str) -> None:
-        """显示选中单位/格子的属性列表"""
+        """显示选中单位/格子的属性列表（永久显示，可被 clear_if_properties 清除）"""
         self._message = props
         self._message_end_time = float("inf") # 永久显示，直到被覆盖
+        self._is_properties_display = True
         # 清除战斗状态但保留消息
         self.dice_result = None
         self.combat_result_text = None
@@ -737,9 +740,17 @@ class InfoPanel(BasePanel):
         self._combat_enemy_info = None # 清除之前的敌方预览
 
     def show_message(self, text: str, duration: float = 2.0) -> None:
-        """显示一条临时消息"""
+        """显示一条临时消息（有时限，不被 clear_if_properties 清除）"""
         self._message = text
         self._message_end_time = time.time() + duration
+        self._is_properties_display = False
+
+    def clear_if_properties(self) -> None:
+        """仅当当前显示内容来自 show_properties 时才清除，临时行动消息（show_message）不受影响。"""
+        if self._is_properties_display:
+            self._message = None
+            self._message_end_time = 0.0
+            self._is_properties_display = False
 
     def show_combat_details(self, attacker_info: str, defender_info: str) -> None:
         """显示战斗双方详情"""
@@ -749,6 +760,7 @@ class InfoPanel(BasePanel):
         self.combat_result_text = None
         # 清除选中的单位信息，避免重叠
         self._message = None
+        self._is_properties_display = False
 
     def show_combat_result(self, dice: int | None, result_text: str | None, detail_msg: str = "") -> None:
         """显示战斗结果详请（只显示详情，不显示标题）"""
@@ -757,9 +769,10 @@ class InfoPanel(BasePanel):
         self._combat_attacker_info = None
         self._combat_enemy_info = None
 
-        # 详细战报显示在消息区域
+        # 详细战报显示在消息区域（永久保留，不被 clear_if_properties 清除）
         self._message = detail_msg
         self._message_end_time = float("inf")
+        self._is_properties_display = False
 
 
     def reset_combat_state(self) -> None:

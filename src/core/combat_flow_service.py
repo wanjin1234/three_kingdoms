@@ -171,6 +171,10 @@ class CombatFlowService:
             app, target_province, col_index
         )
 
+        if app.card_effect_manager.is_offensive_card_active("card_huoshao_lianying"):
+            if len(target_province.units) > 1:
+                col_index = min(5, col_index + 1)
+
         self.resolve_combat(app, col_index, attackers, target_province)
 
     def resolve_combat(

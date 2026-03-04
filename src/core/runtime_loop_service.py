@@ -48,6 +48,8 @@ class RuntimeLoopService:
             app._viewport_scale = scale_y
             new_logical_w = max(base_w, int(round(app.display_width / scale_y)))
             app.viewport_rect = pg.Rect(0, 0, app.display_width, app.display_height)
+            # O1: 预分配缩放目标 Surface，避免 present_frame 每帧分配
+            app._scaled_surface = pg.Surface((app.display_width, app.display_height)).convert()
             if new_logical_w != app.screen_width or app.screen_height != base_h:
                 app.screen_width = new_logical_w
                 app.screen_height = base_h
@@ -60,6 +62,8 @@ class RuntimeLoopService:
             offset_x = (app.display_width - target_w) // 2
             offset_y = (app.display_height - target_h) // 2
             app.viewport_rect = pg.Rect(offset_x, offset_y, target_w, target_h)
+            # O1: 预分配缩放目标 Surface，避免 present_frame 每帧分配
+            app._scaled_surface = pg.Surface((target_w, target_h)).convert()
             if app.screen_width != base_w or app.screen_height != base_h:
                 app.screen_width = base_w
                 app.screen_height = base_h
@@ -71,11 +75,17 @@ class RuntimeLoopService:
         app.map_manager.set_hex_side(app.hex_side)
         app.unit_renderer.on_hex_side_changed(app.hex_side)
 
+        # 地图右边界：x_factor 最大值为 16，加上 hex_side（平顶六边形半宽），共 17
+        map_right_px = int(17.0 * app.hex_side)
+
         if app._direct_render:
-            panel_w = int(app.screen_width * 0.30)
+            desired_panel_w = int(app.screen_width * 0.30)
         else:
-            panel_w = int(app._base_screen_width * 0.30)
-        panel_x = app.screen_width - panel_w
+            desired_panel_w = int(app._base_screen_width * 0.30)
+        # 面板左边界不得小于地图右边界，确保不重叠（最多紧挨）
+        panel_x = max(app.screen_width - desired_panel_w, map_right_px)
+        # 根据实际 panel_x 重新计算面板宽度（至少 60px）
+        panel_w = max(60, app.screen_width - panel_x)
         panel_y = int(app.screen_height * 0.15)
         panel_h = int(app.screen_height * 0.45)
         panel_rect = pg.Rect(panel_x, panel_y, panel_w, panel_h)
@@ -128,6 +138,10 @@ class RuntimeLoopService:
         app._build_play_assets()
         app._cached_tooltip_surface = None
         app._last_tooltip_data = None
+        # O2: 字体重建后必须清除国家统计面板缓存，否则旧 Surface 尺寸与新字体不符
+        app._cs_overlay_cache = None
+        # O3: 字体重建后重置战斗判定表缓存键，强制下次悬停时重新预渲染
+        app._combat_table_cache_key = None
 
     def present_frame(self, app) -> None:
         if not app.display_surface:
@@ -137,11 +151,13 @@ class RuntimeLoopService:
             pg.display.flip()
             return
 
+        vw, vh = app.viewport_rect.width, app.viewport_rect.height
+        # O1: 复用预分配 Surface；安全回退：reflow 未执行时按需创建
+        if app._scaled_surface is None or app._scaled_surface.get_size() != (vw, vh):
+            app._scaled_surface = pg.Surface((vw, vh)).convert()
         app.display_surface.fill(pg.Color("white"))
-        scaled = pg.transform.smoothscale(
-            app.window, (app.viewport_rect.width, app.viewport_rect.height)
-        )
-        app.display_surface.blit(scaled, app.viewport_rect.topleft)
+        pg.transform.smoothscale(app.window, (vw, vh), app._scaled_surface)
+        app.display_surface.blit(app._scaled_surface, app.viewport_rect.topleft)
         pg.display.flip()
 
     def to_logical_pos(self, app, pos):
@@ -151,8 +167,8 @@ class RuntimeLoopService:
         if not app.viewport_rect.collidepoint((x, y)):
             return (-10_000, -10_000)
 
-        lx = int((x - app.viewport_rect.x) * app.screen_width / app.viewport_rect.width)
-        ly = int((y - app.viewport_rect.y) * app.screen_height / app.viewport_rect.height)
+        lx = round((x - app.viewport_rect.x) * app.screen_width / app.viewport_rect.width)
+        ly = round((y - app.viewport_rect.y) * app.screen_height / app.viewport_rect.height)
         lx = max(0, min(app.screen_width - 1, lx))
         ly = max(0, min(app.screen_height - 1, ly))
         return (lx, ly)

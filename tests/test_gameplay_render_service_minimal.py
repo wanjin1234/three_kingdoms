@@ -83,6 +83,63 @@ class GameplayRenderServiceMinimalTest(unittest.TestCase):
         self.assertIsNot(layer3, layer4)
         self.assertGreater(app.polyline_render_service.calls, calls_after_resize)
 
+    # ── O3: 战斗判定表预渲染 ──────────────────────────────────────────
+
+    def test_build_combat_table_surf_returns_surface(self):
+        """`_build_combat_table_surf` 应返回非空 SRCALPHA Surface。"""
+        font = pg.font.Font(None, 14)
+        surf = GameplayRenderService._build_combat_table_surf(font)
+        self.assertIsInstance(surf, pg.Surface)
+        w, h = surf.get_size()
+        self.assertGreater(w, 0)
+        self.assertGreater(h, 0)
+
+    def test_build_combat_table_surf_size_proportional_to_font(self):
+        """较大字体应产生较大的表格 Surface。"""
+        small_font = pg.font.Font(None, 12)
+        large_font = pg.font.Font(None, 24)
+        small_surf = GameplayRenderService._build_combat_table_surf(small_font)
+        large_surf = GameplayRenderService._build_combat_table_surf(large_font)
+        self.assertGreater(large_surf.get_width(), small_surf.get_width())
+        self.assertGreater(large_surf.get_height(), small_surf.get_height())
+
+    def test_get_combat_table_surf_caches_by_font_id(self):
+        """相同字体对象连续两次调用应返回同一 Surface 对象。"""
+        class _App:
+            pass
+        app = _App()
+        app.morale_tt_font = pg.font.Font(None, 14)
+
+        surf1 = GameplayRenderService._get_combat_table_surf(app)
+        surf2 = GameplayRenderService._get_combat_table_surf(app)
+        self.assertIs(surf1, surf2, "字体未变时应命中缓存，返回同一对象")
+
+    def test_get_combat_table_surf_invalidates_on_font_change(self):
+        """字体对象变更后应重建 Surface。"""
+        class _App:
+            pass
+        app = _App()
+        app.morale_tt_font = pg.font.Font(None, 14)
+        surf1 = GameplayRenderService._get_combat_table_surf(app)
+
+        app.morale_tt_font = pg.font.Font(None, 20)  # 新字体对象，id 不同
+        surf2 = GameplayRenderService._get_combat_table_surf(app)
+        self.assertIsNot(surf1, surf2, "字体变化后应重建 Surface")
+
+    def test_get_combat_table_surf_respects_forced_reset(self):
+        """外部将 _combat_table_cache_key 置 None 后应强制重建。"""
+        class _App:
+            pass
+        app = _App()
+        app.morale_tt_font = pg.font.Font(None, 14)
+        surf1 = GameplayRenderService._get_combat_table_surf(app)
+
+        app._combat_table_cache_key = None  # 模拟 rebuild_layout 重置
+        surf2 = GameplayRenderService._get_combat_table_surf(app)
+        self.assertIsNotNone(surf2)
+        # 重建后缓存键应与当前字体对象 id 一致
+        self.assertEqual(app._combat_table_cache_key, id(app.morale_tt_font))
+
 
 if __name__ == "__main__":
     unittest.main()

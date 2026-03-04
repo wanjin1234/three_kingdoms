@@ -692,6 +692,13 @@ class AIService:
                     app.move_dst_provs[_recruit_target.province_id] = country
                     app.move_dst_slots[_recruit_target.province_id] = [len(_recruit_target.units) - 1]
                     _ai_pp_used = True
+                    # 显示招募通知
+                    _country_label = app.country_labels.get(country, country)
+                    _unit_quality = "精锐" if new_u.hp >= 2 else ""
+                    if app.info_panel:
+                        app.info_panel.show_properties(
+                            f"{_country_label}：在{_recruit_target.name}招募了{_unit_quality}步兵"
+                        )
             if _ai_pp_used:
                 action_taken = True
 

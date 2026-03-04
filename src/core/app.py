@@ -239,6 +239,8 @@ class GameApp(AppEventCardMixin):
         self._base_screen_width: int = self.screen_width  # 设计分辨率宽，固定不变
         self._base_screen_height: int = self.screen_height  # 设计分辨率高，固定不变
         self.viewport_rect = pg.Rect(0, 0, self.display_width, self.display_height)
+        # O1: present_frame 缩放目标 Surface（reflow 时预分配，避免逐帧 ~2.9 MB 分配）
+        self._scaled_surface: pg.Surface | None = None
         self._viewport_scale = 1.0
         pg.display.set_caption(settings.window_title)
 
@@ -600,6 +602,11 @@ class GameApp(AppEventCardMixin):
         # Tooltip Caching
         self._last_tooltip_data = None
         self._cached_tooltip_surface: pg.Surface | None = None
+        # O2: 国家统计面板布局/文字缓存（dirty-key 驱动，数据不变时跳过 font.render 和布局重算）
+        self._cs_overlay_cache: dict | None = None
+        # O3: 战斗判定表预渲染 Surface 缓存（字体对象 id 为 key）
+        self._combat_table_cache_key: int | None = None
+        self._combat_table_cache_surf: pg.Surface | None = None
 
         # 初始化悬停提示字体 (比标准字体小一圈)
         tooltip_size = max(12, int(self.screen_height * 0.018))

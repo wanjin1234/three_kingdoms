@@ -268,23 +268,45 @@ class ScoreManager:
     ) -> Tuple[str, Dict[str, float]]:
         """
         根据"一代枭雄"规则判定获胜者。
-        净占领地块计分排名第一的获胜。
+        比较顺序：战地得分（净占领分）→ 民心点数 → 政治点数，高者胜。
+        三项均相同则判定为平局。
 
         Args:
             provinces: 所有地块列表
             country_stats: 国家属性字典
 
         Returns:
-            (获胜国家代码，净得分字典)
+            (获胜国家代码，净得分字典)；平局时国家代码为空字符串
         """
         net_scores = self.get_net_scores(provinces, country_stats)
 
-        # 找出最高分
-        max_score = max(net_scores.values())
-        winners = [c for c, s in net_scores.items() if s == max_score]
-
+        # 第一级：战地得分（净占领分）
+        max_net = max(net_scores.values())
+        winners = [c for c, s in net_scores.items() if s == max_net]
         if len(winners) == 1:
             return winners[0], net_scores
-        else:
-            # 平局情况，返回空字符串表示无单一获胜者
-            return "", net_scores
+
+        # 第二级：民心点数
+        max_support = max(
+            country_stats.get(c, {}).get("people_support", 0) for c in winners
+        )
+        winners = [
+            c for c in winners
+            if country_stats.get(c, {}).get("people_support", 0) == max_support
+        ]
+        if len(winners) == 1:
+            return winners[0], net_scores
+
+        # 第三级：政治点数
+        max_pp = max(
+            country_stats.get(c, {}).get("political_points", 0) for c in winners
+        )
+        winners = [
+            c for c in winners
+            if country_stats.get(c, {}).get("political_points", 0) == max_pp
+        ]
+        if len(winners) == 1:
+            return winners[0], net_scores
+
+        # 三项全部相同，判定平局
+        return "", net_scores

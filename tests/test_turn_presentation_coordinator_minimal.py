@@ -34,6 +34,9 @@ class _FakeApp:
         self.entered_evt_phase = False
         self.human_country = "SHU"
         self._ai_turn_timer = 123
+        # 回合顺序：SHU→WU→WEI，默认当前回合为 SHU（index=0）
+        self.turn_order = ["SHU", "WU", "WEI"]
+        self.turn_index = 0
 
     def _show_score_screen(self, screen_type: str) -> None:
         self.show_score_screen_called = screen_type
@@ -74,17 +77,19 @@ class TurnPresentationCoordinatorMinimalTests(unittest.TestCase):
 
     def test_on_country_activated_ai_turn(self) -> None:
         app = _FakeApp()
-        app.player_country = "WEI"
+        # WU 是紧接在人类 SHU 后的第一台电脑（turn_index=1，prev=SHU=human）
+        app.player_country = "WU"
         app.human_country = "SHU"
+        app.turn_index = 1
         coord = TurnPresentationCoordinator()
 
         with patch("src.core.turn_presentation_coordinator.pg.time.get_ticks", return_value=1000):
             coord.on_country_activated(app)
 
-        self.assertEqual(app.card_manager, "wei_mgr")
+        self.assertEqual(app.card_manager, "wu_mgr")
         self.assertTrue(app.updated_panel)
         self.assertTrue(app.entered_evt_phase)
-        self.assertEqual(app._ai_turn_timer, 1600)
+        self.assertEqual(app._ai_turn_timer, 2000)  # 1000ms延迟
 
 
 if __name__ == "__main__":
