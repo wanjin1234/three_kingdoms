@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import pygame as pg
 
@@ -94,6 +95,164 @@ class GameAppIntegrationMinimalTests(unittest.TestCase):
         self.app._execute_playing_input_commands([], on_show_message=None)
 
         self.assertEqual(called["n"], 1)
+
+    def test_card_play_methods_delegate_to_service(self) -> None:
+        called = {"play": 0, "effect": 0, "apply": 0, "cancel": 0}
+
+        self.app.card_play_service.play_selected_card = (
+            lambda app: called.__setitem__("play", called["play"] + 1)
+        )
+        self.app.card_play_service.apply_card_effect = (
+            lambda app, _cid, _def: called.__setitem__("effect", called["effect"] + 1)
+        )
+        self.app.card_play_service.apply_card_to_province = (
+            lambda app, _cid, _pid: called.__setitem__("apply", called["apply"] + 1) or True
+        )
+        self.app.card_play_service.cancel_card_target_selection = (
+            lambda app: called.__setitem__("cancel", called["cancel"] + 1)
+        )
+
+        self.app._play_selected_card()
+        self.app._apply_card_effect("x", object())
+        self.app._apply_card_to_province("x", 1)
+        self.app._cancel_card_target_selection()
+
+        self.assertEqual(called, {"play": 1, "effect": 1, "apply": 1, "cancel": 1})
+
+    def test_turn_start_and_major_round_status_methods_delegate_to_service(self) -> None:
+        called = {
+            "start": 0,
+            "major_start": 0,
+            "major_apply": 0,
+            "end_round": 0,
+            "remove": 0,
+            "refresh": 0,
+        }
+
+        self.app.turn_start_orchestration_service.start_turn_based_game = (
+            lambda app, _human: called.__setitem__("start", called["start"] + 1)
+        )
+        self.app.turn_start_orchestration_service.start_major_round_choice_phase = (
+            lambda app: called.__setitem__("major_start", called["major_start"] + 1)
+        )
+        self.app.turn_start_orchestration_service.apply_major_round_choice = (
+            lambda app, _c, _k: called.__setitem__("major_apply", called["major_apply"] + 1)
+        )
+        self.app.turn_start_orchestration_service.end_full_round = (
+            lambda app: called.__setitem__("end_round", called["end_round"] + 1)
+        )
+        self.app.major_round_status_service.remove_from_major_round = (
+            lambda app, _name, _country=None: called.__setitem__("remove", called["remove"] + 1)
+        )
+        self.app.major_round_status_service.refresh_session_skill_display = (
+            lambda app: called.__setitem__("refresh", called["refresh"] + 1)
+        )
+
+        self.app._start_turn_based_game("SHU")
+        self.app._start_major_round_choice_phase()
+        self.app._apply_major_round_choice("SHU", "support")
+        self.app._end_full_round()
+        self.app._remove_from_major_round("隆中定计", "SHU")
+        self.app._refresh_session_skill_display()
+
+        self.assertEqual(
+            called,
+            {
+                "start": 1,
+                "major_start": 1,
+                "major_apply": 1,
+                "end_round": 1,
+                "remove": 1,
+                "refresh": 1,
+            },
+        )
+
+    def test_selection_presentation_methods_delegate_to_service(self) -> None:
+        called = {"abbr": 0, "format": 0, "update": 0}
+
+        self.app.selection_presentation_service.get_unit_abbr = (
+            lambda _unit_type: called.__setitem__("abbr", called["abbr"] + 1) or "步"
+        )
+        self.app.selection_presentation_service.format_unit_info = (
+            lambda app, _u, prefix="", province_id=None: (
+                called.__setitem__("format", called["format"] + 1) or "ok"
+            )
+        )
+        self.app.selection_presentation_service.update_selection_info = (
+            lambda app: called.__setitem__("update", called["update"] + 1)
+        )
+
+        abbr = self.app._get_unit_abbr("infantry")
+        info = self.app._format_unit_info(object(), province_id=1)
+        self.app._update_selection_info()
+
+        self.assertEqual(abbr, "步")
+        self.assertEqual(info, "ok")
+        self.assertEqual(called, {"abbr": 1, "format": 1, "update": 1})
+
+    def test_turn_resource_methods_delegate_to_service(self) -> None:
+        called = {
+            "support": 0,
+            "confused": 0,
+            "special": 0,
+            "heal_cost": 0,
+            "total_pp": 0,
+            "can_use": 0,
+            "ai_cure": 0,
+            "replenish": 0,
+        }
+
+        self.app.turn_resource_service.get_people_support_level = (
+            lambda app, _country: called.__setitem__("support", called["support"] + 1) or 7
+        )
+        self.app.turn_resource_service.has_confused_units_for_country = (
+            lambda app, _country: called.__setitem__("confused", called["confused"] + 1)
+            or True
+        )
+        self.app.turn_resource_service.is_special_unit = (
+            lambda _unit: called.__setitem__("special", called["special"] + 1) or True
+        )
+        self.app.turn_resource_service.get_pp_heal_cost = (
+            lambda app, _unit: called.__setitem__("heal_cost", called["heal_cost"] + 1)
+            or 2
+        )
+        self.app.turn_resource_service.get_total_pp = (
+            lambda app, _country: called.__setitem__("total_pp", called["total_pp"] + 1) or 3
+        )
+        self.app.turn_resource_service.pp_can_use = (
+            lambda app, _country: called.__setitem__("can_use", called["can_use"] + 1)
+            or True
+        )
+        self.app.turn_resource_service.ai_cure_confused_unit = (
+            lambda app, _country: called.__setitem__("ai_cure", called["ai_cure"] + 1)
+            or True
+        )
+        self.app.turn_resource_service.replenish_action_points = (
+            lambda app: called.__setitem__("replenish", called["replenish"] + 1)
+        )
+
+        self.assertEqual(self.app._get_people_support_level("SHU"), 7)
+        self.assertTrue(self.app._has_confused_units_for_country("SHU"))
+        self.assertTrue(self.app._is_special_unit(object()))
+        self.assertEqual(self.app._get_pp_heal_cost(object()), 2)
+        self.assertEqual(self.app._get_total_pp("SHU"), 3)
+        self.assertTrue(self.app._pp_can_use("SHU"))
+        self.assertTrue(self.app._ai_cure_confused_unit("SHU"))
+        self.app._replenish_action_points()
+
+        self.assertEqual(
+            called,
+            {
+                "support": 1,
+                "confused": 1,
+                "special": 1,
+                "heal_cost": 1,
+                "total_pp": 1,
+                "can_use": 1,
+                "ai_cure": 1,
+                "replenish": 1,
+            },
+        )
 
     def test_restart_game_delegates_to_service(self) -> None:
         called = {"n": 0}
@@ -215,6 +374,140 @@ class GameAppIntegrationMinimalTests(unittest.TestCase):
         self.app.handle_event(pg.event.Event(pg.MOUSEBUTTONDOWN, {"button": 3, "pos": (140, 140)}))
 
         self.assertEqual(self.app.state, GameState.PLAYING)
+
+    def test_render_gameplay_uses_single_logical_mouse_query_per_frame(self) -> None:
+        self.app._start_turn_based_game("SHU")
+        self.app.state = GameState.PLAYING
+
+        # 隔离与本优化无关的末端tooltip路径，避免额外读取鼠标坐标
+        self.app._render_volume_slider = lambda: None
+        self.app._draw_country_stats_overlay = lambda: None
+        self.app._render_draw_event_btn = lambda: None
+        self.app._render_pp_summon_panel = lambda: None
+        self.app._render_event_card_overlay = lambda: None
+        self.app._draw_hover_tooltip = lambda: None
+        self.app._draw_evt_info_tooltip = lambda: None
+        self.app._render_help_overlay = lambda: None
+        if self.app.card_panel:
+            self.app.card_panel.draw = lambda _surface: None
+            self.app.card_panel.draw_tooltip = lambda _surface: None
+
+        original = self.app._get_logical_mouse_pos
+        called = {"n": 0}
+
+        def _counted_mouse_pos():
+            called["n"] += 1
+            return original()
+
+        self.app._get_logical_mouse_pos = _counted_mouse_pos
+        self.app._render_gameplay()
+
+        self.assertEqual(called["n"], 1)
+
+    def test_render_gameplay_caches_river_ban_layer_between_frames(self) -> None:
+        self.app._start_turn_based_game("SHU")
+        self.app.state = GameState.PLAYING
+
+        called = {"n": 0}
+        original = self.app.polyline_render_service.draw_smooth_polyline
+
+        def _counted_draw(**kwargs):
+            called["n"] += 1
+            return original(**kwargs)
+
+        self.app.polyline_render_service.draw_smooth_polyline = _counted_draw
+
+        self.app._render_gameplay()
+        first_frame_calls = called["n"]
+        self.assertGreater(first_frame_calls, 0)
+
+        self.app._render_gameplay()
+        self.assertEqual(called["n"], first_frame_calls)
+
+    def test_help_overlay_mask_cache_hit(self) -> None:
+        self.app.help_overlay_visible = True
+        self.app._help_rule_surfaces = [pg.Surface((320, 200), pg.SRCALPHA)]
+        self.app.help_current_page = 0
+
+        self.app._render_help_overlay()
+        first_mask = self.app._help_mask_cache_surface
+        self.assertIsNotNone(first_mask)
+
+        self.app._render_help_overlay()
+        self.assertIs(first_mask, self.app._help_mask_cache_surface)
+
+    def test_help_overlay_scaled_slide_cache_hit_and_resize_invalidate(self) -> None:
+        self.app.help_overlay_visible = True
+        self.app._help_rule_surfaces = [pg.Surface((320, 200), pg.SRCALPHA)]
+        self.app.help_current_page = 0
+
+        smoothscale_calls = {"n": 0}
+        original = pg.transform.smoothscale
+
+        def _counted_smoothscale(*args, **kwargs):
+            smoothscale_calls["n"] += 1
+            return original(*args, **kwargs)
+
+        with patch(
+            "src.core.help_overlay_render_service.pg.transform.smoothscale",
+            side_effect=_counted_smoothscale,
+        ):
+            self.app._render_help_overlay()
+            first_calls = smoothscale_calls["n"]
+            self.assertGreater(first_calls, 0)
+
+            self.app._render_help_overlay()
+            self.assertEqual(smoothscale_calls["n"], first_calls)
+
+            # 逻辑分辨率变化 -> 目标尺寸变化 -> 缩放缓存应失效重建
+            self.app.screen_width += 37
+            self.app.screen_height += 19
+            self.app.window = pg.Surface((self.app.screen_width, self.app.screen_height)).convert()
+            self.app._render_help_overlay()
+            self.assertGreater(smoothscale_calls["n"], first_calls)
+
+    def test_score_screen_cache_hit(self) -> None:
+        self.app._start_turn_based_game("SHU")
+        self.app._show_score_screen("wei_turn")
+
+        original_font = self.app._font
+        font_calls = {"n": 0}
+
+        def _counted_font(*args, **kwargs):
+            font_calls["n"] += 1
+            return original_font(*args, **kwargs)
+
+        self.app._font = _counted_font
+        self.app._render_score_screen()
+        first_calls = font_calls["n"]
+        self.assertGreater(first_calls, 0)
+
+        self.app._render_score_screen()
+        self.assertEqual(font_calls["n"], first_calls)
+
+    def test_score_screen_cache_invalidate_on_content_change(self) -> None:
+        self.app._start_turn_based_game("SHU")
+        self.app._show_score_screen("wei_turn")
+        self.app._render_score_screen()
+        first_cache = self.app._score_screen_cache_surface
+        self.assertIsNotNone(first_cache)
+
+        self.app.show_score_screen["net_scores"]["SHU"] += 1
+        self.app._render_score_screen()
+        self.assertIsNot(first_cache, self.app._score_screen_cache_surface)
+
+    def test_score_screen_cache_invalidate_on_resize(self) -> None:
+        self.app._start_turn_based_game("SHU")
+        self.app._show_score_screen("wei_turn")
+        self.app._render_score_screen()
+        first_cache = self.app._score_screen_cache_surface
+        self.assertIsNotNone(first_cache)
+
+        self.app.screen_width += 64
+        self.app.screen_height += 32
+        self.app.window = pg.Surface((self.app.screen_width, self.app.screen_height)).convert()
+        self.app._render_score_screen()
+        self.assertIsNot(first_cache, self.app._score_screen_cache_surface)
 
 
 if __name__ == "__main__":

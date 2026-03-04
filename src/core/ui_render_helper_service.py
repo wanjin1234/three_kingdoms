@@ -86,7 +86,19 @@ class UIRenderHelperService:
             return err_surf
 
     def font(self, app, filename: str, size: int) -> pg.font.Font:
-        return pg.font.Font(app.settings.fonts_dir / filename, size)
+        font_path = app.settings.fonts_dir / filename
+        cache_key = (str(font_path), int(size))
+
+        font_cache = getattr(app, "_font_cache", None)
+        if font_cache is None:
+            font_cache = {}
+            app._font_cache = font_cache
+
+        cached = font_cache.get(cache_key)
+        if cached is None:
+            cached = pg.font.Font(font_path, size)
+            font_cache[cache_key] = cached
+        return cached
 
     def render_text(
         self,

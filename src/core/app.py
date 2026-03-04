@@ -36,6 +36,7 @@ from src.core.combat_flow_service import CombatFlowService
 from src.core.combat_resolution_service import CombatResolutionService
 from src.core.combat_utils_service import CombatUtilsService
 from src.core.console_service import ConsoleService
+from src.core.card_play_service import CardPlayService
 from src.core.country_stats_overlay_service import CountryStatsOverlayService
 from src.core.event_card_service import EventCardService
 from src.core.evt_info_tooltip_service import EvtInfoTooltipService
@@ -43,7 +44,9 @@ from src.core.events import EventManager
 from src.core.gameplay_render_service import GameplayRenderService
 from src.core.game_event_router_service import GameEventRouterService
 from src.core.game_reset_service import GameResetService
+from src.core.help_overlay_render_service import HelpOverlayRenderService
 from src.core.help_rule_load_service import HelpRuleLoadService
+from src.core.major_round_status_service import MajorRoundStatusService
 from src.core.map_bounds_service import MapBoundsService
 from src.core.music_manager import MUSIC_END_EVENT, MusicManager
 from src.core.movement_service import MovementService
@@ -55,14 +58,18 @@ from src.core.playing_command_service import PlayingCommandService
 from src.core.polyline_render_service import PolylineRenderService
 from src.core.province_query_service import ProvinceQueryService
 from src.core.selection_service import SelectionService
+from src.core.selection_presentation_service import SelectionPresentationService
 from src.core.turn_presentation_coordinator import TurnPresentationCoordinator
 from src.core.screen_render_service import ScreenRenderService
+from src.core.score_screen_service import ScoreScreenService
 from src.core.score_manager import ScoreManager
 from src.core.state_models import CombatState, EventCardState, TurnState, UIState
 from src.core.runtime_loop_service import RuntimeLoopService
 from src.core.turn_orchestration_service import TurnOrchestrationService
+from src.core.turn_start_orchestration_service import TurnStartOrchestrationService
 from src.core.ui_render_helper_service import UIRenderHelperService
 from src.core.turn_runtime_coordinator import TurnRuntimeCoordinator
+from src.core.turn_resource_service import TurnResourceService
 from src.core.turn_service import TurnService
 from src.core.view_models import GameplayViewModel, MainSceneViewModel
 from src.core.volume_ui_service import VolumeUIService
@@ -264,11 +271,13 @@ class GameApp:
         )
         self.ai_service = AIService()
         self.event_card_service = EventCardService()
+        self.card_play_service = CardPlayService()
         self.console_service = ConsoleService()
         self.combat_utils_service = CombatUtilsService()
         self.combat_flow_service = CombatFlowService()
         self.combat_resolution_service = CombatResolutionService()
         self.screen_render_service = ScreenRenderService()
+        self.score_screen_service = ScoreScreenService()
         self.gameplay_render_service = GameplayRenderService()
         self.overlay_ui_service = OverlayUIService()
         self.country_stats_overlay_service = CountryStatsOverlayService()
@@ -277,10 +286,13 @@ class GameApp:
         self.polyline_render_service = PolylineRenderService()
         self.map_bounds_service = MapBoundsService()
         self.help_rule_load_service = HelpRuleLoadService()
+        self.help_overlay_render_service = HelpOverlayRenderService()
         self.game_event_router_service = GameEventRouterService()
         self.game_reset_service = GameResetService()
         self.runtime_loop_service = RuntimeLoopService()
         self.turn_orchestration_service = TurnOrchestrationService()
+        self.turn_start_orchestration_service = TurnStartOrchestrationService()
+        self.major_round_status_service = MajorRoundStatusService()
         self.ui_render_helper_service = UIRenderHelperService()
         self.playing_input_service = PlayingInputService()
         self.playing_input_args_service = PlayingInputArgsService()
@@ -290,6 +302,8 @@ class GameApp:
         self.province_query_service = ProvinceQueryService()
         self.movement_service = MovementService()
         self.selection_service = SelectionService()
+        self.selection_presentation_service = SelectionPresentationService()
+        self.turn_resource_service = TurnResourceService()
         self.turn_runtime = TurnRuntimeCoordinator()
         self.turn_presentation = TurnPresentationCoordinator()
         self.major_round: int = 1
@@ -436,6 +450,10 @@ class GameApp:
         self._help_load_anim_frame: int = 0
         self._help_rule_loading: bool = False
         self._help_rule_load_failed: bool = False
+        self._help_mask_cache_key: Tuple[int, int, int] | None = None
+        self._help_mask_cache_surface: pg.Surface | None = None
+        self._help_scaled_slide_cache_key: Tuple[int, int, int, int, int, int] | None = None
+        self._help_scaled_slide_cache_surface: pg.Surface | None = None
 
         # ---- 民心等级效果（2-5级）----
         self.morale_lv2_used: Dict[
@@ -479,6 +497,8 @@ class GameApp:
         # 分数显示状态（None = 不显示）
         # 结构：{"type": "wei_turn" | "game_over", "record": ScoreRecord, "net_scores": Dict}
         self.show_score_screen: dict | None = None
+        self._score_screen_cache_key: tuple | None = None
+        self._score_screen_cache_surface: pg.Surface | None = None
 
         # 音量控制
         self.volume_slider_visible: bool = False
@@ -639,65 +659,36 @@ class GameApp:
         self._replenish_action_points()
 
     def _get_people_support_level(self, country: str) -> int:
-        """获取国家当前民心等级（点数即等级，支持负数）"""
-        return self.turn_state.country_stats.get(country, {}).get("people_support", 0)
+        """委托：获取国家当前民心等级（点数即等级，支持负数）。"""
+        return self.turn_resource_service.get_people_support_level(self, country)
 
     def _has_confused_units_for_country(self, country: str) -> bool:
-        """检查该国是否有任何混乱状态的单位"""
-        for prov in self.map_manager.provinces:
-            if prov.country == country:
-                for u in prov.units:
-                    if u.is_confused:
-                        return True
-        return False
+        """委托：检查该国是否有任何混乱状态的单位。"""
+        return self.turn_resource_service.has_confused_units_for_country(self, country)
 
     def _is_special_unit(self, unit_state) -> bool:
-        """判断是否为特殊兵种（虎豹骑/无当飞军/解烦兵）"""
-        t = (unit_state.unit_type or "").lower()
-        return "hubao" in t or "wudang" in t or "jiefan" in t
+        """委托：判断是否为特殊兵种（虎豹骑/无当飞军/解烦兵）。"""
+        return self.turn_resource_service.is_special_unit(unit_state)
 
     def _get_pp_heal_cost(self, unit_state) -> int:
-        """获取回复该单位1点血量的PP消耗：普通1PP，特殊2PP"""
-        return 2 if self._is_special_unit(unit_state) else 1
+        """委托：获取回复该单位1点血量的PP消耗。"""
+        return self.turn_resource_service.get_pp_heal_cost(self, unit_state)
 
     def _get_total_pp(self, country: str) -> int:
-        """获取国家当前可用PP总量（普通+临时）"""
-        pp = self.turn_state.country_stats.get(country, {}).get("political_points", 0)
-        temp = self.event_card_state.evt_temp_pp.get(country, 0)
-        return pp + temp
+        """委托：获取国家当前可用PP总量（普通+临时）。"""
+        return self.turn_resource_service.get_total_pp(self, country)
 
     def _pp_can_use(self, country: str) -> bool:
-        """PP是否满足最低使用门槛（≥1）"""
-        return self._get_total_pp(country) >= 1
+        """委托：PP是否满足最低使用门槛（≥1）。"""
+        return self.turn_resource_service.pp_can_use(self, country)
 
     def _ai_cure_confused_unit(self, country: str) -> bool:
-        """AI 自动解除该国第一个混乱单位的混乱状态（军容严整效果）。返回是否成功。"""
-        for prov in self.map_manager.provinces:
-            if prov.country == country:
-                for u in prov.units:
-                    if u.is_confused:
-                        u.is_confused = False
-                        return True
-        return False
+        """委托：AI 自动解除该国第一个混乱单位的混乱状态（军容严整效果）。"""
+        return self.turn_resource_service.ai_cure_confused_unit(self, country)
 
     def _replenish_action_points(self) -> None:
-        """
-        重置所有单位的行动力 (MP)。
-        应该在回合开始时调用。
-        注意：根据规则，回合结束时只恢复行动力，不清除混乱状态。
-        """
-        for prov in self.map_manager.provinces:
-            for unit in prov.units:
-                defn = self.unit_repository.get_definition(unit.unit_type)
-                max_mp = defn.move
-
-                # 特殊逻辑：虎豹骑固定为4 (defs里应该是4，如果不是，这里强制设定也可以，但defs优先)
-                # defs里已经是4了.
-
-                unit.mp = max_mp + getattr(unit, "major_mp_bonus", 0)
-                # 注意：回合结束时不清除混乱状态
-                # temp_river_immunity / temp_terrain_immunity / temp_dice_bonus
-                # 是大回合级效果，不在此处清除，在大回合结束时清除
+        """委托：重置所有单位行动力（MP），不清除混乱状态。"""
+        self.turn_resource_service.replenish_action_points(self)
 
     def _update_card_panel(self) -> None:
         """更新卡牌面板显示"""
@@ -711,262 +702,20 @@ class GameApp:
             self.card_panel.allow_jiangdong_selection = self.allow_jiangdong_selection
 
     def _play_selected_card(self) -> None:
-        """打出选中的卡牌"""
-        if not self.card_panel or not self.card_manager:
-            return
-
-        selected_card_id = self.card_panel.get_selected_card()
-        if not selected_card_id:
-            self.info_panel.show_message("请先选择一张卡牌")
-            return
-
-        # 检查卡牌是否已被使用
-        if self.card_manager.is_card_used(selected_card_id):
-            self.info_panel.show_message("该卡牌已被使用")
-            return
-
-        card_def = self.card_repository.get_definition(selected_card_id)
-        if not card_def:
-            return
-
-        # 战斗中仅允许处理防守反应卡（江东止啼）
-        if self.show_combat_ui and selected_card_id != "card_jiangdong_zhiti":
-            self.info_panel.show_message("战斗进行中仅可使用江东止啼")
-            return
-
-        # 江东止啼：仅在被进攻（魏方防守）时可选择并使用
-        if selected_card_id == "card_jiangdong_zhiti":
-            if not self.allow_jiangdong_selection:
-                self.info_panel.show_message("江东止啼仅在魏国被进攻时可选择")
-                return
-
-            # 立即消耗并登记本次战斗生效
-            self.card_manager.use_card(selected_card_id)
-            # 记录江东止啊（魏防守卡）
-            self.jingnang_applied.setdefault("WEI", []).append(
-                (card_def.name, card_def.description or "")
-            )
-            self.defender_use_jiangdong = True
-            self.defender_jiangdong_decided = True
-            self.allow_jiangdong_selection = False
-            self.info_panel.show_message("已使用江东止啼：本次进攻方骰点-2")
-
-            # 选择后恢复当前行动方卡牌显示
-            if self.player_country and self.player_country in self.card_managers:
-                self.card_manager = self.card_managers[self.player_country]
-            self._update_card_panel()
-
-            # 若此时正在等待防守方其他决策，且已满足条件，则继续战斗结算
-            if (
-                self.waiting_defender_response
-                and self.defender_jiangdong_decided
-                and self.defender_hold_decided
-                and self.combat_callback
-            ):
-                self.waiting_defender_response = False
-                self.combat_callback()
-            return
-
-        # 根据卡牌类型应用不同的处理方式
-        if card_def.category == "offensive":
-            # 威震华夏和火烧连营都直接激活，不需要目标选择
-            if selected_card_id in [
-                "card_zhenjing_huaxia_shu",
-                "card_huoshao_lianying",
-            ]:
-                if self.card_effect_manager.activate_offensive_card(selected_card_id):
-                    # 标记卡牌为已使用
-                    self.card_manager.use_card(selected_card_id)
-                    # 记录进攻锦囊卡
-                    _jn_c = self.player_country or ""
-                    self.jingnang_applied.setdefault(_jn_c, []).append(
-                        (card_def.name, card_def.description or "")
-                    )
-                    self.info_panel.show_message(
-                        f"已激活锦囊卡: {card_def.name}", duration=2.0
-                    )
-                    self._update_card_panel()
-                    logger.info(
-                        f"Offensive card activated: {card_def.name} (ID: {selected_card_id})"
-                    )
-                return
-
-        # buff、defensive、summon卡牌需要选择目标
-        needs_target = card_def.category in ["buff", "defensive", "summon"]
-
-        if needs_target:
-            # 进入目标选择模式
-            self.selecting_card_target = True
-            self.selected_card_for_effect = selected_card_id
-            _desc = card_def.description or ""
-            self.info_panel.show_message(
-                f"【{card_def.name}】\n{_desc}\n请点击目标格子来应用", duration=-1
-            )
-        else:
-            # 直接应用（当前暂无不需要目标的卡牌）
-            self._apply_card_effect(selected_card_id, card_def)
+        """委托：打出选中的卡牌。"""
+        self.card_play_service.play_selected_card(self)
 
     def _apply_card_effect(self, card_id: str, card_def: object) -> None:
-        """
-        应用卡牌效果到指定的目标格子。
-        需要在目标格子选定后调用。
-        """
-        # 标记卡牌为已使用
-        self.card_manager.use_card(card_id)
-
-        # 记录本小回合已使用锦囊卡
-        _jn_c = self.player_country or ""
-        self.jingnang_applied.setdefault(_jn_c, []).append(
-            (card_def.name, card_def.description or "")
-        )
-
-        # 显示卡牌使用提示
-        self.info_panel.show_message(f"已使用锦囊卡: {card_def.name}", duration=2.0)
-
-        # 更新卡牌面板（去掉已使用的卡牌）
-        self._update_card_panel()
-
-        logger.info(f"Card played: {card_def.name} (ID: {card_id})")
+        """委托：应用卡牌效果到指定目标后，完成消费与UI更新。"""
+        self.card_play_service.apply_card_effect(self, card_id, card_def)
 
     def _apply_card_to_province(self, card_id: str, province_id: str) -> bool:
-        """
-        将卡牌效果应用到指定的格子。
-
-        Args:
-            card_id: 卡牌ID
-            province_id: 目标格子ID
-
-        Returns:
-            是否成功应用
-        """
-        card_def = self.card_repository.get_definition(card_id)
-        if not card_def:
-            return False
-
-        # 检查目标格子是否有效
-        target_prov = self.map_manager.get_by_id(province_id)
-        if not target_prov:
-            self.info_panel.show_message("无效的目标格子")
-            return False
-
-        # 检查卡牌是否已被使用
-        if self.card_manager.is_card_used(card_id):
-            self.info_panel.show_message("该卡牌已被使用")
-            return False
-
-        # 仅允许对己方格子施放目标型卡牌
-        if target_prov.country != self.player_country:
-            self.info_panel.show_message("目标必须是己方格子")
-            return False
-
-        # 不再允许将 威震华夏 作为格子效果应用。该卡应当通过 Enter 全局激活。
-        if card_id == "card_zhenjing_huaxia_shu":
-            self.info_panel.show_message("威震华夏只能按 Enter 全局激活")
-            return False
-
-        # 江东止啼为反应卡，不接受手动指定格子
-        if card_id == "card_jiangdong_zhiti":
-            self.info_panel.show_message(
-                "江东止啼无需指定格子，仅在魏国被进攻时可在卡牌面板选择"
-            )
-            return False
-
-        # 召唤类卡牌：如果目标格子已有最大堆叠数，拒绝并提示（不消耗卡牌）
-        if card_id in ("card_qilin_qishu", "card_guanmu_xiangkan"):
-            if len(target_prov.units) >= MAX_UNIT_STACK:
-                self.info_panel.show_message("超过堆叠数量，请重新选择格子")
-                return False
-
-        # 如果是召唤卡，要求只能部署在对应国家的格子
-        if card_id == "card_qilin_qishu" and target_prov.country != "SHU":
-            self.info_panel.show_message("七擒七纵只能部署在蜀国格子")
-            return False
-        if card_id == "card_guanmu_xiangkan" and target_prov.country != "WU":
-            self.info_panel.show_message("刮目相看只能部署在吴国格子")
-            return False
-
-        # 应用卡牌效果（记录效果/标记格子）
-        # 注意：province_id 可能是 int，统一转为 str 以匹配 get_effect(str(...)) 的查找方式
-        success = self.card_effect_manager.apply_card_effect(
-            card_id,
-            card_def.name,
-            str(province_id),
-            self.player_country,
-        )
-
-        if success:
-            if card_id == "card_baiyue_dujiang":
-                # 白衣渡江：目标格上现有单位本大回合跨河免疫，且骰点+1
-                for u in target_prov.units:
-                    u.temp_river_immunity = True
-                    u.temp_dice_bonus = max(u.temp_dice_bonus, 1)
-
-            if card_id == "card_touduo_yinping":
-                # 偷渡阴平：目标格上现有单位本大回合行动力+2
-                for u in target_prov.units:
-                    u.mp += 2
-                    u.temp_terrain_immunity = True
-
-            if card_id == "card_gexu_qibao":
-                # 割须弃袍：激活免伤标志，只保护当前这场战斗（战斗后自动清除）
-                self.gexu_guard_active = True
-                self.info_panel.show_message(
-                    "割须弃袍已激活：本小回合内魏方防御最高单位受伤时免除一次伤害",
-                    duration=2.5,
-                )
-
-            # 大回合持久锦囊卡：额外记录到大回合字典
-            if card_id in (
-                "card_baiyue_dujiang",
-                "card_touduo_yinping",
-                "card_kongcheng_mouce",
-            ):
-                _jn_c = self.player_country or ""
-                self.jingnang_applied_major.setdefault(_jn_c, []).append(
-                    (card_def.name, card_def.description or "")
-                )
-
-            # 处理召唤类卡牌的实际单位生成
-            if card_id == "card_qilin_qishu":
-                # 召唤 无当飞军 -> 对应单位类型 WUDANG_archer
-                try:
-                    unit_def = self.unit_repository.get_definition("WUDANG_archer")
-                    new_unit = UnitState("WUDANG_archer")
-                    new_unit.mp = unit_def.move
-                    target_prov.units.append(new_unit)
-                    self.map_manager.invalidate_cache()
-                    self.info_panel.show_message(
-                        f"在{target_prov.name}召唤了无当飞军", duration=2.0
-                    )
-                except Exception:
-                    logger.exception("召唤 无当飞军 失败")
-
-            if card_id == "card_guanmu_xiangkan":
-                # 召唤 解烦兵 -> 对应单位类型 JIEFAN_infantry
-                try:
-                    unit_def = self.unit_repository.get_definition("JIEFAN_infantry")
-                    new_unit = UnitState("JIEFAN_infantry")
-                    new_unit.mp = unit_def.move
-                    target_prov.units.append(new_unit)
-                    self.map_manager.invalidate_cache()
-                    self.info_panel.show_message(
-                        f"在{target_prov.name}召唤了解烦兵", duration=2.0
-                    )
-                except Exception:
-                    logger.exception("召唤 解烦兵 失败")
-
-            # 标记卡牌为已使用并更新界面
-            self._apply_card_effect(card_id, card_def)
-            return True
-
-        self.info_panel.show_message("无法应用卡牌效果")
-        return False
+        """委托：将卡牌效果应用到指定格子。"""
+        return self.card_play_service.apply_card_to_province(self, card_id, province_id)
 
     def _cancel_card_target_selection(self) -> None:
-        """取消卡牌目标选择"""
-        self.selecting_card_target = False
-        self.selected_card_for_effect = None
-        self.info_panel.show_message("已取消卡牌选择")
+        """委托：取消卡牌目标选择。"""
+        self.card_play_service.cancel_card_target_selection(self)
 
     def _province_has_river_neighbor(self, province_id: str) -> bool:
         """
@@ -997,380 +746,42 @@ class GameApp:
         return False
 
     def _start_turn_based_game(self, human_country: str = "SHU") -> None:
-        """开始回合制对局。human_country 为玩家控制的国家。"""
-        self.human_country = human_country
-        self.turn_index = 0
-        self.major_round = 1
-        self.minor_round = 1
-        self.turn_game_finished = False
-        self.player_country = self.turn_order[self.turn_index]
-
-        # 新对局重置卡牌使用状态
-        self.card_managers = {
-            country: CardManager(self.card_repository, country)
-            for country in self.turn_order
-        }
-        self.card_manager = self.card_managers[self.player_country]
-
-        self.card_effect_manager.clear_all_effects()
-        self._replenish_action_points()
-        # 新局重置移动高亮
-        self.move_src_provs = {}
-        self.move_dst_provs = {}
-        self.move_src_slots = {}
-        self.move_dst_slots = {}
-
-        # 记录开局分数（在游戏真正开始时）
-        self.score_manager.record_initial_scores(self.map_manager.provinces)
-        self.score_manager_initial_recorded = True
-
-        self._start_major_round_choice_phase()
-        self.clear_selection()
-        self._update_card_panel()
-        self.state = GameState.PLAYING
-        if self.music_manager:
-            self.music_manager.play_game()
-
-        # 如果第一个行动国是 AI，安排延迟触发
-        if self.human_country is not None and self.player_country != self.human_country:
-            self._ai_turn_timer = pg.time.get_ticks() + 800
+        """委托：开始回合制对局。"""
+        self.turn_start_orchestration_service.start_turn_based_game(self, human_country)
 
     def _start_major_round_choice_phase(self) -> None:
-        """每个大回合开始：三国各自选择 +2 民心点数 或 +2 政治点数。"""
-        (
-            self.major_round_choice_pending,
-            self.major_round_choice_done,
-        ) = self.turn_service.begin_major_round_choice()
-        self.country_stat_choice_btns = {}
-        # AI 国家立即自动完成加点：
-        # 策略 — PP 为 0 时选政治点数（保证能抽卡/招募），否则选民心
-        if self.human_country is not None:
-            for _c in list(self.turn_order):
-                if _c != self.human_country:
-                    _ai_pp = self._get_total_pp(_c)
-                    _auto_choice = self.turn_service.choose_major_round_bonus(_ai_pp)
-                    self._apply_major_round_choice(_c, _auto_choice)
+        """委托：每个大回合开始加点阶段。"""
+        self.turn_start_orchestration_service.start_major_round_choice_phase(self)
 
     def _apply_major_round_choice(self, country: str, choice: str) -> None:
-        """应用国家在大回合开始时的加点选择。"""
-        if not self.major_round_choice_pending:
-            return
-        applied = self.turn_service.apply_major_round_choice(
-            country_stats=self.country_stats,
-            major_round_choice_done=self.major_round_choice_done,
-            country=country,
-            choice=choice,
+        """委托：应用国家在大回合开始时的加点选择。"""
+        self.turn_start_orchestration_service.apply_major_round_choice(
+            self,
+            country,
+            choice,
         )
-        if not applied:
-            return
-
-        if choice == "support":
-            # 民心等级提升后，检查是否达成"天下归心"胜利条件
-            self._check_tianxia_guixin_victory()
-
-        if self.turn_service.all_major_round_choices_done(self.major_round_choice_done):
-            self.major_round_choice_pending = False
-            if self.info_panel:
-                self.info_panel.show_message(
-                    f"第{self.major_round}大回合加点完成：三国均已选择"
-                )
-            # 加点完成后，第一个行动国进入事件卡抽取阶段
-            self._enter_evt_draw_phase_if_needed()
 
     def _end_full_round(self) -> None:
-        """三个国家都行动完后触发（每小回合结束调用）：清理小回合效果并复位行动力。"""
-        self.card_effect_manager.clear_turn_effects()  # 仅清除小回合级格子效果，保留大回合 is_major 效果（空城妙计等）
-        self._replenish_action_points()
-        # ── 小回合级标志清除 ──
-        # 注意：gexu_guard_active（割须弃袍）在每场战斗结束时即清除，大回合结束时若未消耗则清除兜底
-        self.gexu_guard_active = False
-        self.jingnang_applied.clear()  # 锦囊卡小回合记录清除
+        """委托：小回合结束收尾。"""
+        self.turn_start_orchestration_service.end_full_round(self)
 
     def _remove_from_major_round(
         self, card_name: str, country: str | None = None
     ) -> None:
-        """从 evt_applied_major_round 中移除指定卡牌名称的显示记录。
-
-        Args:
-            card_name: 要移除的卡牌名称。
-            country: 指定国家时仅移除该国记录；为 None 时对所有国家操作。
-        """
-        targets = [country] if country else list(self.evt_applied_major_round.keys())
-        for c in targets:
-            if c in self.evt_applied_major_round:
-                self.evt_applied_major_round[c] = [
-                    (n, d) for n, d in self.evt_applied_major_round[c] if n != card_name
-                ]
+        """委托：移除大回合显示记录。"""
+        self.major_round_status_service.remove_from_major_round(self, card_name, country)
 
     def _refresh_session_skill_display(self) -> None:
-        """重建会话级持久技能（隆中定计、一身是胆、星落秋风）在 evt_applied_major_round
-        中的显示条目。在计数变化（抽牌、触发消耗）或大回合记录被清除后调用。"""
-        for skill_name in ("隆中定计", "一身是胆", "星落秋风"):
-            self._remove_from_major_round(skill_name, "SHU")
-        if self.evt_lonzhong_skill > 0:
-            self.evt_applied_major_round.setdefault("SHU", []).append(
-                ("隆中定计", f"蜀汉进攻东吴骰点+1（剩余 {self.evt_lonzhong_skill} 次）")
-            )
-        if self.evt_yishen_skill > 0:
-            self.evt_applied_major_round.setdefault("SHU", []).append(
-                (
-                    "一身是胆",
-                    f"被进攻低于1:1时自动触发（剩余 {self.evt_yishen_skill} 次）",
-                )
-            )
-        if self.evt_xingluo_active:
-            self.evt_applied_major_round.setdefault("SHU", []).append(
-                ("星落秋风", "下次抽到「隆中定计」时蜀汉额外+1政治点数")
-            )
+        """委托：刷新会话级持久技能显示。"""
+        self.major_round_status_service.refresh_session_skill_display(self)
 
     def _show_score_screen(self, screen_type: str) -> None:
-        """
-        显示分数屏幕。
-
-        Args:
-            screen_type: "wei_turn" (魏国行动完) 或 "game_over" (游戏结束)
-        """
-        # 获取详细分数信息
-        record = self.score_manager.get_detailed_scores(
-            self.map_manager.provinces, self.country_stats
-        )
-
-        # 计算净得分
-        net_scores = {
-            "SHU": record.shu_score - record.shu_initial,
-            "WEI": record.wei_score - record.wei_initial,
-            "WU": record.wu_score - record.wu_initial,
-        }
-
-        # 设置显示状态
-        self.show_score_screen = {
-            "type": screen_type,
-            "record": record,
-            "net_scores": net_scores,
-        }
-
-        # 游戏结束时切换到结算音乐
-        if screen_type == "game_over" and self.music_manager:
-            self.music_manager.play_score()
-
-        # 检查游戏结束时的胜利条件
-        if screen_type == "game_over":
-            # 检查"天下归心"
-            tianxia_winner = self.score_manager.check_tianxia_guixin(
-                self.map_manager.provinces, self.country_stats
-            )
-            if tianxia_winner:
-                self.show_score_screen["tianxia_winner"] = tianxia_winner
-            else:
-                # 检查"一代枭雄"
-                winner, net = self.score_manager.get_winner_by_score(
-                    self.map_manager.provinces, self.country_stats
-                )
-                self.show_score_screen["score_winner"] = winner
-                self.show_score_screen["net_scores"] = net
+        """委托：显示分数屏幕。"""
+        self.score_screen_service.show_score_screen(self, screen_type)
 
     def _render_score_screen(self) -> None:
-        """渲染分数显示屏幕（白屏）"""
-        if not self.show_score_screen:
-            return
-
-        # 填充白色背景
-        self.window.fill(pg.Color("white"))
-
-        record = self.show_score_screen["record"]
-        net_scores = self.show_score_screen["net_scores"]
-        screen_type = self.show_score_screen["type"]
-
-        # 字体设置
-        title_size = int(self.screen_height * 0.05)
-        body_size = int(self.screen_height * 0.035)
-        small_size = int(self.screen_height * 0.025)
-
-        title_font = self._font("msyh.ttc", title_size)
-        body_font = self._font("msyh.ttc", body_size)
-        small_font = self._font("msyh.ttc", small_size)
-
-        # 辅助：将文本按最大像素宽度自动换行，返回行列表
-        def wrap_text(text: str, font: pg.font.Font, max_w: int) -> list[str]:
-            words = list(text)  # 中文逐字分割
-            lines: list[str] = []
-            cur = ""
-            for ch in text:
-                test = cur + ch
-                if font.size(test)[0] <= max_w:
-                    cur = test
-                else:
-                    if cur:
-                        lines.append(cur)
-                    cur = ch
-            if cur:
-                lines.append(cur)
-            return lines if lines else [text]
-
-        # 特殊地点中文名映射
-        special_names_map = {
-            "Hanzhong": "汉中",
-            "Jingzhou": "荆州",
-            "Chengdu": "成都",
-            "Liangzhou": "凉州",
-            "Youzhou": "幽州",
-            "Xiangyang": "襄阳",
-            "Hefei": "合肥",
-            "Changan": "长安",
-            "Luoyang": "洛阳",
-            "Wuchang": "武昌",
-            "Changsha": "长沙",
-            "Jianye": "建业",
-        }
-
-        # 标题
-        if screen_type == "wei_turn":
-            title_text = "魏国行动完毕 - 各国分数"
-        else:
-            title_text = "游戏结束 - 最终分数"
-
-        title_surf = title_font.render(title_text, True, pg.Color("black"))
-        title_rect = title_surf.get_rect(centerx=self.screen_width // 2, top=40)
-        self.window.blit(title_surf, title_rect)
-
-        y_offset = title_rect.bottom + 40
-
-        countries = [
-            ("SHU", "蜀汉", pg.Color("red")),
-            ("WEI", "曹魏", pg.Color("blue")),
-            ("WU", "孙吴", pg.Color("green")),
-        ]
-
-        col_width = self.screen_width // 3
-        # 盒子宽度固定为列宽减去左右各 10px 边距
-        box_width = col_width - 20
-        inner_w = box_width - 30  # 文字可用宽度
-        line_gap = 4
-        section_gap = 12
-
-        # ---- 第一遍：计算每个国家盒子的动态高度 ----
-        def calc_box_content(country):
-            """返回该国所有行的列表 [(text, font, color, is_section_start)]"""
-            rows = []
-            if country == "SHU":
-                current, initial, net = (
-                    record.shu_score,
-                    record.shu_initial,
-                    net_scores["SHU"],
-                )
-                support = record.shu_people_support
-                special, normal = record.shu_special, record.shu_normal
-            elif country == "WEI":
-                current, initial, net = (
-                    record.wei_score,
-                    record.wei_initial,
-                    net_scores["WEI"],
-                )
-                support = record.wei_people_support
-                special, normal = record.wei_special, record.wei_normal
-            else:
-                current, initial, net = (
-                    record.wu_score,
-                    record.wu_initial,
-                    net_scores["WU"],
-                )
-                support = record.wu_people_support
-                special, normal = record.wu_special, record.wu_normal
-
-            sign = "+" if net >= 0 else ""
-            net_color = pg.Color("darkgreen") if net >= 0 else pg.Color("red")
-
-            rows.append((f"当前分数：{current:.1f}", small_font, pg.Color("black")))
-            rows.append((f"开局分数：{initial:.1f}", small_font, pg.Color("black")))
-            rows.append((f"净得分：{sign}{net:.1f}", small_font, net_color))
-            rows.append((f"民心等级：{support}", small_font, pg.Color("black")))
-
-            if special:
-                names_str = ", ".join([special_names_map.get(n, n) for n in special])
-                full_text = f"特殊地点：{names_str}"
-                for line in wrap_text(full_text, small_font, inner_w):
-                    rows.append((line, small_font, pg.Color("black")))
-            rows.append((f"普通地块：{normal}", small_font, pg.Color("black")))
-            return rows
-
-        # 收集所有国家内容，计算统一最大高度
-        all_rows = {c: calc_box_content(c) for c, _, _ in countries}
-
-        def rows_height(rows):
-            h = 0
-            for text, font, _ in rows:
-                h += font.get_height() + line_gap
-            return h
-
-        name_area = body_font.get_height() + 15 + section_gap
-        padding_bottom = 15
-        box_height = (
-            max(
-                rows_height(rows) + name_area + padding_bottom
-                for rows in all_rows.values()
-            )
-            + 20
-        )  # 统一所有盒子高度
-
-        # ---- 第二遍：绘制 ----
-        for i, (country, cn_name, color) in enumerate(countries):
-            box_x = i * col_width + (col_width - box_width) // 2
-            box_y = y_offset
-
-            box_rect = pg.Rect(box_x, box_y, box_width, box_height)
-            pg.draw.rect(
-                self.window, pg.Color(250, 250, 250), box_rect, border_radius=10
-            )
-            pg.draw.rect(self.window, color, box_rect, 3, border_radius=10)
-
-            # 国家名称
-            name_surf = body_font.render(cn_name, True, color)
-            name_rect = name_surf.get_rect(
-                centerx=box_x + box_width // 2, top=box_y + 10
-            )
-            self.window.blit(name_surf, name_rect)
-
-            info_y = name_rect.bottom + section_gap
-            for text, font, txt_color in all_rows[country]:
-                surf = font.render(text, True, txt_color)
-                self.window.blit(surf, (box_x + 15, info_y))
-                info_y += font.get_height() + line_gap
-
-        # 游戏结束时显示胜利者
-        if screen_type == "game_over":
-            winner_y = y_offset + box_height + 40
-
-            if "tianxia_winner" in self.show_score_screen:
-                winner = self.show_score_screen["tianxia_winner"]
-                winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
-                winner_text = (
-                    f"胜利：{winner_names.get(winner, winner)} 达成「天下归心」!"
-                )
-                winner_surf = title_font.render(winner_text, True, pg.Color("gold"))
-                self.window.blit(
-                    winner_surf,
-                    winner_surf.get_rect(centerx=self.screen_width // 2, top=winner_y),
-                )
-            elif "score_winner" in self.show_score_screen:
-                winner = self.show_score_screen["score_winner"]
-                winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
-                winner_text = (
-                    f"胜利：{winner_names.get(winner, winner)} 获得「一代枭雄」!"
-                    if winner
-                    else "平局！"
-                )
-                winner_surf = title_font.render(winner_text, True, pg.Color("gold"))
-                self.window.blit(
-                    winner_surf,
-                    winner_surf.get_rect(centerx=self.screen_width // 2, top=winner_y),
-                )
-
-        # 底部提示
-        hint_surf = small_font.render("按 ESC 退出", True, pg.Color("gray"))
-        hint_rect = hint_surf.get_rect(
-            centerx=self.screen_width // 2, bottom=self.screen_height - 30
-        )
-        self.window.blit(hint_surf, hint_rect)
+        """委托：渲染分数显示屏幕。"""
+        self.score_screen_service.render_score_screen(self)
 
     def _clear_for_turn_switch(self, keep_info_message: bool = False) -> None:
         """切换国家前清理交互状态，可选保留信息面板内容（用于保留战果）。"""
@@ -1548,85 +959,23 @@ class GameApp:
             self._update_selection_info()
 
     def _get_unit_abbr(self, unit_type: str) -> str:
-        """获取单位类型的单字简称"""
-        if unit_type == "HUBAO_cavalry":
-            return "虎豹"
-        if unit_type == "WUDANG_archer":
-            return "无当"
-        if unit_type == "JIEFAN_infantry":
-            return "解烦"
-
-        if "infantry" in unit_type:
-            return "步"
-        if "cavalry" in unit_type:
-            return "骑"
-        if "archer" in unit_type:
-            return "弓"
-        return unit_type[0].upper()
+        """委托：获取单位类型的单字简称。"""
+        return self.selection_presentation_service.get_unit_abbr(unit_type)
 
     def _format_unit_info(
         self, u_state, prefix: str = "", province_id: str | None = None
     ) -> str:
-        """通用单位信息格式化"""
-        u_def = self.unit_repository.get_definition(u_state.unit_type)
-        u_abbr = self._get_unit_abbr(u_state.unit_type)
-
-        status = []
-        if u_state.is_injured:
-            status.append("伤")
-        if u_state.is_confused:
-            status.append("乱")
-        status_str = f"({''.join(status)})" if status else ""
-
-        # [Prefix步(伤)]
-        # 为了实现彩色，我们构建富文本字符串
-        # 格式： 文本|#HexColor|彩色文本|#000000|文本
-        # 注意默认文字颜色通常是黑色 #000000
-
-        country = u_def.country
-        color_hex = "#000000"
-        if country:
-            # 获取对应国家的颜色
-            c = self.kingdom_repository.get_color(country)  # pg.Color
-            # 转为 hex
-            color_hex = f"#{c.r:02x}{c.g:02x}{c.b:02x}"
-
-        # 构建富文本行: "[" + "|#COLOR|" + ABBR + "|#000000|" + status + "]"
-        abbr_part = f"|{color_hex}|{u_abbr}|#000000|"
-        label = f"[{prefix}{abbr_part}{status_str}]"
-
-        # 计算实际攻防值（考虑受伤、混乱与格子上可能的卡牌效果）
-        actual_atk, actual_dfs = self._calculate_unit_powers(u_state, province_id)
-
-        attrs = [
-            f"血{u_state.hp}",
-            f"攻{actual_atk:.1f}",
-            f"防{actual_dfs:.1f}",
-            f"动{u_state.mp}/{u_def.move}",
-            f"射{u_def.range}",
-        ]
-        return f"{label} {'·'.join(attrs)}"
+        """委托：通用单位信息格式化。"""
+        return self.selection_presentation_service.format_unit_info(
+            self,
+            u_state,
+            prefix=prefix,
+            province_id=province_id,
+        )
 
     def _update_selection_info(self) -> None:
-        """更新信息面板显示的选中单位属性"""
-        if not self.selected_units:
-            # 如果清空了，要重置面板
-            if self.info_panel:
-                self.info_panel.show_properties("")
-            return
-
-        lines = []
-        for i, (pid, idx) in enumerate(self.selected_units):
-            prov = self.map_manager.get_by_id(pid)
-            if not prov:
-                continue
-            u_state = prov.units[idx]
-            # 还原为无序号显示，传入所在格子ID以便卡牌效果能生效
-            info_str = self._format_unit_info(u_state, province_id=prov.province_id)
-            lines.append(info_str)
-
-        if self.info_panel:
-            self.info_panel.show_properties("\n".join(lines))
+        """委托：更新信息面板显示的选中单位属性。"""
+        self.selection_presentation_service.update_selection_info(self)
 
     def handle_event(self, event: pg.event.Event) -> None:
         """
@@ -1847,149 +1196,16 @@ class GameApp:
     # ------------------------------------------------------------------
 
     def _load_help_rule_thread(self) -> None:
-        """后台线程：依次读取 rule_1.png – rule_13.png，存为原始像素列表。"""
-        surfaces, failed = self.help_rule_load_service.load_help_rule_surfaces(
-            graphics_dir=self.settings.graphics_dir
-        )
-        if failed:
-            self._help_rule_load_failed = True
-            self._help_rule_loading = False
-            return
-        self._help_rule_surfaces = surfaces
-        self._help_rule_loading = False
+        """委托：后台线程加载规则图片。"""
+        self.help_overlay_render_service.load_help_rule_thread(self)
 
     def _start_help_rule_load(self) -> None:
-        """启动后台线程加载规则图片（若尚未加载）。"""
-        started = self.help_rule_load_service.start_help_rule_load(
-            has_surfaces=bool(self._help_rule_surfaces),
-            is_loading=self._help_rule_loading,
-            load_target=self._load_help_rule_thread,
-        )
-        if started:
-            self._help_rule_loading = True
+        """委托：启动后台线程加载规则图片（若尚未加载）。"""
+        self.help_overlay_render_service.start_help_rule_load(self)
 
     def _render_help_overlay(self) -> None:
-        """渲染游戏规则图片覆盖层（单页显示 + 左右翻页按钮）。"""
-        if not self.help_overlay_visible:
-            return
-
-        # 触发后台加载（不阻塞）
-        if not self._help_rule_surfaces and not self._help_rule_loading:
-            self._start_help_rule_load()
-
-        # 半透明暗色背景遮罩
-        _mask = pg.Surface((self.screen_width, self.screen_height), pg.SRCALPHA)
-        _mask.fill((0, 0, 0, 190))
-        self.window.blit(_mask, (0, 0))
-
-        # 内容面板
-        margin = 50
-        nav_w = 72  # 左右导航按钮宽度
-        content_w = self.screen_width - margin * 2
-        content_h = self.screen_height - margin * 2
-        content_x = margin
-        content_y = margin
-        content_rect = pg.Rect(content_x, content_y, content_w, content_h)
-        self._help_overlay_content_rect = content_rect
-
-        pg.draw.rect(self.window, pg.Color("#1a1a1a"), content_rect, border_radius=10)
-        pg.draw.rect(
-            self.window, pg.Color("#5a3a1a"), content_rect, 3, border_radius=10
-        )
-
-        # --- 加载中 / 失败 ---
-        if not self._help_rule_surfaces:
-            _info_font = self._font("msyh.ttc", 22)
-            if self._help_rule_load_failed:
-                msg = "无法加载规则图片（assets/graphics/rule/ 目录不存在）"
-                _err = _info_font.render(msg, True, pg.Color("#cc4444"))
-                self.window.blit(_err, _err.get_rect(center=content_rect.center))
-            else:
-                self._help_load_anim_frame += 1
-                dots = "●" * ((self._help_load_anim_frame // 12) % 4)
-                _loading = _info_font.render(
-                    f"正在加载规则{dots}", True, pg.Color("#f5f0e8")
-                )
-                self.window.blit(
-                    _loading, _loading.get_rect(center=content_rect.center)
-                )
-            # ESC 提示
-            _hint_font = self._font("msyh.ttc", 14)
-            _hint = _hint_font.render("ESC 或点击外部关闭", True, pg.Color("#888888"))
-            self.window.blit(
-                _hint,
-                (
-                    content_x + content_w - _hint.get_width() - 16,
-                    content_y + content_h - _hint.get_height() - 6,
-                ),
-            )
-            return
-
-        total_pages = len(self._help_rule_surfaces)
-        self.help_current_page = max(0, min(self.help_current_page, total_pages - 1))
-        slide_surf = self._help_rule_surfaces[self.help_current_page]
-
-        # 图片显示区（去掉左右导航按钮占用宽度）
-        img_area_x = content_x + nav_w
-        img_area_y = content_y + 8
-        img_area_w = content_w - nav_w * 2
-        img_area_h = content_h - 44  # 留底部页码区
-
-        # 等比缩放至显示区
-        sw, sh = slide_surf.get_width(), slide_surf.get_height()
-        scale = min(img_area_w / max(sw, 1), img_area_h / max(sh, 1))
-        dw, dh = max(1, int(sw * scale)), max(1, int(sh * scale))
-        scaled_slide = pg.transform.smoothscale(slide_surf, (dw, dh))
-        blit_x = img_area_x + (img_area_w - dw) // 2
-        blit_y = img_area_y + (img_area_h - dh) // 2
-        self.window.blit(scaled_slide, (blit_x, blit_y))
-
-        # 页码文字（底部居中）
-        _page_font = self._font("msyh.ttc", 18)
-        _page_surf = _page_font.render(
-            f"{self.help_current_page + 1} / {total_pages}", True, pg.Color("#f5f0e8")
-        )
-        self.window.blit(
-            _page_surf,
-            _page_surf.get_rect(
-                centerx=content_rect.centerx, bottom=content_rect.bottom - 8
-            ),
-        )
-
-        # ESC 提示
-        _hint_font = self._font("msyh.ttc", 14)
-        _hint = _hint_font.render("ESC 或点击外部关闭", True, pg.Color("#666666"))
-        self.window.blit(
-            _hint, (content_x + content_w - _hint.get_width() - 16, content_y + 6)
-        )
-
-        # 左右导航按钮
-        btn_h = 100
-        btn_cy = content_y + content_h // 2
-        prev_rect = pg.Rect(content_x + 6, btn_cy - btn_h // 2, nav_w - 12, btn_h)
-        next_rect = pg.Rect(
-            content_x + content_w - nav_w + 6, btn_cy - btn_h // 2, nav_w - 12, btn_h
-        )
-        self._help_prev_btn = prev_rect
-        self._help_next_btn = next_rect
-
-        prev_active = self.help_current_page > 0
-        next_active = self.help_current_page < total_pages - 1
-        _arrow_font = self._font("msyh.ttc", 36)
-
-        prev_color = pg.Color("#5a3a1a") if prev_active else pg.Color("#3a3a3a")
-        pg.draw.rect(self.window, prev_color, prev_rect, border_radius=8)
-        _prev_t = _arrow_font.render(
-            "◀", True, pg.Color("#f5f0e8") if prev_active else pg.Color("#666666")
-        )
-        self.window.blit(_prev_t, _prev_t.get_rect(center=prev_rect.center))
-
-        next_color = pg.Color("#5a3a1a") if next_active else pg.Color("#3a3a3a")
-        pg.draw.rect(self.window, next_color, next_rect, border_radius=8)
-        _next_t = _arrow_font.render(
-            "▶", True, pg.Color("#f5f0e8") if next_active else pg.Color("#666666")
-        )
-        self.window.blit(_next_t, _next_t.get_rect(center=next_rect.center))
+        """委托：渲染游戏规则图片覆盖层（单页显示 + 左右翻页按钮）。"""
+        self.help_overlay_render_service.render_help_overlay(self)
 
     def _is_mountain_terrain(self, province: object) -> bool:
         return self.combat_utils_service.is_mountain_terrain(province)

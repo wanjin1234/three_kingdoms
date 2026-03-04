@@ -16,6 +16,115 @@ class GameplayRenderService:
             round_text = f"{round_text} · {country_label}"
         return round_text
 
+    @staticmethod
+    def _get_bg_alpha_surface(app, alpha: int = 128) -> pg.Surface | None:
+        """按背景资源缓存半透明 Surface，避免每帧 copy + set_alpha。"""
+        bg_image = getattr(app, "bg_image", None)
+        if bg_image is None:
+            return None
+
+        cache_key = (id(bg_image), bg_image.get_size(), alpha)
+        cached_key = getattr(app, "_bg_alpha_cache_key", None)
+        cached_surface = getattr(app, "_bg_alpha_cache_surface", None)
+
+        if cached_surface is None or cached_key != cache_key:
+            cached_surface = bg_image.copy()
+            cached_surface.set_alpha(alpha)
+            app._bg_alpha_cache_key = cache_key
+            app._bg_alpha_cache_surface = cached_surface
+
+        return cached_surface
+
+    @staticmethod
+    def _polyline_cache_fingerprint(points) -> tuple:
+        if not points:
+            return (id(points), 0)
+        p0 = points[0]
+        pn = points[-1]
+        return (
+            id(points),
+            len(points),
+            int(p0.x),
+            int(p0.y),
+            int(pn.x),
+            int(pn.y),
+        )
+
+    @staticmethod
+    def _get_river_ban_layer(app) -> pg.Surface:
+        """按窗口/几何缓存河流与禁线图层，避免每帧重复粗线绘制。"""
+        yangtze_fps = tuple(
+            GameplayRenderService._polyline_cache_fingerprint(polyline)
+            for polyline in app.yangtze_polylines
+        )
+        yellow_fp = GameplayRenderService._polyline_cache_fingerprint(
+            app.yellow_river_polyline
+        )
+        ban_fp = GameplayRenderService._polyline_cache_fingerprint(app.ban_line_polyline)
+
+        cache_key = (
+            app.window.get_size(),
+            yangtze_fps,
+            yellow_fp,
+            ban_fp,
+        )
+
+        cached_key = getattr(app, "_river_ban_layer_cache_key", None)
+        cached_layer = getattr(app, "_river_ban_layer_cache_surface", None)
+
+        if cached_layer is None or cached_key != cache_key:
+            cached_layer = pg.Surface(app.window.get_size(), pg.SRCALPHA)
+
+            river_light_blue = pg.Color(173, 216, 230)  # 浅蓝色
+            river_dark_blue = pg.Color(30, 80, 120)  # 深蓝色描边
+
+            # 河流双层绘制：深蓝描边 -> 浅蓝主体
+            for polyline in app.yangtze_polylines:
+                app.polyline_render_service.draw_smooth_polyline(
+                    window=cached_layer,
+                    color=river_dark_blue,
+                    points=polyline,
+                    width=28,
+                )
+            app.polyline_render_service.draw_smooth_polyline(
+                window=cached_layer,
+                color=river_dark_blue,
+                points=app.yellow_river_polyline,
+                width=28,
+            )
+            for polyline in app.yangtze_polylines:
+                app.polyline_render_service.draw_smooth_polyline(
+                    window=cached_layer,
+                    color=river_light_blue,
+                    points=polyline,
+                    width=20,
+                )
+            app.polyline_render_service.draw_smooth_polyline(
+                window=cached_layer,
+                color=river_light_blue,
+                points=app.yellow_river_polyline,
+                width=20,
+            )
+
+            # 禁线双层绘制：黑描边 -> 紫主体
+            app.polyline_render_service.draw_smooth_polyline(
+                window=cached_layer,
+                color=pg.Color("black"),
+                points=app.ban_line_polyline,
+                width=28,
+            )
+            app.polyline_render_service.draw_smooth_polyline(
+                window=cached_layer,
+                color=pg.Color(120, 0, 120),
+                points=app.ban_line_polyline,
+                width=20,
+            )
+
+            app._river_ban_layer_cache_key = cache_key
+            app._river_ban_layer_cache_surface = cached_layer
+
+        return cached_layer
+
     def render_gameplay(
         self,
         app,
@@ -24,10 +133,13 @@ class GameplayRenderService:
         self = app
         self.window.fill(pg.Color("white"))
 
+        # 同一帧内只计算一次逻辑鼠标坐标
+        mouse_pos = self._get_logical_mouse_pos()
+
         # 1. 画背景图片（左上角对齐屏幕，50% 透明度）
-        bg_surface = self.bg_image.copy()
-        bg_surface.set_alpha(128)
-        self.window.blit(bg_surface, (0, 0))
+        bg_surface = GameplayRenderService._get_bg_alpha_surface(self, alpha=128)
+        if bg_surface is not None:
+            self.window.blit(bg_surface, (0, 0))
 
         # 2. 画地图底层（格子+地形）
         self.map_manager.draw(self.window)
@@ -98,34 +210,15 @@ class GameplayRenderService:
             # 使用金色画笔画线，宽度为4
             pg.draw.lines(self.window, pg.Color("gold"), True, vertices, 4)
 
-        # 3. 画河流和阻挡线
-        # 河流使用双层绘制：先画所有深蓝色描边，再画所有浅蓝色河流
-        river_light_blue = pg.Color(173, 216, 230)  # 浅蓝色
-        river_dark_blue = pg.Color(30, 80, 120)  # 深蓝色描边
-
-        # 第一步：画所有河流的深蓝色描边
-        for polyline in self.yangtze_polylines:
-            self._draw_smooth_polyline(river_dark_blue, polyline, 28)  # 深蓝色描边
-        self._draw_smooth_polyline(river_dark_blue, self.yellow_river_polyline, 28)
-
-        # 第二步：画所有河流的浅蓝色主体
-        for polyline in self.yangtze_polylines:
-            self._draw_smooth_polyline(river_light_blue, polyline, 20)  # 浅蓝色河流
-        self._draw_smooth_polyline(river_light_blue, self.yellow_river_polyline, 20)
-
-        # 画阻挡线：双层绘制，先画黑色描边，再画紫色主体
-        self._draw_smooth_polyline(
-            pg.Color("black"), self.ban_line_polyline, 28
-        )  # 黑色描边
-        self._draw_smooth_polyline(
-            pg.Color(120, 0, 120), self.ban_line_polyline, 20
-        )  # 紫色主体
+        # 3. 画河流和阻挡线（预渲染缓存图层）
+        river_ban_layer = GameplayRenderService._get_river_ban_layer(self)
+        self.window.blit(river_ban_layer, (0, 0))
 
         # 3.5 画功能按钮
         for btn in getattr(self, "control_btns", []):
             # 简单的悬停效果
             color = btn["bg_color"]
-            if btn["rect"].collidepoint(self._get_logical_mouse_pos()):
+            if btn["rect"].collidepoint(mouse_pos):
                 color = pg.Color("#666666")  # Lighter gray
             # 音量按钮激活时高亮
             if btn["action"] == "VOLUME" and self.volume_slider_visible:
@@ -234,7 +327,7 @@ class GameplayRenderService:
 
                 # 悬停变色逻辑
                 btn_color = pg.Color("blue")
-                if self.combat_btn_rect.collidepoint(self._get_logical_mouse_pos()):
+                if self.combat_btn_rect.collidepoint(mouse_pos):
                     btn_color = pg.Color("#4169E1")  # RoyalBlue (Lighter than Blue)
 
                 # 画按钮背景
@@ -295,10 +388,10 @@ class GameplayRenderService:
                     self.defense_hold_skip_btn_rect = hold_no_rect
 
                     hold_yes_color = pg.Color("#8B0000")
-                    if hold_yes_rect.collidepoint(self._get_logical_mouse_pos()):
+                    if hold_yes_rect.collidepoint(mouse_pos):
                         hold_yes_color = pg.Color("#A52A2A")
                     hold_no_color = pg.Color("#4B4B4B")
-                    if hold_no_rect.collidepoint(self._get_logical_mouse_pos()):
+                    if hold_no_rect.collidepoint(mouse_pos):
                         hold_no_color = pg.Color("#666666")
 
                     pg.draw.rect(self.window, hold_yes_color, hold_yes_rect, border_radius=5)
@@ -333,7 +426,7 @@ class GameplayRenderService:
                     self.no_attack_btn_rect = pg.Rect(btn_x, btn_y, btn_w, btn_h)
 
                     btn_color = pg.Color("#555555")
-                    if self.no_attack_btn_rect.collidepoint(self._get_logical_mouse_pos()):
+                    if self.no_attack_btn_rect.collidepoint(mouse_pos):
                         btn_color = pg.Color("#6f6f6f")
 
                     pg.draw.rect(self.window, btn_color, self.no_attack_btn_rect, border_radius=5)
@@ -367,7 +460,7 @@ class GameplayRenderService:
 
                     # 悬停变色逻辑
                     btn_color = pg.Color("purple")
-                    if self.recover_btn_rect.collidepoint(self._get_logical_mouse_pos()):
+                    if self.recover_btn_rect.collidepoint(mouse_pos):
                         btn_color = pg.Color("#BA55D3")  # MediumOrchid (Lighter Purple)
 
                     # 按照要求，按钮颜色为紫色
@@ -402,7 +495,7 @@ class GameplayRenderService:
                         self.morale_lv4_btn_rect = pg.Rect(_bx, _by, _bw, _bh)
                         _bc = (
                             pg.Color("#FF8C00")
-                            if not self.morale_lv4_btn_rect.collidepoint(self._get_logical_mouse_pos())
+                            if not self.morale_lv4_btn_rect.collidepoint(mouse_pos)
                             else pg.Color("#FFA500")
                         )
                         pg.draw.rect(self.window, _bc, self.morale_lv4_btn_rect, border_radius=5)
@@ -423,7 +516,7 @@ class GameplayRenderService:
                         self.morale_lv3_btn_rect = pg.Rect(_bx, _by, _bw, _bh)
                         _bc = (
                             pg.Color("#1E90FF")
-                            if not self.morale_lv3_btn_rect.collidepoint(self._get_logical_mouse_pos())
+                            if not self.morale_lv3_btn_rect.collidepoint(mouse_pos)
                             else pg.Color("#87CEEB")
                         )
                         pg.draw.rect(self.window, _bc, self.morale_lv3_btn_rect, border_radius=5)
@@ -444,7 +537,7 @@ class GameplayRenderService:
                         self.morale_lv2_btn_rect = pg.Rect(_bx, _by, _bw, _bh)
                         _bc = (
                             pg.Color("#2E8B57")
-                            if not self.morale_lv2_btn_rect.collidepoint(self._get_logical_mouse_pos())
+                            if not self.morale_lv2_btn_rect.collidepoint(mouse_pos)
                             else pg.Color("#3CB371")
                         )
                         pg.draw.rect(self.window, _bc, self.morale_lv2_btn_rect, border_radius=5)
@@ -453,7 +546,7 @@ class GameplayRenderService:
                     # --- 民心按鈕 Hover 浮窗 ---
                     _morale_tt_text = None
                     _morale_tt_anchor = None
-                    _mx, _my = self._get_logical_mouse_pos()
+                    _mx, _my = mouse_pos
                     if self.morale_lv4_btn_rect and self.morale_lv4_btn_rect.collidepoint(_mx, _my):
                         _morale_tt_text = "大回合结束时：解除本国一个混乱的己方单位"
                         _morale_tt_anchor = self.morale_lv4_btn_rect
@@ -520,7 +613,7 @@ class GameplayRenderService:
                         self.pp_spend_end_btn_rect = pg.Rect(_end_bx, _end_by, _end_bw, _end_bh)
                         _end_c = (
                             pg.Color("#888888")
-                            if self.pp_spend_end_btn_rect.collidepoint(self._get_logical_mouse_pos())
+                            if self.pp_spend_end_btn_rect.collidepoint(mouse_pos)
                             else pg.Color("#555555")
                         )
                         pg.draw.rect(self.window, _end_c, self.pp_spend_end_btn_rect, border_radius=5)
@@ -561,7 +654,7 @@ class GameplayRenderService:
                         self.pp_btn_rect = pg.Rect(_pp_bx, _pp_by, _pp_bw, _pp_bh)
                         _pp_col = (
                             pg.Color("#DAA520")
-                            if self.pp_btn_rect.collidepoint(self._get_logical_mouse_pos())
+                            if self.pp_btn_rect.collidepoint(mouse_pos)
                             else pg.Color("#B8860B")
                         )
                         pg.draw.rect(self.window, _pp_col, self.pp_btn_rect, border_radius=5)
@@ -626,7 +719,7 @@ class GameplayRenderService:
         _ct_floor = round_rect.top - 8  # 贴在回合信息块正上方
         _ct_by = max(10, _ct_floor - _ct_bh)
         self.combat_table_btn_rect = pg.Rect(_ct_bx, _ct_by, _ct_bw, _ct_bh)
-        _mx, _my = self._get_logical_mouse_pos()
+        _mx, _my = mouse_pos
         _ct_hovered = self.combat_table_btn_rect.collidepoint(_mx, _my)
         _ct_col = pg.Color("#4A6FA5") if not _ct_hovered else pg.Color("#6B9FD4")
         pg.draw.rect(self.window, _ct_col, self.combat_table_btn_rect, border_radius=5)
@@ -658,7 +751,7 @@ class GameplayRenderService:
                     self.skip_jiangdong_card_btn_rect = btn_rect
 
                     btn_color = pg.Color("#4B4B4B")
-                    if btn_rect.collidepoint(self._get_logical_mouse_pos()):
+                    if btn_rect.collidepoint(mouse_pos):
                         btn_color = pg.Color("#666666")
 
                     pg.draw.rect(self.window, btn_color, btn_rect, border_radius=6)
@@ -674,7 +767,7 @@ class GameplayRenderService:
 
         # 8.4 战斗判定表浮窗表格（高层，覆盖卡牌面板）
         if self.combat_table_btn_rect and self.combat_table_btn_rect.collidepoint(
-            self._get_logical_mouse_pos()
+            mouse_pos
         ):
             _ct_bx = self.combat_table_btn_rect.left
             _ct_by = self.combat_table_btn_rect.top
