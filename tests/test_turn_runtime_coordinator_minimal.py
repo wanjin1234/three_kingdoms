@@ -49,6 +49,29 @@ class _FakeApp:
 
         self.turn_order = ["SHU", "WU", "WEI"]
         self.human_country = "SHU"
+        self.turn_state = type(
+            "TS",
+            (),
+            {
+                "country_stats": {
+                    "SHU": {"people_support": 4},
+                    "WU": {"people_support": 4},
+                    "WEI": {"people_support": 0},
+                }
+            },
+        )()
+        self.turn_resource_service = type(
+            "TR",
+            (),
+            {
+                "get_people_support_level": (
+                    lambda _self, stats, country: stats.get(country, {}).get("people_support", 0)
+                ),
+                "ai_cure_confused_unit": (
+                    lambda _self, _provinces, country: self._ai_cure_confused_unit(country)
+                ),
+            },
+        )()
         self.morale_lv4_pending = {}
         self._ai_cured = []
         self.map_manager = _MapManager()
@@ -80,9 +103,6 @@ class _FakeApp:
     def _clear_for_turn_switch(self, keep_info_message: bool = False) -> None:
         self._clear_called = True
         self._clear_keep_info = keep_info_message
-
-    def _get_people_support_level(self, country: str) -> int:
-        return 4 if country in ("SHU", "WU") else 0
 
     def _ai_cure_confused_unit(self, country: str) -> None:
         self._ai_cured.append(country)

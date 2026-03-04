@@ -98,18 +98,20 @@ class GameAppIntegrationMinimalTests(unittest.TestCase):
 
     def test_card_play_methods_delegate_to_service(self) -> None:
         called = {"play": 0, "effect": 0, "apply": 0, "cancel": 0}
+        self.app.card_manager = type("_CardMgr", (), {"use_card": lambda self, _cid: None})()
+        self.app.player_country = "SHU"
 
         self.app.card_play_service.play_selected_card = (
             lambda app: called.__setitem__("play", called["play"] + 1)
         )
-        self.app.card_play_service.apply_card_effect = (
-            lambda app, _cid, _def: called.__setitem__("effect", called["effect"] + 1)
+        self.app.card_play_service.apply_card_effect_with_context = (
+            lambda _ctx, _cid, _def: called.__setitem__("effect", called["effect"] + 1)
         )
         self.app.card_play_service.apply_card_to_province = (
             lambda app, _cid, _pid: called.__setitem__("apply", called["apply"] + 1) or True
         )
-        self.app.card_play_service.cancel_card_target_selection = (
-            lambda app: called.__setitem__("cancel", called["cancel"] + 1)
+        self.app.card_play_service.cancel_card_target_selection_with_context = (
+            lambda _ctx: called.__setitem__("cancel", called["cancel"] + 1)
         )
 
         self.app._play_selected_card()
@@ -118,6 +120,60 @@ class GameAppIntegrationMinimalTests(unittest.TestCase):
         self.app._cancel_card_target_selection()
 
         self.assertEqual(called, {"play": 1, "effect": 1, "apply": 1, "cancel": 1})
+
+    def test_event_card_methods_delegate_to_service(self) -> None:
+        called = {
+            "trigger": 0,
+            "confirm": 0,
+            "unit": 0,
+            "prov": 0,
+            "enter": 0,
+            "exit": 0,
+            "check": 0,
+        }
+
+        self.app.event_card_service.trigger_draw_event_card = (
+            lambda _app, _country: called.__setitem__("trigger", called["trigger"] + 1)
+        )
+        self.app.event_card_service.confirm_event_card_with_context = (
+            lambda _ctx: called.__setitem__("confirm", called["confirm"] + 1)
+        )
+        self.app.event_card_service.apply_evt_target_unit_with_context = (
+            lambda _ctx, _pid, _slot: called.__setitem__("unit", called["unit"] + 1)
+        )
+        self.app.event_card_service.apply_evt_target_province_with_context = (
+            lambda _ctx, _pid: called.__setitem__("prov", called["prov"] + 1)
+        )
+        self.app.event_card_service.enter_evt_draw_phase_if_needed_with_context = (
+            lambda _ctx: called.__setitem__("enter", called["enter"] + 1)
+        )
+        self.app.event_card_service.exit_evt_draw_phase_with_context = (
+            lambda _ctx: called.__setitem__("exit", called["exit"] + 1)
+        )
+        self.app.event_card_service.check_evt_draw_phase_pp_with_context = (
+            lambda _ctx: called.__setitem__("check", called["check"] + 1)
+        )
+
+        self.app._trigger_draw_event_card("SHU")
+        self.app._confirm_event_card()
+        self.app._apply_evt_target_unit(1, 0)
+        self.app._apply_evt_target_province(1)
+        self.app._enter_evt_draw_phase_if_needed()
+        self.app._exit_evt_draw_phase()
+        self.app._check_evt_draw_phase_pp()
+
+        self.assertEqual(
+            called,
+            {
+                "trigger": 1,
+                "confirm": 1,
+                "unit": 1,
+                "prov": 1,
+                "enter": 1,
+                "exit": 1,
+                "check": 1,
+            },
+        )
 
     def test_turn_start_and_major_round_status_methods_delegate_to_service(self) -> None:
         called = {
@@ -132,20 +188,20 @@ class GameAppIntegrationMinimalTests(unittest.TestCase):
         self.app.turn_start_orchestration_service.start_turn_based_game = (
             lambda app, _human: called.__setitem__("start", called["start"] + 1)
         )
-        self.app.turn_start_orchestration_service.start_major_round_choice_phase = (
-            lambda app: called.__setitem__("major_start", called["major_start"] + 1)
+        self.app.turn_start_orchestration_service.start_major_round_choice_phase_with_context = (
+            lambda _ctx: called.__setitem__("major_start", called["major_start"] + 1)
         )
-        self.app.turn_start_orchestration_service.apply_major_round_choice = (
-            lambda app, _c, _k: called.__setitem__("major_apply", called["major_apply"] + 1)
+        self.app.turn_start_orchestration_service.apply_major_round_choice_with_context = (
+            lambda _ctx, _c, _k: called.__setitem__("major_apply", called["major_apply"] + 1)
         )
-        self.app.turn_start_orchestration_service.end_full_round = (
-            lambda app: called.__setitem__("end_round", called["end_round"] + 1)
+        self.app.turn_start_orchestration_service.end_full_round_with_context = (
+            lambda _ctx: called.__setitem__("end_round", called["end_round"] + 1)
         )
-        self.app.major_round_status_service.remove_from_major_round = (
-            lambda app, _name, _country=None: called.__setitem__("remove", called["remove"] + 1)
+        self.app.major_round_status_service.remove_from_major_round_with_context = (
+            lambda _ctx, _name, _country=None: called.__setitem__("remove", called["remove"] + 1)
         )
-        self.app.major_round_status_service.refresh_session_skill_display = (
-            lambda app: called.__setitem__("refresh", called["refresh"] + 1)
+        self.app.major_round_status_service.refresh_session_skill_display_with_context = (
+            lambda _ctx: called.__setitem__("refresh", called["refresh"] + 1)
         )
 
         self.app._start_turn_based_game("SHU")
@@ -166,6 +222,51 @@ class GameAppIntegrationMinimalTests(unittest.TestCase):
                 "refresh": 1,
             },
         )
+
+    def test_turn_orchestration_methods_delegate_to_service(self) -> None:
+        called = {"clear": 0, "advance": 0, "finish": 0, "victory": 0}
+
+        self.app.turn_orchestration_service.clear_for_turn_switch_with_context = (
+            lambda _ctx, **_kwargs: called.__setitem__("clear", called["clear"] + 1)
+        )
+        self.app.turn_orchestration_service.advance_country_turn_with_context = (
+            lambda _ctx, **_kwargs: called.__setitem__("advance", called["advance"] + 1)
+        )
+        self.app.turn_orchestration_service.finish_country_action_with_context = (
+            lambda _ctx, _name, **_kwargs: called.__setitem__("finish", called["finish"] + 1)
+        )
+        self.app.turn_orchestration_service.check_tianxia_guixin_victory_with_context = (
+            lambda _ctx: called.__setitem__("victory", called["victory"] + 1)
+        )
+
+        self.app._clear_for_turn_switch()
+        self.app._advance_country_turn()
+        self.app._finish_country_action("移动")
+        self.app._check_tianxia_guixin_victory()
+
+        self.assertEqual(called, {"clear": 1, "advance": 1, "finish": 1, "victory": 1})
+
+    def test_ai_event_target_method_delegates_to_service_context(self) -> None:
+        called = {"auto": 0}
+
+        self.app.ai_service.auto_select_evt_target_with_context = (
+            lambda _ctx, _country: called.__setitem__("auto", called["auto"] + 1)
+        )
+
+        self.app._ai_auto_select_evt_target("SHU")
+
+        self.assertEqual(called, {"auto": 1})
+
+    def test_run_ai_turn_method_delegates_to_service_context(self) -> None:
+        called = {"run": 0}
+
+        self.app.ai_service.run_turn_with_context = (
+            lambda _ctx: called.__setitem__("run", called["run"] + 1)
+        )
+
+        self.app._run_ai_turn()
+
+        self.assertEqual(called, {"run": 1})
 
     def test_selection_presentation_methods_delegate_to_service(self) -> None:
         called = {"abbr": 0, "format": 0, "update": 0}
@@ -203,32 +304,34 @@ class GameAppIntegrationMinimalTests(unittest.TestCase):
         }
 
         self.app.turn_resource_service.get_people_support_level = (
-            lambda app, _country: called.__setitem__("support", called["support"] + 1) or 7
+            lambda _stats, _country: called.__setitem__("support", called["support"] + 1)
+            or 7
         )
         self.app.turn_resource_service.has_confused_units_for_country = (
-            lambda app, _country: called.__setitem__("confused", called["confused"] + 1)
+            lambda _provinces, _country: called.__setitem__("confused", called["confused"] + 1)
             or True
         )
         self.app.turn_resource_service.is_special_unit = (
             lambda _unit: called.__setitem__("special", called["special"] + 1) or True
         )
         self.app.turn_resource_service.get_pp_heal_cost = (
-            lambda app, _unit: called.__setitem__("heal_cost", called["heal_cost"] + 1)
+            lambda _unit: called.__setitem__("heal_cost", called["heal_cost"] + 1)
             or 2
         )
         self.app.turn_resource_service.get_total_pp = (
-            lambda app, _country: called.__setitem__("total_pp", called["total_pp"] + 1) or 3
+            lambda _stats, _temp_pp, _country: called.__setitem__("total_pp", called["total_pp"] + 1)
+            or 3
         )
         self.app.turn_resource_service.pp_can_use = (
-            lambda app, _country: called.__setitem__("can_use", called["can_use"] + 1)
+            lambda _stats, _temp_pp, _country: called.__setitem__("can_use", called["can_use"] + 1)
             or True
         )
         self.app.turn_resource_service.ai_cure_confused_unit = (
-            lambda app, _country: called.__setitem__("ai_cure", called["ai_cure"] + 1)
+            lambda _provinces, _country: called.__setitem__("ai_cure", called["ai_cure"] + 1)
             or True
         )
         self.app.turn_resource_service.replenish_action_points = (
-            lambda app: called.__setitem__("replenish", called["replenish"] + 1)
+            lambda _provinces, _unit_repo: called.__setitem__("replenish", called["replenish"] + 1)
         )
 
         self.assertEqual(self.app._get_people_support_level("SHU"), 7)
@@ -301,16 +404,18 @@ class GameAppIntegrationMinimalTests(unittest.TestCase):
         if self.app.info_panel:
             self.app.info_panel.show_message = lambda msg, **kwargs: logs.append(str(msg))
 
-        # 右键路径：未阻断时应分发到 _handle_game_right_click
+        # 右键路径：未阻断时应分发到输入服务右键上下文入口
         called = {"n": 0}
-        self.app._handle_game_right_click = lambda _pos: called.__setitem__("n", called["n"] + 1)
+        self.app.playing_input_service.handle_right_click_with_context = (
+            lambda **_kwargs: called.__setitem__("n", called["n"] + 1) or True
+        )
         self.app.major_round_choice_pending = False
         self.app.evt_draw_phase = False
         self.app.selecting_evt_target = False
         self.app.handle_event(pg.event.Event(pg.MOUSEBUTTONDOWN, {"button": 3, "pos": (100, 100)}))
         self.assertEqual(called["n"], 1)
 
-        # 右键路径：阻断时不应调用 _handle_game_right_click
+        # 右键路径：阻断时不应调用右键处理入口
         self.app.major_round_choice_pending = True
         self.app.handle_event(pg.event.Event(pg.MOUSEBUTTONDOWN, {"button": 3, "pos": (100, 100)}))
         self.assertEqual(called["n"], 1)

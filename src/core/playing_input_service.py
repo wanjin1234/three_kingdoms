@@ -5,6 +5,7 @@ from typing import Callable
 
 import pygame as pg
 
+from src.core.app_contexts import LeftClickContext, RightClickContext
 from src.game_objects.unit import UnitState
 
 MAX_UNIT_STACK = 3
@@ -117,6 +118,48 @@ class PlayingInputService:
             on_show_message=on_show_message,
         )
         return True
+
+    def handle_right_click_with_context(
+        self,
+        *,
+        pos,
+        context: RightClickContext,
+    ) -> bool:
+        return self.handle_right_click(
+            pos=pos,
+            major_round_choice_pending=context.major_round_choice_pending,
+            evt_draw_phase=context.evt_draw_phase,
+            selecting_evt_target=context.selecting_evt_target,
+            on_block_message=context.on_block_message,
+            pp_spend_mode=context.pp_spend_mode,
+            pp_summon_target_prov=context.pp_summon_target_prov,
+            get_province_at=context.get_province_at,
+            player_country=context.player_country,
+            evt_flag_hu_recruit=context.evt_flag_hu_recruit,
+            on_set_pp_summon_target_prov=context.on_set_pp_summon_target_prov,
+            selected_units=context.selected_units,
+            card_effect_manager=context.card_effect_manager,
+            on_get_people_support_level=context.on_get_people_support_level,
+            is_fort_or_city=context.is_fort_or_city,
+            morale_free_move_mode=context.morale_free_move_mode,
+            combat_target=context.combat_target,
+            on_cancel_combat_preview=context.on_cancel_combat_preview,
+            on_handle_combat=context.on_handle_combat,
+            pending_post_move_attack=context.pending_post_move_attack,
+            on_handle_movement=context.on_handle_movement,
+            on_show_message=context.on_show_message,
+        )
+
+    def handle_left_click_with_context(
+        self,
+        *,
+        pos,
+        context: LeftClickContext,
+    ) -> bool:
+        return self.handle_left_click(
+            pos=pos,
+            args=context.payload,
+        )
 
     def _handle_left_click_global_ui(self, *, pos, args: dict) -> bool:
         if self.handle_control_button_click(

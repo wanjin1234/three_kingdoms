@@ -2,6 +2,7 @@ import unittest
 
 import pygame as pg
 
+from src.core.app_contexts import LeftClickContext, RightClickContext
 from src.core.playing_input_service import PlayingInputService
 
 
@@ -748,6 +749,43 @@ class PlayingInputServiceMinimalTest(unittest.TestCase):
 
         self.assertTrue(consumed)
 
+    def test_handle_right_click_with_context_delegates(self):
+        called = {"n": 0}
+
+        self.service.handle_right_click = lambda **_kwargs: called.__setitem__("n", called["n"] + 1) or True
+
+        context = RightClickContext(
+            major_round_choice_pending=False,
+            evt_draw_phase=False,
+            selecting_evt_target=False,
+            on_block_message=None,
+            pp_spend_mode=False,
+            pp_summon_target_prov=None,
+            get_province_at=lambda _pos: None,
+            player_country="SHU",
+            evt_flag_hu_recruit=False,
+            on_set_pp_summon_target_prov=lambda _v: None,
+            selected_units=[],
+            card_effect_manager=type("CE", (), {"get_effect": lambda *_args: None})(),
+            on_get_people_support_level=lambda _country: 0,
+            is_fort_or_city=lambda _prov: False,
+            morale_free_move_mode=False,
+            combat_target=None,
+            on_cancel_combat_preview=lambda: None,
+            on_handle_combat=lambda _target: None,
+            pending_post_move_attack=False,
+            on_handle_movement=lambda _target: None,
+            on_show_message=None,
+        )
+
+        consumed = self.service.handle_right_click_with_context(
+            pos=(1, 2),
+            context=context,
+        )
+
+        self.assertTrue(consumed)
+        self.assertEqual(called["n"], 1)
+
     def test_handle_left_click_pipeline(self):
         called = []
         self.service._handle_left_click_global_ui = lambda **_kwargs: called.append("g") or False
@@ -758,6 +796,25 @@ class PlayingInputServiceMinimalTest(unittest.TestCase):
 
         self.assertTrue(consumed)
         self.assertEqual(called, ["g", "c", "p"])
+
+    def test_handle_left_click_with_context_delegates(self):
+        called = {"n": 0}
+
+        def _fake_handle_left_click(*, pos, args):
+            called["n"] += 1
+            self.assertEqual(pos, (3, 4))
+            self.assertEqual(args, {"k": "v"})
+            return True
+
+        self.service.handle_left_click = _fake_handle_left_click
+
+        consumed = self.service.handle_left_click_with_context(
+            pos=(3, 4),
+            context=LeftClickContext(payload={"k": "v"}),
+        )
+
+        self.assertTrue(consumed)
+        self.assertEqual(called["n"], 1)
 
 
 if __name__ == "__main__":

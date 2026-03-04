@@ -12,6 +12,12 @@ from typing import Any
 
 import pygame as pg
 
+from src.core.app_contexts import (
+    EventConfirmContext,
+    EventDrawPhaseContext,
+    EventTargetApplyContext,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,47 +104,53 @@ class EventCardService:
             return True
         return False
 
-    def confirm_event_card(self, app: Any) -> None:
-        """玩家点击了「确认」，执行事件卡效果。"""
-        if not app.event_card_overlay:
+    def confirm_event_card_with_context(self, context: EventConfirmContext) -> None:
+        overlay = context.get_event_card_overlay()
+        if not overlay:
             return
-        card = app.event_card_overlay["card"]
-        drawer: str = app.event_card_overlay["drawer"]
-        is_free_draw: bool = app.event_card_overlay.get("free_draw", False)
-        actual_actor: str = app.event_card_overlay.get("actual_actor", drawer)
-        app.event_card_overlay = None
-        app.evt_overlay_ok_btn = None
+        card = overlay["card"]
+        drawer: str = overlay["drawer"]
+        is_free_draw: bool = overlay.get("free_draw", False)
+        actual_actor: str = overlay.get("actual_actor", drawer)
+        context.clear_event_card_overlay()
 
-        self.apply_event_card(app, card, drawer)
+        context.apply_event_card(card, drawer)
 
-        if app.event_card_overlay:
+        if context.is_event_card_overlay_active():
             return
 
         if not card.needs_target:
             pp_country = actual_actor if is_free_draw else drawer
-            current_pp = int(app.country_stats.get(pp_country, {}).get("political_points", 0)) + app.evt_temp_pp.get(pp_country, 0)
+            current_pp = context.get_country_total_pp(pp_country)
             if current_pp >= 1:
-                if not app.evt_draw_phase and pp_country == app.player_country:
-                    self.enter_evt_draw_phase_if_needed(app)
+                if (
+                    not context.is_evt_draw_phase_active()
+                    and pp_country == context.get_player_country()
+                ):
+                    context.enter_evt_draw_phase_if_needed()
             else:
-                self.exit_evt_draw_phase(app)
+                context.exit_evt_draw_phase()
 
         if (
-            app.human_country is not None
-            and app.selecting_evt_target
-            and app.pending_evt_card_id
-            and app.pending_evt_drawer != app.human_country
+            context.get_human_country() is not None
+            and context.is_selecting_evt_target()
+            and context.get_pending_evt_card_id()
+            and context.get_pending_evt_drawer() != context.get_human_country()
         ):
-            app.ai_service.auto_select_evt_target(app, app.pending_evt_drawer)
+            pending_drawer = context.get_pending_evt_drawer()
+            if pending_drawer:
+                context.ai_auto_select_evt_target(pending_drawer)
 
         ai_actor = actual_actor if is_free_draw else drawer
         if (
-            app.human_country is not None
-            and ai_actor != app.human_country
-            and not app.event_card_overlay
-            and not app.selecting_evt_target
+            context.get_human_country() is not None
+            and ai_actor != context.get_human_country()
+            and not context.is_event_card_overlay_active()
+            and not context.is_selecting_evt_target()
+            and context.get_ai_turn_timer() is None
+            and not context.is_turn_game_finished()
         ):
-            app._ai_turn_timer = pg.time.get_ticks() + 400
+            context.set_ai_turn_timer(pg.time.get_ticks() + 400)
 
     def apply_event_card(self, app: Any, card, drawer: str) -> None:
         """执行事件卡效果。"""
@@ -189,7 +201,7 @@ class EventCardService:
             app.evt_temp_pp[tc] = app.evt_temp_pp.get(tc, 0) + ev
             msg = f"「{card.name}」：获得 {ev} 点临时政治点数（本小回合内有效）"
             if not app.evt_draw_phase and tc == app.player_country:
-                self.enter_evt_draw_phase_if_needed(app)
+                app._enter_evt_draw_phase_if_needed()
 
         elif et == "flag_xingluo":
             add_pp(tc, ev)
@@ -329,7 +341,7 @@ class EventCardService:
             app.pending_evt_card_id = card.id
             app.pending_evt_drawer = tc
             if tc != app.human_country:
-                app.ai_service.auto_select_evt_target(app, tc)
+                app._ai_auto_select_evt_target(tc)
                 return
             if app.info_panel:
                 app.info_panel.show_message(
@@ -343,7 +355,7 @@ class EventCardService:
             app.pending_evt_card_id = card.id
             app.pending_evt_drawer = tc
             if tc != app.human_country:
-                app.ai_service.auto_select_evt_target(app, tc)
+                app._ai_auto_select_evt_target(tc)
                 return
             if app.info_panel:
                 app.info_panel.show_message(
@@ -355,126 +367,150 @@ class EventCardService:
         if app.info_panel:
             app.info_panel.show_message(msg, duration=4.0)
 
-    def apply_evt_target_unit(self, app: Any, prov_id: int, slot: int) -> None:
-        """完成需要点击单位的事件卡效果。"""
-        card_id = app.pending_evt_card_id
-        app.selecting_evt_target = False
-        app.pending_evt_card_id = None
-        app.pending_evt_drawer = None
+    def apply_evt_target_unit_with_context(
+        self,
+        context: EventTargetApplyContext,
+        prov_id: int,
+        slot: int,
+    ) -> None:
+        """完成需要点击单位的事件卡效果（契约化）。"""
+        card_id = context.get_pending_evt_card_id()
+        context.clear_pending_evt_target_state()
 
-        prov = app.map_manager.get_by_id(prov_id)
+        prov = context.get_province_by_id(prov_id)
         if not prov or slot >= len(prov.units):
-            if app.info_panel:
-                app.info_panel.show_message("目标无效，事件卡取消")
+            if context.show_message:
+                context.show_message("目标无效，事件卡取消")
             return
         unit = prov.units[slot]
-        card = app.event_card_deck.get_definition(card_id)
+        if not card_id:
+            if context.show_message:
+                context.show_message("目标无效，事件卡取消")
+            return
+        card = context.get_event_card_definition(card_id)
+        if not card:
+            if context.show_message:
+                context.show_message("目标无效，事件卡取消")
+            return
 
         if card_id == "evt_wangshen":
             unit.major_mp_bonus = getattr(unit, "major_mp_bonus", 0) + card.effect_value
             unit.mp += card.effect_value
-            if app.info_panel:
-                app.info_panel.show_message(
+            if context.show_message:
+                context.show_message(
                     f"「{card.name}」：{unit.unit_type} 本大回合行动力+{card.effect_value}"
                 )
 
         elif card_id == "evt_yuda":
             unit.temp_dice_bonus += 1
             unit.defense_bonus = getattr(unit, "defense_bonus", 0) - 1
-            if app.info_panel:
-                app.info_panel.show_message("「{card.name}」：本回合骰点+1，永久防御-1")
+            if context.show_message:
+                context.show_message("「{card.name}」：本回合骰点+1，永久防御-1")
 
         elif card_id == "evt_xiedie":
             unit.attack_bonus = getattr(unit, "attack_bonus", 0) + card.effect_value
-            if app.info_panel:
-                app.info_panel.show_message(
+            if context.show_message:
+                context.show_message(
                     f"「{card.name}」：{unit.unit_type} 永久攻击力+{card.effect_value}"
                 )
 
         elif card_id == "evt_libing":
             unit.temp_dice_bonus += card.effect_value
-            if app.info_panel:
-                app.info_panel.show_message(
+            if context.show_message:
+                context.show_message(
                     f"「{card.name}」：{unit.unit_type} 本大回合骰点+{card.effect_value}"
                 )
 
-        self.check_evt_draw_phase_pp(app)
+        context.check_evt_draw_phase_pp()
         if (
-            app.player_country
-            and app.human_country is not None
-            and app.player_country != app.human_country
-            and app._ai_turn_timer is None
-            and not app.turn_game_finished
+            context.get_player_country()
+            and context.get_human_country() is not None
+            and context.get_player_country() != context.get_human_country()
+            and context.get_ai_turn_timer() is None
+            and not context.is_turn_game_finished()
         ):
-            app._ai_turn_timer = pg.time.get_ticks() + 400
+            context.set_ai_turn_timer(pg.time.get_ticks() + 400)
 
-    def apply_evt_target_province(self, app: Any, prov_id: int) -> None:
-        """完成需要点击地块的事件卡效果（江东铁壁）。"""
-        card_id = app.pending_evt_card_id
-        app.selecting_evt_target = False
-        app.pending_evt_card_id = None
-        app.pending_evt_drawer = None
+    def apply_evt_target_province_with_context(
+        self,
+        context: EventTargetApplyContext,
+        prov_id: int,
+    ) -> None:
+        """完成需要点击地块的事件卡效果（契约化）。"""
+        card_id = context.get_pending_evt_card_id()
+        context.clear_pending_evt_target_state()
 
-        card = app.event_card_deck.get_definition(card_id)
-        prov = app.map_manager.get_by_id(prov_id)
+        if not card_id:
+            if context.show_message:
+                context.show_message("该地块无己方部队，事件卡取消")
+            return
+        card = context.get_event_card_definition(card_id)
+        prov = context.get_province_by_id(prov_id)
         if not prov or not prov.units:
-            if app.info_panel:
-                app.info_panel.show_message("该地块无己方部队，事件卡取消")
+            if context.show_message:
+                context.show_message("该地块无己方部队，事件卡取消")
+            return
+        if not card:
+            if context.show_message:
+                context.show_message("该地块无己方部队，事件卡取消")
             return
 
         for unit in prov.units:
             unit.defense_bonus = getattr(unit, "defense_bonus", 0) + card.effect_value
-        if app.info_panel:
-            app.info_panel.show_message(
+        if context.show_message:
+            context.show_message(
                 f"「{card.name}」：{prov.name} 上 {len(prov.units)} 个单位永久防御+{card.effect_value}"
             )
 
-        self.check_evt_draw_phase_pp(app)
+        context.check_evt_draw_phase_pp()
         if (
-            app.player_country
-            and app.human_country is not None
-            and app.player_country != app.human_country
-            and app._ai_turn_timer is None
-            and not app.turn_game_finished
+            context.get_player_country()
+            and context.get_human_country() is not None
+            and context.get_player_country() != context.get_human_country()
+            and context.get_ai_turn_timer() is None
+            and not context.is_turn_game_finished()
         ):
-            app._ai_turn_timer = pg.time.get_ticks() + 400
+            context.set_ai_turn_timer(pg.time.get_ticks() + 400)
 
-    def enter_evt_draw_phase_if_needed(self, app: Any) -> None:
-        """若当前为人类玩家且有政治点数，进入事件卡抽取阶段。"""
-        if not app.player_country:
+    def enter_evt_draw_phase_if_needed_with_context(
+        self,
+        context: EventDrawPhaseContext,
+    ) -> None:
+        player_country = context.get_player_country()
+        if not player_country:
             return
-        if app.major_round_choice_pending:
+        if context.is_major_round_choice_pending():
             return
-        if app.human_country is not None and app.player_country != app.human_country:
+        if (
+            context.get_human_country() is not None
+            and player_country != context.get_human_country()
+        ):
             return
-        stats = app.country_stats.get(app.player_country, {})
-        pp = int(stats.get("political_points", 0)) + app.evt_temp_pp.get(app.player_country, 0)
+        pp = context.get_country_total_pp(player_country)
         if pp >= 1:
-            app.evt_draw_phase = True
-            label = app.country_labels.get(app.player_country, app.player_country)
-            if app.info_panel:
-                app.info_panel.show_message(f"【事件卡阶段】{label} 请选择：抽取事件卡 或 跳过")
+            context.set_evt_draw_phase(True)
+            label = context.get_country_label(player_country)
+            if context.show_message:
+                context.show_message(f"【事件卡阶段】{label} 请选择：抽取事件卡 或 跳过")
 
-    def exit_evt_draw_phase(self, app: Any) -> None:
-        """退出事件卡抽取阶段，进入正常行动阶段。"""
-        app.evt_draw_phase = False
-        app.evt_skip_draw_btn_rect = None
-        if app.info_panel:
-            app.info_panel.show_properties("")
+    def exit_evt_draw_phase_with_context(self, context: EventDrawPhaseContext) -> None:
+        context.set_evt_draw_phase(False)
+        context.set_evt_skip_draw_btn_rect(None)
+        if context.show_properties:
+            context.show_properties("")
 
-    def check_evt_draw_phase_pp(self, app: Any) -> None:
-        """确认/目标完成后，若 PP 耗尽则自动退出抽卡阶段。"""
-        if not app.evt_draw_phase:
+    def check_evt_draw_phase_pp_with_context(self, context: EventDrawPhaseContext) -> None:
+        if not context.get_evt_draw_phase():
             return
-        if not app.player_country:
-            app.evt_draw_phase = False
+        player_country = context.get_player_country()
+        if not player_country:
+            context.set_evt_draw_phase(False)
             return
-        stats = app.country_stats.get(app.player_country, {})
-        pp = int(stats.get("political_points", 0)) + app.evt_temp_pp.get(app.player_country, 0)
+        pp = context.get_country_total_pp(player_country)
         if pp < 1:
-            self.exit_evt_draw_phase(app)
-            if app.info_panel:
-                app.info_panel.show_message("政治点数耗尽，进入行动阶段", duration=2.0)
+            self.exit_evt_draw_phase_with_context(context)
+            if context.show_message:
+                context.show_message("政治点数耗尽，进入行动阶段", duration=2.0)
 
     def get_event_card_image(self, app: Any, card_name: str):
         """按卡牌名称加载 card/ 目录下图片并缓存。"""

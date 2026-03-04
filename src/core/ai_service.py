@@ -12,6 +12,11 @@ from typing import Any
 
 import pygame as pg
 
+from src.core.app_contexts import (
+    AIAutoSelectEventTargetContext,
+    AIBorderProvincesContext,
+    AIRunTurnContext,
+)
 from src.game_objects.unit import UnitState
 
 logger = logging.getLogger(__name__)
@@ -23,20 +28,19 @@ MAX_UNIT_STACK = 3
 class AIService:
     """AI 决策与执行服务。"""
 
-    def get_border_provinces(self, app: Any, country: str):
-        """返回己方的边境省列表：在邻接图中与敌方省份直接相连（可通行边）的己方省份，
-        按其到最近直接相邻敌省的像素距离升序排列。"""
+    def _calc_border_provinces(self, map_manager: Any, hex_side: int | float, country: str):
+        """返回己方边境省列表，按到最近相邻敌省中心距离升序。"""
         border = []
-        for prov in app.map_manager.provinces:
+        for prov in map_manager.provinces:
             if prov.country != country:
                 continue
-            p_center = prov.center_cache or prov.compute_center(app.hex_side)
+            p_center = prov.center_cache or prov.compute_center(hex_side)
             min_d = float("inf")
-            for nbr_id in app.map_manager._adjacency.get(prov.province_id, []):
-                nbr = app.map_manager.get_by_id(nbr_id)
+            for nbr_id in map_manager._adjacency.get(prov.province_id, []):
+                nbr = map_manager.get_by_id(nbr_id)
                 if nbr is None or nbr.country == country or not nbr.country:
                     continue
-                e_center = nbr.center_cache or nbr.compute_center(app.hex_side)
+                e_center = nbr.center_cache or nbr.compute_center(hex_side)
                 d = dist(p_center, e_center)
                 if d < min_d:
                     min_d = d
@@ -44,6 +48,18 @@ class AIService:
                 border.append((min_d, prov))
         border.sort(key=lambda x: x[0])
         return [p for _, p in border]
+
+    def get_border_provinces_with_context(
+        self,
+        context: AIBorderProvincesContext,
+        country: str,
+    ):
+        """基于契约计算边境省列表。"""
+        return self._calc_border_provinces(
+            context.map_manager,
+            context.hex_side,
+            country,
+        )
 
     def get_main_threat_country(self, app: Any, country: str) -> str | None:
         """返回在AI边境线对面（邻接图直接相邻可通行网格）兵力最多的敌国。"""
@@ -280,59 +296,67 @@ class AIService:
 
         return best_dest
 
-    def auto_select_evt_target(self, app: Any, selector_country: str) -> None:
-        """AI 立即为 needs_target 事件卡自动选择目标，不等待玩家点击。"""
-        if not app.pending_evt_card_id:
+    def auto_select_evt_target_with_context(
+        self,
+        context: AIAutoSelectEventTargetContext,
+        selector_country: str,
+    ) -> None:
+        """AI 立即为 needs_target 事件卡自动选择目标（契约化）。"""
+        pending_evt_card_id = context.get_pending_evt_card_id()
+        if not pending_evt_card_id:
             return
-        card_def = app.event_card_deck.get_definition(app.pending_evt_card_id)
+        card_def = context.get_event_card_definition(pending_evt_card_id)
         if not card_def:
-            app.selecting_evt_target = False
-            app.pending_evt_card_id = None
-            app.pending_evt_drawer = None
+            context.clear_pending_evt_target_state()
             return
 
         if card_def.target_type == "unit":
-            border_provs = self.get_border_provinces(app, selector_country)
+            border_provs = context.get_border_provinces(selector_country)
             border_ids = {p.province_id for p in border_provs}
             chosen_prov = None
-            for prov in app.map_manager.provinces:
+            for prov in context.get_provinces():
                 if prov.country == selector_country and prov.units:
                     if prov.province_id in border_ids:
                         chosen_prov = prov
                         break
             if chosen_prov is None:
-                for prov in app.map_manager.provinces:
+                for prov in context.get_provinces():
                     if prov.country == selector_country and prov.units:
                         chosen_prov = prov
                         break
             if chosen_prov:
-                app._apply_evt_target_unit(chosen_prov.province_id, 0)
+                context.apply_evt_target_unit(chosen_prov.province_id, 0)
             else:
-                app.selecting_evt_target = False
-                app.pending_evt_card_id = None
-                app.pending_evt_drawer = None
-                app._check_evt_draw_phase_pp()
+                context.clear_pending_evt_target_state()
+                context.check_evt_draw_phase_pp()
 
         elif card_def.target_type == "province":
             chosen_prov = max(
                 (
                     p
-                    for p in app.map_manager.provinces
+                    for p in context.get_provinces()
                     if p.country == selector_country and p.units
                 ),
                 key=lambda p: len(p.units),
                 default=None,
             )
             if chosen_prov:
-                app._apply_evt_target_province(chosen_prov.province_id)
+                context.apply_evt_target_province(chosen_prov.province_id)
             else:
-                app.selecting_evt_target = False
-                app.pending_evt_card_id = None
-                app.pending_evt_drawer = None
-                app._check_evt_draw_phase_pp()
+                context.clear_pending_evt_target_state()
+                context.check_evt_draw_phase_pp()
 
-    def run_turn(self, app: Any) -> None:
+    def run_turn_with_context(self, context: AIRunTurnContext) -> None:
         """AI 行动：自动完成大回合加点选择 + 移动/攻击，然后结束本国回合。"""
+        app = context.app
+        border_context = AIBorderProvincesContext(
+            map_manager=app.map_manager,
+            hex_side=app.hex_side,
+        )
+
+        def _get_border_provinces(country: str):
+            return self.get_border_provinces_with_context(border_context, country)
+
         if app.turn_game_finished:
             return
         country = app.player_country
@@ -350,7 +374,7 @@ class AIService:
         _ai_support = app._get_people_support_level(country)
 
         if _ai_support >= 2 and app.morale_lv2_used.get(country, 0) != app.major_round:
-            border_provs_lv2 = self.get_border_provinces(app, country)
+            border_provs_lv2 = _get_border_provinces(country)
             for _bp in border_provs_lv2:
                 if not _bp.units:
                     continue
@@ -364,7 +388,7 @@ class AIService:
             app.morale_free_move_mode = False
 
         if _ai_support >= 3 and app.morale_lv3_used.get(country, 0) != app.major_round:
-            _border_p3 = self.get_border_provinces(app, country)
+            _border_p3 = _get_border_provinces(country)
             for _bp3 in _border_p3:
                 if _bp3.units:
                     _bp3.units[0].mp += 1
@@ -376,44 +400,7 @@ class AIService:
         if app.selecting_evt_target and app.pending_evt_card_id:
             if app.human_country is not None and app.pending_evt_drawer == app.human_country:
                 return
-            beneficiary = app.pending_evt_drawer or country
-            card_def = app.event_card_deck.get_definition(app.pending_evt_card_id)
-            if card_def:
-                if card_def.target_type == "unit":
-                    chosen_prov = None
-                    chosen_slot = 0
-                    border_provs = self.get_border_provinces(app, beneficiary)
-                    border_ids = {p.province_id for p in border_provs}
-                    for prov in app.map_manager.provinces:
-                        if prov.country == beneficiary and prov.units:
-                            if prov.province_id in border_ids:
-                                chosen_prov = prov
-                                break
-                    if chosen_prov is None:
-                        for prov in app.map_manager.provinces:
-                            if prov.country == beneficiary and prov.units:
-                                chosen_prov = prov
-                                break
-                    if chosen_prov:
-                        app._apply_evt_target_unit(chosen_prov.province_id, chosen_slot)
-                    else:
-                        app.selecting_evt_target = False
-                        app.pending_evt_card_id = None
-                        app.pending_evt_drawer = None
-                        app._check_evt_draw_phase_pp()
-                elif card_def.target_type == "province":
-                    chosen_prov = max((p for p in app.map_manager.provinces if p.country == beneficiary and p.units), key=lambda p: len(p.units), default=None)
-                    if chosen_prov:
-                        app._apply_evt_target_province(chosen_prov.province_id)
-                    else:
-                        app.selecting_evt_target = False
-                        app.pending_evt_card_id = None
-                        app.pending_evt_drawer = None
-                        app._check_evt_draw_phase_pp()
-            else:
-                app.selecting_evt_target = False
-                app.pending_evt_card_id = None
-                app.pending_evt_drawer = None
+            app._ai_auto_select_evt_target(app.pending_evt_drawer or country)
             return
 
         if app.major_round_choice_pending:
@@ -433,7 +420,7 @@ class AIService:
             app._trigger_draw_event_card(country)
             if app.selecting_evt_target and app.pending_evt_card_id:
                 if app.human_country is None or app.pending_evt_drawer != app.human_country:
-                    self.auto_select_evt_target(app, app.pending_evt_drawer or country)
+                    app._ai_auto_select_evt_target(app.pending_evt_drawer or country)
             if app.event_card_overlay or app.selecting_evt_target:
                 app._ai_turn_timer = pg.time.get_ticks() + 200
                 return
@@ -453,7 +440,7 @@ class AIService:
                             _u.hp += 1
                             _healed_unit_ids.add(id(_u))
 
-        border_provs = self.get_border_provinces(app, country)
+        border_provs = _get_border_provinces(country)
         border_ids = {p.province_id for p in border_provs}
 
         inland_by_prov: dict = {}
@@ -531,7 +518,7 @@ class AIService:
                 if app.player_country != country:
                     return
 
-        border_provs = self.get_border_provinces(app, country)
+        border_provs = _get_border_provinces(country)
         border_ids = {p.province_id for p in border_provs}
         empty_border = sorted([p for p in border_provs if len(p.units) == 0], key=lambda p: self.border_defense_score(app, p), reverse=True)
         for empty_prov in empty_border:
@@ -563,10 +550,10 @@ class AIService:
                     if app.player_country != country:
                         return
                     break
-            border_provs = self.get_border_provinces(app, country)
+            border_provs = _get_border_provinces(country)
             border_ids = {p.province_id for p in border_provs}
 
-        border_provs = self.get_border_provinces(app, country)
+        border_provs = _get_border_provinces(country)
         border_ids = {p.province_id for p in border_provs}
         border_by_prov = {}
         for _prov in app.map_manager.provinces:
@@ -652,7 +639,7 @@ class AIService:
                 return
 
         if _cm:
-            _border_ids_set = {p.province_id for p in self.get_border_provinces(app, country)}
+            _border_ids_set = {p.province_id for p in _get_border_provinces(country)}
             for _card in list(_cm.get_available_cards()):
                 if _card.category == "buff":
                     _tgt = None
@@ -679,7 +666,7 @@ class AIService:
             _can_recruit = not (getattr(app, "evt_flag_hu_recruit", False) and country == "WEI")
             if _can_recruit and app._get_total_pp(country) >= 1:
                 _recruit_target = None
-                _border_pset = {p.province_id for p in self.get_border_provinces(app, country)}
+                _border_pset = {p.province_id for p in _get_border_provinces(country)}
                 for _rp in app.map_manager.provinces:
                     if _rp.country == country and len(_rp.units) < app.MAX_UNIT_STACK:
                         if _rp.province_id in _border_pset:
@@ -719,3 +706,4 @@ class AIService:
                         return
 
         app._finish_country_action(f"AI({country})行动", keep_info_message=action_taken)
+

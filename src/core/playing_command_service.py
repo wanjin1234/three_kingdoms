@@ -38,4 +38,13 @@ class PlayingCommandService:
                 app._play_selected_card()
             elif name == "handle_game_right_click":
                 if payload is not None:
-                    app._handle_game_right_click(payload)
+                    right_click_context = (
+                        app.playing_input_args_service.build_right_click_context(
+                            app,
+                            on_block_message=on_show_message,
+                        )
+                    )
+                    app.playing_input_service.handle_right_click_with_context(
+                        pos=payload,
+                        context=right_click_context,
+                    )

@@ -2,9 +2,44 @@ from __future__ import annotations
 
 import pygame as pg
 
+from src.core.app_contexts import LeftClickContext, RightClickContext
+
 
 class PlayingInputArgsService:
     """构建 PLAYING 左键输入参数包（阶段5：继续瘦身 GameApp）。"""
+
+    def build_left_click_context(self, app, *, show_msg) -> LeftClickContext:
+        return LeftClickContext(payload=self.build_left_click_args(app, show_msg=show_msg))
+
+    def build_right_click_context(
+        self,
+        app,
+        *,
+        on_block_message,
+    ) -> RightClickContext:
+        return RightClickContext(
+            major_round_choice_pending=app.major_round_choice_pending,
+            evt_draw_phase=app.evt_draw_phase,
+            selecting_evt_target=app.selecting_evt_target,
+            on_block_message=on_block_message,
+            pp_spend_mode=app.pp_spend_mode,
+            pp_summon_target_prov=app.pp_summon_target_prov,
+            get_province_at=app._get_province_at,
+            player_country=app.player_country,
+            evt_flag_hu_recruit=app.evt_flag_hu_recruit,
+            on_set_pp_summon_target_prov=app._set_pp_summon_target_prov,
+            selected_units=app.selected_units,
+            card_effect_manager=app.card_effect_manager,
+            on_get_people_support_level=app._get_people_support_level,
+            is_fort_or_city=app._is_fort_or_city,
+            morale_free_move_mode=app.morale_free_move_mode,
+            combat_target=app.combat_target,
+            on_cancel_combat_preview=app._cancel_combat_preview,
+            on_handle_combat=app._handle_combat,
+            pending_post_move_attack=app.pending_post_move_attack,
+            on_handle_movement=app._handle_movement,
+            on_show_message=(app.info_panel.show_message if app.info_panel else None),
+        )
 
     def build_left_click_args(self, app, *, show_msg):
         return {

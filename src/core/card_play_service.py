@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from src.core.app_contexts import CardApplyEffectContext, CardCancelSelectionContext
 from src.game_objects.unit import UnitState
 
 
@@ -94,19 +95,26 @@ class CardPlayService:
                 duration=-1,
             )
         else:
-            self.apply_card_effect(app, selected_card_id, card_def)
+            app._apply_card_effect(selected_card_id, card_def)
 
-    def apply_card_effect(self, app, card_id: str, card_def: object) -> None:
-        """应用卡牌效果到指定目标后，完成消费与UI更新。"""
-        app.card_manager.use_card(card_id)
+    def apply_card_effect_with_context(
+        self,
+        context: CardApplyEffectContext,
+        card_id: str,
+        card_def: object,
+    ) -> None:
+        """应用卡牌效果到指定目标后，完成消费与UI更新（契约化）。"""
+        context.use_card(card_id)
 
-        _jn_c = app.player_country or ""
-        app.jingnang_applied.setdefault(_jn_c, []).append(
-            (card_def.name, card_def.description or "")
+        _jn_c = context.player_country or ""
+        context.append_jingnang_applied(
+            _jn_c,
+            card_def.name,
+            card_def.description or "",
         )
 
-        app.info_panel.show_message(f"已使用锦囊卡: {card_def.name}", duration=2.0)
-        app._update_card_panel()
+        context.show_message(f"已使用锦囊卡: {card_def.name}", duration=2.0)
+        context.on_update_card_panel()
         logger.info(f"Card played: {card_def.name} (ID: {card_id})")
 
     def apply_card_to_province(self, app, card_id: str, province_id: str) -> bool:
@@ -205,14 +213,17 @@ class CardPlayService:
                 except Exception:
                     logger.exception("召唤 解烦兵 失败")
 
-            self.apply_card_effect(app, card_id, card_def)
+            app._apply_card_effect(card_id, card_def)
             return True
 
         app.info_panel.show_message("无法应用卡牌效果")
         return False
 
-    def cancel_card_target_selection(self, app) -> None:
-        """取消卡牌目标选择。"""
-        app.selecting_card_target = False
-        app.selected_card_for_effect = None
-        app.info_panel.show_message("已取消卡牌选择")
+    def cancel_card_target_selection_with_context(
+        self,
+        context: CardCancelSelectionContext,
+    ) -> None:
+        """取消卡牌目标选择（契约化）。"""
+        context.on_set_selecting_card_target(False)
+        context.on_set_selected_card_for_effect(None)
+        context.show_message("已取消卡牌选择")

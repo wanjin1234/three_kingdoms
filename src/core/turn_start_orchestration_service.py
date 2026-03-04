@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import pygame as pg
 
+from src.core.app_contexts import (
+    ApplyMajorRoundChoiceContext,
+    EndFullRoundContext,
+    StartMajorRoundChoiceContext,
+)
 from src.game_objects.card import CardManager
 
 
@@ -33,7 +38,7 @@ class TurnStartOrchestrationService:
         app.score_manager.record_initial_scores(app.map_manager.provinces)
         app.score_manager_initial_recorded = True
 
-        self.start_major_round_choice_phase(app)
+        app._start_major_round_choice_phase()
         app.clear_selection()
         app._update_card_panel()
         app.state = type(app.state).PLAYING
@@ -43,27 +48,33 @@ class TurnStartOrchestrationService:
         if app.human_country is not None and app.player_country != app.human_country:
             app._ai_turn_timer = pg.time.get_ticks() + 800
 
-    def start_major_round_choice_phase(self, app) -> None:
-        (
-            app.major_round_choice_pending,
-            app.major_round_choice_done,
-        ) = app.turn_service.begin_major_round_choice()
-        app.country_stat_choice_btns = {}
+    def start_major_round_choice_phase_with_context(
+        self,
+        context: StartMajorRoundChoiceContext,
+    ) -> None:
+        pending, done = context.begin_major_round_choice()
+        context.on_set_major_round_choice_state(pending, done)
+        context.on_set_country_stat_choice_btns({})
 
-        if app.human_country is not None:
-            for c in list(app.turn_order):
-                if c != app.human_country:
-                    ai_pp = app._get_total_pp(c)
-                    auto_choice = app.turn_service.choose_major_round_bonus(ai_pp)
-                    self.apply_major_round_choice(app, c, auto_choice)
+        if context.human_country is not None:
+            for country in context.turn_order:
+                if country != context.human_country:
+                    ai_pp = context.get_total_pp(country)
+                    auto_choice = context.choose_major_round_bonus(ai_pp)
+                    context.on_apply_major_round_choice(country, auto_choice)
 
-    def apply_major_round_choice(self, app, country: str, choice: str) -> None:
-        if not app.major_round_choice_pending:
+    def apply_major_round_choice_with_context(
+        self,
+        context: ApplyMajorRoundChoiceContext,
+        country: str,
+        choice: str,
+    ) -> None:
+        if not context.major_round_choice_pending:
             return
 
-        applied = app.turn_service.apply_major_round_choice(
-            country_stats=app.country_stats,
-            major_round_choice_done=app.major_round_choice_done,
+        applied = context.apply_major_round_choice(
+            country_stats=context.country_stats,
+            major_round_choice_done=context.major_round_choice_done,
             country=country,
             choice=choice,
         )
@@ -71,18 +82,18 @@ class TurnStartOrchestrationService:
             return
 
         if choice == "support":
-            app._check_tianxia_guixin_victory()
+            context.on_check_tianxia_guixin_victory()
 
-        if app.turn_service.all_major_round_choices_done(app.major_round_choice_done):
-            app.major_round_choice_pending = False
-            if app.info_panel:
-                app.info_panel.show_message(
-                    f"第{app.major_round}大回合加点完成：三国均已选择"
+        if context.all_major_round_choices_done(context.major_round_choice_done):
+            context.on_set_major_round_choice_pending(False)
+            if context.on_show_message:
+                context.on_show_message(
+                    f"第{context.major_round}大回合加点完成：三国均已选择"
                 )
-            app._enter_evt_draw_phase_if_needed()
+            context.on_enter_evt_draw_phase_if_needed()
 
-    def end_full_round(self, app) -> None:
-        app.card_effect_manager.clear_turn_effects()
-        app._replenish_action_points()
-        app.gexu_guard_active = False
-        app.jingnang_applied.clear()
+    def end_full_round_with_context(self, context: EndFullRoundContext) -> None:
+        context.on_clear_turn_effects()
+        context.on_replenish_action_points()
+        context.on_set_gexu_guard_active(False)
+        context.on_clear_jingnang_applied()

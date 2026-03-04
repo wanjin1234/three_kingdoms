@@ -58,14 +58,14 @@ class PlayingEventOrchestratorService:
                         app._confirm_event_card()
                     return
 
-                left_click_args = app.playing_input_args_service.build_left_click_args(
+                left_click_context = app.playing_input_args_service.build_left_click_context(
                     app,
                     show_msg=show_msg,
                 )
 
-                if app.playing_input_service.handle_left_click(
+                if app.playing_input_service.handle_left_click_with_context(
                     pos=event.pos,
-                    args=left_click_args,
+                    context=left_click_context,
                 ):
                     return
 

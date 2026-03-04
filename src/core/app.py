@@ -23,8 +23,28 @@ except ImportError:
     _FITZ_AVAILABLE = False
 from settings import Settings
 
+from src.core import app_context_factory
 from src.core.ai_service import AIService
 from src.core.asset_build_service import AssetBuildService
+from src.core.app_contexts import (
+    AIAutoSelectEventTargetContext,
+    AIBorderProvincesContext,
+    AIRunTurnContext,
+    ApplyMajorRoundChoiceContext,
+    AdvanceCountryTurnContext,
+    CardApplyEffectContext,
+    CardCancelSelectionContext,
+    CheckTianxiaVictoryContext,
+    ClearForTurnSwitchContext,
+    EndFullRoundContext,
+    EventConfirmContext,
+    EventDrawPhaseContext,
+    EventTargetApplyContext,
+    FinishCountryActionContext,
+    RefreshSessionSkillDisplayContext,
+    RemoveMajorRoundContext,
+    StartMajorRoundChoiceContext,
+)
 from src.core.camera import Camera
 from src.core.combat import (
     COMBAT_TABLE,
@@ -41,6 +61,7 @@ from src.core.country_stats_overlay_service import CountryStatsOverlayService
 from src.core.event_card_service import EventCardService
 from src.core.evt_info_tooltip_service import EvtInfoTooltipService
 from src.core.events import EventManager
+from src.core.app_event_card_mixin import AppEventCardMixin
 from src.core.gameplay_render_service import GameplayRenderService
 from src.core.game_event_router_service import GameEventRouterService
 from src.core.game_reset_service import GameResetService
@@ -164,7 +185,7 @@ class GameState(Enum):
     PLAYING = auto()
 
 
-class GameApp:
+class GameApp(AppEventCardMixin):
     def __init__(self, *, settings: Settings, debug: bool = False) -> None:
         """
         初始化游戏应用。
@@ -660,11 +681,17 @@ class GameApp:
 
     def _get_people_support_level(self, country: str) -> int:
         """委托：获取国家当前民心等级（点数即等级，支持负数）。"""
-        return self.turn_resource_service.get_people_support_level(self, country)
+        return self.turn_resource_service.get_people_support_level(
+            self.turn_state.country_stats,
+            country,
+        )
 
     def _has_confused_units_for_country(self, country: str) -> bool:
         """委托：检查该国是否有任何混乱状态的单位。"""
-        return self.turn_resource_service.has_confused_units_for_country(self, country)
+        return self.turn_resource_service.has_confused_units_for_country(
+            self.map_manager.provinces,
+            country,
+        )
 
     def _is_special_unit(self, unit_state) -> bool:
         """委托：判断是否为特殊兵种（虎豹骑/无当飞军/解烦兵）。"""
@@ -672,23 +699,37 @@ class GameApp:
 
     def _get_pp_heal_cost(self, unit_state) -> int:
         """委托：获取回复该单位1点血量的PP消耗。"""
-        return self.turn_resource_service.get_pp_heal_cost(self, unit_state)
+        return self.turn_resource_service.get_pp_heal_cost(unit_state)
 
     def _get_total_pp(self, country: str) -> int:
         """委托：获取国家当前可用PP总量（普通+临时）。"""
-        return self.turn_resource_service.get_total_pp(self, country)
+        return self.turn_resource_service.get_total_pp(
+            self.turn_state.country_stats,
+            self.event_card_state.evt_temp_pp,
+            country,
+        )
 
     def _pp_can_use(self, country: str) -> bool:
         """委托：PP是否满足最低使用门槛（≥1）。"""
-        return self.turn_resource_service.pp_can_use(self, country)
+        return self.turn_resource_service.pp_can_use(
+            self.turn_state.country_stats,
+            self.event_card_state.evt_temp_pp,
+            country,
+        )
 
     def _ai_cure_confused_unit(self, country: str) -> bool:
         """委托：AI 自动解除该国第一个混乱单位的混乱状态（军容严整效果）。"""
-        return self.turn_resource_service.ai_cure_confused_unit(self, country)
+        return self.turn_resource_service.ai_cure_confused_unit(
+            self.map_manager.provinces,
+            country,
+        )
 
     def _replenish_action_points(self) -> None:
         """委托：重置所有单位行动力（MP），不清除混乱状态。"""
-        self.turn_resource_service.replenish_action_points(self)
+        self.turn_resource_service.replenish_action_points(
+            self.map_manager.provinces,
+            self.unit_repository,
+        )
 
     def _update_card_panel(self) -> None:
         """更新卡牌面板显示"""
@@ -705,9 +746,19 @@ class GameApp:
         """委托：打出选中的卡牌。"""
         self.card_play_service.play_selected_card(self)
 
+    def _build_card_apply_effect_context(self) -> CardApplyEffectContext:
+        return app_context_factory.build_card_apply_effect_context(self)
+
+    def _build_cancel_card_target_selection_context(self) -> CardCancelSelectionContext:
+        return app_context_factory.build_cancel_card_target_selection_context(self)
+
     def _apply_card_effect(self, card_id: str, card_def: object) -> None:
         """委托：应用卡牌效果到指定目标后，完成消费与UI更新。"""
-        self.card_play_service.apply_card_effect(self, card_id, card_def)
+        self.card_play_service.apply_card_effect_with_context(
+            self._build_card_apply_effect_context(),
+            card_id,
+            card_def,
+        )
 
     def _apply_card_to_province(self, card_id: str, province_id: str) -> bool:
         """委托：将卡牌效果应用到指定格子。"""
@@ -715,7 +766,9 @@ class GameApp:
 
     def _cancel_card_target_selection(self) -> None:
         """委托：取消卡牌目标选择。"""
-        self.card_play_service.cancel_card_target_selection(self)
+        self.card_play_service.cancel_card_target_selection_with_context(
+            self._build_cancel_card_target_selection_context()
+        )
 
     def _province_has_river_neighbor(self, province_id: str) -> bool:
         """
@@ -751,29 +804,56 @@ class GameApp:
 
     def _start_major_round_choice_phase(self) -> None:
         """委托：每个大回合开始加点阶段。"""
-        self.turn_start_orchestration_service.start_major_round_choice_phase(self)
+        self.turn_start_orchestration_service.start_major_round_choice_phase_with_context(
+            self._build_start_major_round_choice_context()
+        )
 
     def _apply_major_round_choice(self, country: str, choice: str) -> None:
         """委托：应用国家在大回合开始时的加点选择。"""
-        self.turn_start_orchestration_service.apply_major_round_choice(
-            self,
+        self.turn_start_orchestration_service.apply_major_round_choice_with_context(
+            self._build_apply_major_round_choice_context(),
             country,
             choice,
         )
 
     def _end_full_round(self) -> None:
         """委托：小回合结束收尾。"""
-        self.turn_start_orchestration_service.end_full_round(self)
+        self.turn_start_orchestration_service.end_full_round_with_context(
+            self._build_end_full_round_context()
+        )
 
     def _remove_from_major_round(
         self, card_name: str, country: str | None = None
     ) -> None:
         """委托：移除大回合显示记录。"""
-        self.major_round_status_service.remove_from_major_round(self, card_name, country)
+        self.major_round_status_service.remove_from_major_round_with_context(
+            self._build_remove_major_round_context(),
+            card_name,
+            country,
+        )
 
     def _refresh_session_skill_display(self) -> None:
         """委托：刷新会话级持久技能显示。"""
-        self.major_round_status_service.refresh_session_skill_display(self)
+        self.major_round_status_service.refresh_session_skill_display_with_context(
+            self._build_refresh_session_skill_display_context()
+        )
+
+    def _build_start_major_round_choice_context(self) -> StartMajorRoundChoiceContext:
+        return app_context_factory.build_start_major_round_choice_context(self)
+
+    def _build_apply_major_round_choice_context(self) -> ApplyMajorRoundChoiceContext:
+        return app_context_factory.build_apply_major_round_choice_context(self)
+
+    def _build_end_full_round_context(self) -> EndFullRoundContext:
+        return app_context_factory.build_end_full_round_context(self)
+
+    def _build_remove_major_round_context(self) -> RemoveMajorRoundContext:
+        return app_context_factory.build_remove_major_round_context(self)
+
+    def _build_refresh_session_skill_display_context(
+        self,
+    ) -> RefreshSessionSkillDisplayContext:
+        return app_context_factory.build_refresh_session_skill_display_context(self)
 
     def _show_score_screen(self, screen_type: str) -> None:
         """委托：显示分数屏幕。"""
@@ -785,15 +865,15 @@ class GameApp:
 
     def _clear_for_turn_switch(self, keep_info_message: bool = False) -> None:
         """切换国家前清理交互状态，可选保留信息面板内容（用于保留战果）。"""
-        self.turn_orchestration_service.clear_for_turn_switch(
-            self,
+        self.turn_orchestration_service.clear_for_turn_switch_with_context(
+            self._build_clear_for_turn_switch_context(),
             keep_info_message=keep_info_message,
         )
 
     def _advance_country_turn(self, keep_info_message: bool = False) -> None:
         """切换到下一个国家。"""
-        self.turn_orchestration_service.advance_country_turn(
-            self,
+        self.turn_orchestration_service.advance_country_turn_with_context(
+            self._build_advance_country_turn_context(),
             keep_info_message=keep_info_message,
         )
 
@@ -801,11 +881,20 @@ class GameApp:
         self, action_name: str, keep_info_message: bool = False
     ) -> None:
         """当前国家执行完一个动作后，自动轮换到下一国家。"""
-        self.turn_orchestration_service.finish_country_action(
-            self,
+        self.turn_orchestration_service.finish_country_action_with_context(
+            self._build_finish_country_action_context(),
             action_name,
             keep_info_message=keep_info_message,
         )
+
+    def _build_clear_for_turn_switch_context(self) -> ClearForTurnSwitchContext:
+        return app_context_factory.build_clear_for_turn_switch_context(self)
+
+    def _build_advance_country_turn_context(self) -> AdvanceCountryTurnContext:
+        return app_context_factory.build_advance_country_turn_context(self)
+
+    def _build_finish_country_action_context(self) -> FinishCountryActionContext:
+        return app_context_factory.build_finish_country_action_context(self)
 
     # ---------------------------------------------------------------
     # AI TURN
@@ -815,7 +904,23 @@ class GameApp:
         """AI 行动：自动完成大回合加点选择 + 移动/攻击，然后结束本国回合。
         策略：先将所有内陆部队整省调往边境，全部到位后再发动进攻。
         同时会抽取事件卡、使用锦囊卡、招募部队、解除混乱。"""
-        self.ai_service.run_turn(self)
+        self.ai_service.run_turn_with_context(self._build_ai_run_turn_context())
+
+    def _build_ai_run_turn_context(self) -> AIRunTurnContext:
+        return app_context_factory.build_ai_run_turn_context(self)
+
+    def _build_ai_border_provinces_context(self) -> AIBorderProvincesContext:
+        return app_context_factory.build_ai_border_provinces_context(self)
+
+    def _ai_auto_select_evt_target(self, selector_country: str) -> None:
+        """AI 自动为待选目标事件卡选择目标（契约化委托）。"""
+        self.ai_service.auto_select_evt_target_with_context(
+            self._build_ai_auto_select_event_target_context(),
+            selector_country,
+        )
+
+    def _build_ai_auto_select_event_target_context(self) -> AIAutoSelectEventTargetContext:
+        return app_context_factory.build_ai_auto_select_event_target_context(self)
 
     def _restart_game(self) -> None:
         """重置游戏状态并返回选人界面"""
@@ -1096,31 +1201,6 @@ class GameApp:
             pos=pos,
         )
 
-    def _handle_game_right_click(self, pos: Tuple[int, int]) -> None:
-        """处理游戏场景的右键逻辑"""
-        self.playing_input_service.handle_game_right_click(
-            pos=pos,
-            pp_spend_mode=self.pp_spend_mode,
-            pp_summon_target_prov=self.pp_summon_target_prov,
-            get_province_at=self._get_province_at,
-            player_country=self.player_country,
-            evt_flag_hu_recruit=self.evt_flag_hu_recruit,
-            on_set_pp_summon_target_prov=(
-                lambda prov: setattr(self, "pp_summon_target_prov", prov)
-            ),
-            selected_units=self.selected_units,
-            card_effect_manager=self.card_effect_manager,
-            on_get_people_support_level=self._get_people_support_level,
-            is_fort_or_city=self._is_fort_or_city,
-            morale_free_move_mode=self.morale_free_move_mode,
-            combat_target=self.combat_target,
-            on_cancel_combat_preview=self._cancel_combat_preview,
-            on_handle_combat=self._handle_combat,
-            pending_post_move_attack=self.pending_post_move_attack,
-            on_handle_movement=self._handle_movement,
-            on_show_message=(self.info_panel.show_message if self.info_panel else None),
-        )
-
     def _handle_movement(self, target: object) -> None:  # target: Province
         """处理移动逻辑：同一格子上的单位可作为整体一起移动。"""
         self.movement_service.handle_movement(self, target)
@@ -1306,7 +1386,12 @@ class GameApp:
         条件：民心等级达 5 级，且同时占领洛阳、成都、建邺。
         如果达成，立即显示分数屏并结束游戏。
         """
-        self.turn_orchestration_service.check_tianxia_guixin_victory(self)
+        self.turn_orchestration_service.check_tianxia_guixin_victory_with_context(
+            self._build_check_tianxia_victory_context()
+        )
+
+    def _build_check_tianxia_victory_context(self) -> CheckTianxiaVictoryContext:
+        return app_context_factory.build_check_tianxia_victory_context(self)
 
     def _get_neighbors(self, unit_prov: object) -> List[object]:
         """获取邻居"""
@@ -1509,74 +1594,6 @@ class GameApp:
             text,
             color,
         )
-
-    # ====================================================================
-    # 事件卡系统 — 抽卡、效果应用、渲染
-    # ====================================================================
-
-    def _can_draw_event_card(self, country: str) -> bool:
-        """判断 country 当前是否可以消耗 1 政治点数抽取事件卡。"""
-        return self.event_card_service.can_draw_event_card(self, country)
-
-    def _spend_pp(self, country: str, amount: int = 1) -> bool:
-        """消耗政治点数（优先消耗临时 PP，再消耗普通 PP）。"""
-        return self.event_card_service.spend_pp(self, country, amount)
-
-    def _trigger_draw_event_card(self, country: str) -> None:
-        """尝试让 country 消耗 1 政治点数抽取一张事件卡。"""
-        self.event_card_service.trigger_draw_event_card(self, country)
-
-    def _is_negative_event(self, card, country: str) -> bool:
-        """判定事件卡对抽卡方 country 是否为负面效果（用于'不懈于内'）。"""
-        return self.event_card_service.is_negative_event(self, card, country)
-
-    def _confirm_event_card(self) -> None:
-        """玩家点击了「确认」，执行事件卡效果。"""
-        self.event_card_service.confirm_event_card(self)
-
-    def _apply_event_card(self, card, drawer: str) -> None:
-        """执行事件卡效果。"""
-        self.event_card_service.apply_event_card(self, card, drawer)
-
-    def _apply_evt_target_unit(self, prov_id: int, slot: int) -> None:
-        """完成需要点击单位的事件卡效果。"""
-        self.event_card_service.apply_evt_target_unit(self, prov_id, slot)
-
-    def _apply_evt_target_province(self, prov_id: int) -> None:
-        """完成需要点击地块的事件卡效果（江东铁壁）。"""
-        self.event_card_service.apply_evt_target_province(self, prov_id)
-
-    # ====================================================================
-    # 事件卡覆盖层渲染
-    # ====================================================================
-
-    def _get_event_card_image(self, card_name: str) -> "pg.Surface | None":
-        """按卡牌名称加载 card/ 目录下的图片，结果缓存避免重复 IO。"""
-        return self.event_card_service.get_event_card_image(self, card_name)
-
-    def _render_event_card_overlay(self) -> None:
-        """绘制事件卡展示面板（模态覆盖层）。"""
-        self.event_card_service.render_event_card_overlay(self)
-
-    # ====================================================================
-    # 事件卡抽取阶段管理
-    # ====================================================================
-
-    def _enter_evt_draw_phase_if_needed(self) -> None:
-        """若当前为人类玩家且有政治点数，进入事件卡抽取阶段。"""
-        self.event_card_service.enter_evt_draw_phase_if_needed(self)
-
-    def _exit_evt_draw_phase(self) -> None:
-        """退出事件卡抽取阶段，进入正常行动阶段。"""
-        self.event_card_service.exit_evt_draw_phase(self)
-
-    def _check_evt_draw_phase_pp(self) -> None:
-        """确认/目标完成后，若 PP 耗尽则自动退出抽卡阶段。"""
-        self.event_card_service.check_evt_draw_phase_pp(self)
-
-    def _render_draw_event_btn(self) -> None:
-        """事件卡抽取阶段按钮组：「抽事件卡」+ 「跳过」；等待目标选择时显示提示。"""
-        self.event_card_service.render_draw_event_btn(self)
 
     def _tag_w_cache(self) -> int:
         """返回国家标签宽度（粗略估算）"""

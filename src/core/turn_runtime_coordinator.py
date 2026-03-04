@@ -39,11 +39,18 @@ class TurnRuntimeCoordinator:
         """小回合满后进入下一大回合时执行的集中清理逻辑。"""
         # 大回合结束：民心4级效果（军容严整）各国可解除一个混乱单位
         for country in list(app.turn_order):
-            if app._get_people_support_level(country) >= 4:
+            support_lv = app.turn_resource_service.get_people_support_level(
+                app.turn_state.country_stats,
+                country,
+            )
+            if support_lv >= 4:
                 if country == app.human_country:
                     app.morale_lv4_pending[country] = True
                 else:
-                    app._ai_cure_confused_unit(country)
+                    app.turn_resource_service.ai_cure_confused_unit(
+                        app.map_manager.provinces,
+                        country,
+                    )
 
         # 重置单位大回合临时属性
         for province in app.map_manager.provinces:
