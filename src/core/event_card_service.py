@@ -20,6 +20,21 @@ from src.core.app_contexts import (
 
 logger = logging.getLogger(__name__)
 
+# 单位类型 -> 中文名称映射
+_UNIT_TYPE_ZH: dict[str, str] = {
+    "infantry": "步兵",
+    "cavalry": "骑兵",
+    "archer": "弓兵",
+    "HUBAO_cavalry": "虎豹骑兵",
+    "WUDANG_archer": "无当飞军",
+    "JIEFAN_infantry": "解烦兵",
+}
+
+
+def _unit_name_zh(unit_type: str) -> str:
+    """将 unit_type 英文标识转为中文名称，找不到时直接返回原字符串。"""
+    return _UNIT_TYPE_ZH.get(unit_type, unit_type)
+
 
 class EventCardService:
     """事件卡系统服务。"""
@@ -459,8 +474,11 @@ class EventCardService:
             unit.defense_bonus = getattr(unit, "defense_bonus", 0) + card.effect_value
         if context.show_message:
             context.show_message(
-                f"「{card.name}」：{prov.name} 上 {len(prov.units)} 个单位永久防御+{card.effect_value}"
+                f"「{card.name}」：该地块上 {len(prov.units)} 个单位永久防御+{card.effect_value}"
             )
+        # 地图高亮：无论人工还是AI操作，都在地图上亮起目标省份
+        if context.on_highlight_province_temp:
+            context.on_highlight_province_temp(prov_id)
 
         context.check_evt_draw_phase_pp()
         if (
@@ -496,8 +514,7 @@ class EventCardService:
     def exit_evt_draw_phase_with_context(self, context: EventDrawPhaseContext) -> None:
         context.set_evt_draw_phase(False)
         context.set_evt_skip_draw_btn_rect(None)
-        if context.show_properties:
-            context.show_properties("")
+        # 不在此处主动清除 info panel，旧信息不阻碍新信息
 
     def check_evt_draw_phase_pp_with_context(self, context: EventDrawPhaseContext) -> None:
         if not context.get_evt_draw_phase():
@@ -562,16 +579,24 @@ class EventCardService:
             img_surf_scaled = pg.transform.smoothscale(card_img, (dw, dh))
             img_area_h = dh + padding
 
-        chunk_size = 24
+        # 按像素宽度自动换行（使用 title 字体渲染描述，更清晰）
+        font_desc = font_title
+        desc_max_w = panel_w - padding * 4
         desc_lines: list[str] = []
         raw = card.description
         while raw:
-            desc_lines.append(raw[:chunk_size])
-            raw = raw[chunk_size:]
+            # 逐字符测量，找到当前行最多能放几个字符
+            for end in range(len(raw), 0, -1):
+                line_w, _ = font_desc.size(raw[:end])
+                if line_w <= desc_max_w or end == 1:
+                    desc_lines.append(raw[:end])
+                    raw = raw[end:]
+                    break
 
+        desc_line_h = font_desc.get_height()
         bar_h = title_h + padding
         name_h = title_h + padding
-        desc_h = len(desc_lines) * (body_h + 4) + padding
+        desc_h = len(desc_lines) * (desc_line_h + 6) + padding * 2
         btn_h_total = body_h + padding * 3
 
         panel_h = bar_h + name_h + img_area_h + desc_h + btn_h_total
@@ -642,11 +667,20 @@ class EventCardService:
                 1,
             )
 
-        for dl in desc_lines:
-            ds = font_body.render(dl, True, pg.Color("#333333"))
-            app.window.blit(ds, ds.get_rect(centerx=panel_x + panel_w // 2, top=cur_y))
-            cur_y += body_h + 4
+        # 描述区域背景框
+        desc_area_h = len(desc_lines) * (desc_line_h + 6) + padding
+        desc_bg_rect = pg.Rect(panel_x + padding, cur_y - padding // 2,
+                               panel_w - padding * 2, desc_area_h + padding // 2)
+        pg.draw.rect(app.window, pg.Color("#FFF0CC"), desc_bg_rect, border_radius=8)
+        pg.draw.rect(app.window, pg.Color("#C8A87A"), desc_bg_rect, width=1, border_radius=8)
+        cur_y += padding // 2
 
+        for dl in desc_lines:
+            ds = font_desc.render(dl, True, pg.Color("#4B2800"))
+            app.window.blit(ds, ds.get_rect(centerx=panel_x + panel_w // 2, top=cur_y))
+            cur_y += desc_line_h + 6
+
+        cur_y += padding // 2
         btn_w = max(140, font_body.size("确认生效")[0] + 40)
         btn_h = body_h + padding
         btn_x = panel_x + (panel_w - btn_w) // 2

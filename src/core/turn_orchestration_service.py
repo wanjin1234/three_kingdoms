@@ -21,10 +21,10 @@ class TurnOrchestrationService:
         context.reset_combat_interaction_state()
         context.reset_morale_and_pp_modes()
 
+        # 无论 keep_info_message 为何値，只清除战斗 UI 状态即可；
+        # 不删除 info panel 中的文字内容，保留旧信息直到被新信息覆盖
         if not keep_info_message:
             context.on_clear_combat_result_ui()
-            if context.show_properties:
-                context.show_properties("")
 
     def advance_country_turn_with_context(
         self,

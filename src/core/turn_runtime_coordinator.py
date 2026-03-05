@@ -59,6 +59,7 @@ class TurnRuntimeCoordinator:
         app.evt_flag_she_hushu = False
         app.evt_flag_hu_recruit = False
         app.evt_laomaikuai_active = False
+        app.evt_jingzhu_skill = 0  # 荆州之主：大回合结束清零，避免跨大回合累积
         # 五子良将：本大回合结束，清除效果（bonus 在下次抽卡时重新积累）
         app.evt_wuzi_rounds = 0
         app.evt_wuzi_bonus = 0

@@ -38,6 +38,9 @@ class CombatFlowServiceMinimalTest(unittest.TestCase):
                 calculate_is_flanked=lambda _app, _tp, _aps: False,
                 apply_base_column_adjustment=lambda _app, _tp, ci: ci,
             ),
+            card_effect_manager=SimpleNamespace(
+                is_offensive_card_active=lambda _card_id: False,
+            ),
         )
         unit = SimpleNamespace(unit_type="infantry")
         prov = SimpleNamespace(province_id=1)

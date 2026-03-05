@@ -93,7 +93,8 @@ class SelectionPresentationServiceMinimalTests(unittest.TestCase):
         app._calculate_unit_powers = lambda _u, _pid: (1.0, 1.0)
 
         self.service.update_selection_info(app)
-        self.assertEqual(app.info_panel.last, "")
+        # 新行为：空选时不主动清除面板，保留旧信息
+        self.assertIsNone(app.info_panel.last)
 
         unit = _UnitState()
         app.selected_units = [(1, 0)]

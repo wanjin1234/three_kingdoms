@@ -137,8 +137,8 @@ class TurnRuntimeCoordinatorMinimalTests(unittest.TestCase):
         self.assertFalse(app.selecting_evt_target)
         self.assertIsNone(app.pending_evt_card_id)
         self.assertIsNone(app.pending_evt_drawer)
-        self.assertEqual(app.evt_wuzi_rounds, 0)
-        self.assertEqual(app.evt_wuzi_bonus, 0)
+        # evt_wuzi_rounds/evt_wuzi_bonus 属于大回合效果，在 apply_major_round_rollover 中清零，
+        # 不在小回合切换 prepare_turn_switch 中清除
         self.assertTrue(app._clear_called)
         self.assertTrue(app._clear_keep_info)
 

@@ -50,7 +50,8 @@ class TurnOrchestrationServiceMinimalTests(unittest.TestCase):
         self.assertEqual(called["combat"], 1)
         self.assertEqual(called["mode"], 1)
         self.assertEqual(called["ui"], 1)
-        self.assertEqual(called["prop"], [""])
+        # 新行为：切回合时不再主动清除 info panel 内容，保留旧信息
+        self.assertEqual(called["prop"], [])
 
     def test_advance_country_turn_with_context(self):
         called = {

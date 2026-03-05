@@ -290,6 +290,32 @@ class GameplayRenderService:
             # 使用金色画笔画线，宽度为4
             pg.draw.lines(self.window, pg.Color("gold"), True, vertices, 4)
 
+        # 2.7 画临时高亮省份（AI操作/召唤等动作的地图视觉反馈）
+        _now_ticks = pg.time.get_ticks()
+        _expired_prov_ids = []
+        for _h_pid, _h_expire in list(getattr(self, "temp_province_highlights", {}).items()):
+            if _now_ticks > _h_expire:
+                _expired_prov_ids.append(_h_pid)
+                continue
+            _h_prov = self.map_manager.get_by_id(_h_pid)
+            if not _h_prov:
+                _expired_prov_ids.append(_h_pid)
+                continue
+            _h_c = _h_prov.center_cache or _h_prov.compute_center(self.hex_side)
+            _h_verts = hex_vertices(_h_c, self.hex_side)
+            # 剩余时间越少越透明，实现淡出效果
+            _remain = _h_expire - _now_ticks
+            _alpha_ratio = min(1.0, _remain / 600)  # 最后600ms淡出
+            _base_alpha = int(220 * _alpha_ratio)
+            # 外圈：橙黄色，内圈：白色细线
+            _highlight_color = pg.Color(255, 200, 50)
+            pg.draw.lines(self.window, _highlight_color, True, _h_verts, 4)
+            # 内侧稍小的六边形白色细线，增加辨识度
+            _inner_verts = hex_vertices(_h_c, self.hex_side * 0.88)
+            pg.draw.lines(self.window, pg.Color(255, 255, 255), True, _inner_verts, 2)
+        for _eid in _expired_prov_ids:
+            self.temp_province_highlights.pop(_eid, None)
+
         # 3. 画河流和阻挡线（预渲染缓存图层）
         river_ban_layer = GameplayRenderService._get_river_ban_layer(self)
         self.window.blit(river_ban_layer, (0, 0))

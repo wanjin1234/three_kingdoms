@@ -329,6 +329,7 @@ def build_event_target_apply_context(app: Any) -> EventTargetApplyContext:
         get_ai_turn_timer=lambda: app._ai_turn_timer,
         is_turn_game_finished=lambda: bool(app.turn_game_finished),
         set_ai_turn_timer=lambda v: setattr(app, "_ai_turn_timer", v),
+        on_highlight_province_temp=app._highlight_province_temp,
     )
 
 

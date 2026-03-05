@@ -539,6 +539,8 @@ class GameApp(AppEventCardMixin):
         # 对应的槽位索引记录，只框住实际移动/招募的那个单位
         self.move_src_slots: dict = {}  # province_id -> list[int]
         self.move_dst_slots: dict = {}  # province_id -> list[int]
+        # 临时地块高亮：AI操作、召唤等动作的地图视觉反馈 {province_id: expire_ticks_ms}
+        self.temp_province_highlights: dict = {}
 
         self.camera = Camera()
         self.event_manager = EventManager(self)
@@ -990,6 +992,11 @@ class GameApp(AppEventCardMixin):
     def _draw_global_fullscreen_btn(self) -> None:
         """在逻辑画布底部居中绘制全屏提示文字（所有界面通用）。"""
         self.runtime_loop_service.draw_global_fullscreen_btn(self)
+
+    def _highlight_province_temp(self, prov_id: int, duration_ms: int = 2500) -> None:
+        """在地图上临时高亮指定省份（黄色/橙色六边形轮廓），用于AI操作的视觉反馈。"""
+        import pygame as pg
+        self.temp_province_highlights[prov_id] = pg.time.get_ticks() + duration_ms
 
     def clear_selection(self, clear_ui: bool = True) -> None:
         """清空当前选中的单位"""

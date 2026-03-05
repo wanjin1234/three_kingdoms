@@ -198,7 +198,7 @@ class CardPlayService:
                     new_unit.mp = unit_def.move
                     target_prov.units.append(new_unit)
                     app.map_manager.invalidate_cache()
-                    app.info_panel.show_message(f"在{target_prov.name}召唤了无当飞军", duration=2.0)
+                    app.info_panel.show_message("已召唤无当飞军（地图高亮格子）", duration=2.0)
                 except Exception:
                     logger.exception("召唤 无当飞军 失败")
 
@@ -209,7 +209,7 @@ class CardPlayService:
                     new_unit.mp = unit_def.move
                     target_prov.units.append(new_unit)
                     app.map_manager.invalidate_cache()
-                    app.info_panel.show_message(f"在{target_prov.name}召唤了解烦兵", duration=2.0)
+                    app.info_panel.show_message("已召唤解烦兵（地图高亮格子）", duration=2.0)
                 except Exception:
                     logger.exception("召唤 解烦兵 失败")
 

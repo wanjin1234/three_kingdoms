@@ -137,6 +137,7 @@ class EventTargetApplyContext:
     get_ai_turn_timer: Callable[[], int | None]
     is_turn_game_finished: Callable[[], bool]
     set_ai_turn_timer: Callable[[int], None]
+    on_highlight_province_temp: Callable[[int], None] | None = None
 
 
 @dataclass(frozen=True)

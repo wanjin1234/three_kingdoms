@@ -111,7 +111,10 @@ class AIService:
             return False
 
         cm.use_card(card_id)
-        app.info_panel.show_message(f"在{target_prov.name}召唤了{unit_name}", duration=2.0)
+        app.info_panel.show_message(f"AI召唤了{unit_name}（地图高亮格子）", duration=2.0)
+        # 在地图上临时高亮目标省份
+        if hasattr(app, "_highlight_province_temp"):
+            app._highlight_province_temp(target_prov.province_id)
         logger.info(
             "AI [%s] 使用 %s，在 %s 召唤了 %s",
             country,

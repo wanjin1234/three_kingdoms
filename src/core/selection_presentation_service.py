@@ -62,8 +62,7 @@ class SelectionPresentationService:
     def update_selection_info(self, app) -> None:
         """更新信息面板显示的选中单位属性。"""
         if not app.selected_units:
-            if app.info_panel:
-                app.info_panel.show_properties("")
+            # 没有选中单位时不主动清除面板，保留上一条信息
             return
 
         lines = []
