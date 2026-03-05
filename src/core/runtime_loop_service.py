@@ -23,8 +23,13 @@ class RuntimeLoopService:
         while app._running:
             app.event_manager.process()
             app._update()
-            app._render()
-            app._present_frame()
+            if app._dirty:
+                app._render()
+                app._present_frame()
+                app._dirty = False
+            else:
+                # 画面无变化时跳过渲染，真正让出 CPU
+                pg.time.wait(4)
             app.clock.tick(app.settings.fps)
 
         pg.quit()
