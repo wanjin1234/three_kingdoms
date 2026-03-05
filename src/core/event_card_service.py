@@ -626,19 +626,21 @@ class EventCardService:
 
         display_country = drawer if card.deck == "PUBLIC" else card.target_country
         country_color = app.country_button_colors.get(display_country, pg.Color("gray"))
-        tag_rect = pg.Rect(panel_x, panel_y, panel_w, bar_h)
-        pg.draw.rect(app.window, country_color, tag_rect, border_radius=12)
-        pg.draw.rect(
-            app.window,
-            country_color,
-            pg.Rect(panel_x, panel_y + bar_h // 2, panel_w, bar_h // 2),
-        )
+        # 50% 透明度顶栏：用 SRCALPHA Surface 叠加，避免覆盖下方面板背景
+        _tag_surf = pg.Surface((panel_w, bar_h), pg.SRCALPHA)
+        _r, _g, _b = country_color.r, country_color.g, country_color.b
+        pg.draw.rect(_tag_surf, (_r, _g, _b, 128), pg.Rect(0, 0, panel_w, bar_h), border_radius=12)
+        # 下半段填平（消除上半部分圆角在面板内留下的空隙）
+        pg.draw.rect(_tag_surf, (_r, _g, _b, 128), pg.Rect(0, bar_h // 2, panel_w, bar_h // 2))
+        app.window.blit(_tag_surf, (panel_x, panel_y))
         drawer_label = f"{app.country_labels.get(display_country, display_country)} — 事件卡"
         tag_surf = font_title.render(drawer_label, True, pg.Color("white"))
-        app.window.blit(
-            tag_surf,
-            tag_surf.get_rect(center=(panel_x + panel_w // 2, panel_y + bar_h // 2)),
-        )
+        _tag_rect = tag_surf.get_rect(center=(panel_x + panel_w // 2, panel_y + bar_h // 2))
+        # 黑色描边：向8个方向各偏移2像素
+        _outline_surf = font_title.render(drawer_label, True, pg.Color("black"))
+        for _dx, _dy in ((-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)):
+            app.window.blit(_outline_surf, _tag_rect.move(_dx, _dy))
+        app.window.blit(tag_surf, _tag_rect)
 
         cur_y = panel_y + bar_h + padding // 2
         name_surf = font_title.render(card.name, True, pg.Color("#4B2800"))
@@ -716,7 +718,7 @@ class EventCardService:
             font = app.combat_ui_font
             top_area_h = int(app.screen_height * 0.15)
             tag_x = app.country_tag_pos[0]
-            hint_surf = font.render("▶ 请选择生效目标", True, pg.Color("#FFD700"))
+            hint_surf = font.render("◆ 请选择生效目标", True, pg.Color("#FFD700"))
             hint_h = hint_surf.get_height()
             hint_y = top_area_h // 2 - hint_h // 2
             hint_x = tag_x - hint_surf.get_width() - 20
@@ -757,7 +759,7 @@ class EventCardService:
             app.draw_event_btn_rect = None
             draw_x = skip_x
 
-        phase_surf = font.render("▶ 事件卡阶段", True, pg.Color("#FFD700"))
+        phase_surf = font.render("◆ 事件卡阶段", True, pg.Color("#FFD700"))
         left_edge = app.draw_event_btn_rect.left if app.draw_event_btn_rect else draw_x
         phase_x = left_edge - phase_surf.get_width() - 14
         phase_y = btn_y + (btn_h - phase_surf.get_height()) // 2

@@ -168,22 +168,20 @@ class HelpOverlayRenderService:
 
         prev_active = app.help_current_page > 0
         next_active = app.help_current_page < total_pages - 1
-        arrow_font = app._font("msyh.ttc", 36)
+        _ah = 14  # 三角形半高（像素）
 
         prev_color = pg.Color("#5a3a1a") if prev_active else pg.Color("#3a3a3a")
         pg.draw.rect(app.window, prev_color, prev_rect, border_radius=8)
-        prev_t = arrow_font.render(
-            "◀",
-            True,
-            pg.Color("#f5f0e8") if prev_active else pg.Color("#666666"),
-        )
-        app.window.blit(prev_t, prev_t.get_rect(center=prev_rect.center))
+        _arrow_col = pg.Color("#f5f0e8") if prev_active else pg.Color("#555555")
+        _cx, _cy = prev_rect.centerx, prev_rect.centery
+        pg.draw.polygon(app.window, _arrow_col, [
+            (_cx + _ah, _cy - _ah), (_cx + _ah, _cy + _ah), (_cx - _ah, _cy)
+        ])
 
         next_color = pg.Color("#5a3a1a") if next_active else pg.Color("#3a3a3a")
         pg.draw.rect(app.window, next_color, next_rect, border_radius=8)
-        next_t = arrow_font.render(
-            "▶",
-            True,
-            pg.Color("#f5f0e8") if next_active else pg.Color("#666666"),
-        )
-        app.window.blit(next_t, next_t.get_rect(center=next_rect.center))
+        _arrow_col = pg.Color("#f5f0e8") if next_active else pg.Color("#555555")
+        _cx, _cy = next_rect.centerx, next_rect.centery
+        pg.draw.polygon(app.window, _arrow_col, [
+            (_cx - _ah, _cy - _ah), (_cx - _ah, _cy + _ah), (_cx + _ah, _cy)
+        ])

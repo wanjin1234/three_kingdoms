@@ -68,7 +68,7 @@ class EvtInfoTooltipService:
                 for i, (name, desc) in enumerate(jn_cards):
                     if i > 0:
                         all_lines.append(("", font_body, pg.Color("white")))
-                    all_lines.append((f"▸ {name}", font_title, pg.Color("#1a6620")))
+                    all_lines.append((f"◆ {name}", font_title, pg.Color("#1a6620")))
                     for dline in _wrap(desc, font_body, max_content_w - padding * 2):
                         all_lines.append((dline, font_body, pg.Color("#444444")))
             # ── 事件卡 ──
@@ -79,7 +79,7 @@ class EvtInfoTooltipService:
                 for i, (name, desc) in enumerate(evt_cards):
                     if i > 0:
                         all_lines.append(("", font_body, pg.Color("white")))
-                    all_lines.append((f"▸ {name}", font_title, pg.Color("#b06800")))
+                    all_lines.append((f"◆ {name}", font_title, pg.Color("#b06800")))
                     for dline in _wrap(desc, font_body, max_content_w - padding * 2):
                         all_lines.append((dline, font_body, pg.Color("#444444")))
 

@@ -1,5 +1,12 @@
 # 这是.gitignore文件，内容为git忽略的文件（即：git时自动跳过这些文件）
 
+# 游戏规则等大文件
+*.ppt
+*.pptx
+*.jpg
+*.png
+*.pdf
+
 # Python 垃圾
 __pycache__/
 *.py[cod]
