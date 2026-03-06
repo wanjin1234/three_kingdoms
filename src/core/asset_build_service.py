@@ -71,6 +71,14 @@ class AssetBuildService:
     def build_choosing_assets(self, app) -> None:
         height = app.screen_height
         width = app.screen_width
+
+        raw_bg = app._load_ui_image("mode_background.png", None)
+        bg_orig_w, bg_orig_h = raw_bg.get_size()
+        bg_scale = height / bg_orig_h
+        scaled_w = int(bg_orig_w * bg_scale)
+        app.choosing_bg_surface = pg.transform.smoothscale(raw_bg, (scaled_w, height))
+        app.choosing_bg_pos = ((width - scaled_w) // 2, 0)
+
         image_size = (int(height * 0.3), int(height * 0.3))
         app.choosing_portraits = [
             (

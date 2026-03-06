@@ -100,7 +100,7 @@ class ScreenRenderService:
 
     def render_choosing_screen(self, app: Any) -> None:
         """渲染势力选择界面。"""
-        app.window.fill(pg.Color("white"))
+        app.window.blit(app.choosing_bg_surface, app.choosing_bg_pos)
         for surface, position in app.choosing_portraits:
             app.window.blit(surface, position)
         app.window.blit(app.choosing_title_surface, app.choosing_title_pos)
