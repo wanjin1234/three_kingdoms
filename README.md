@@ -16,6 +16,8 @@
 
 ---
 
+<a id="一游戏简介"></a>
+
 ## 一、游戏简介
 
 本游戏是一款**回合制六边形棋盘（Hex Grid）策略游戏**：
@@ -26,6 +28,8 @@
 - **核心玩法**：移动部队 → 发动战斗 → 使用策略卡牌 → 抽取随机事件卡
 
 ---
+
+<a id="二快速开始运行游戏"></a>
 
 ## 二、快速开始（运行游戏）
 
@@ -67,6 +71,8 @@ python main.py --debug
 > **规则书**：游戏内规则书以 PNG 图片形式存放于 `assets/graphics/rule/rule_1.png` 等文件，由 Pygame 直接加载，无需任何额外依赖。
 
 ---
+
+<a id="三项目文件结构"></a>
 
 ## 三、项目文件结构
 
@@ -127,6 +133,8 @@ three_kingdoms/
 ```
 
 ---
+
+<a id="四整体架构思路"></a>
 
 ## 四、整体架构思路
 
@@ -307,6 +315,8 @@ def run_turn_with_context(self, context: AIRunTurnContext) -> None:
 
 ---
 
+<a id="五核心模块详解"></a>
+
 ## 五、核心模块详解
 
 ### 5.1 地图系统：六边形格子如何工作
@@ -316,9 +326,7 @@ def run_turn_with_context(self, context: AIRunTurnContext) -> None:
 地图由六边形格子拼成。每个格子（`Province`）在逻辑坐标系里有一个 `(x_factor, y_factor)` 坐标，转换为屏幕像素坐标的公式是：
 
 $$
-\text{pixel\_x} = x\_factor \times \text{hex\_side}
-$$
-$$
+\text{pixel\_x} = x\_factor \times \text{hex\_side}\\
 \text{pixel\_y} = y\_factor \times \sqrt{3} \times \text{hex\_side}
 $$
 
@@ -476,6 +484,8 @@ class UnitState:
 
 ---
 
+<a id="六游戏机制实现"></a>
+
 ## 六、游戏机制实现
 
 ### 整体数据流（以"玩家点击格子发动进攻"为例）
@@ -511,6 +521,8 @@ InfoPanel.show_message()             ← 右侧面板显示战斗结果文字
 5. 读取字体、UI 图片等
 
 ---
+
+<a id="七数据配置说明"></a>
 
 ## 七、数据配置说明
 
