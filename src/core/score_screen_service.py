@@ -58,6 +58,7 @@ class ScoreScreenService:
             app.screen_width,
             app.screen_height,
             screen_type,
+            getattr(app, "human_country", None),
             getattr(record, "shu_score", None),
             getattr(record, "shu_initial", None),
             net_scores.get("SHU"),
@@ -88,8 +89,43 @@ class ScoreScreenService:
             app.window.blit(app._score_screen_cache_surface, (0, 0))
             return
 
-        render_surface = pg.Surface((app.screen_width, app.screen_height)).convert()
-        render_surface.fill(pg.Color("white"))
+        render_surface = pg.Surface(
+            (app.screen_width, app.screen_height)
+        ).convert_alpha()
+
+        # 根据屏幕类型选择背景图
+        _bg_map = {
+            "SHU": "credit_SHU.png",
+            "WEI": "credit_WEI.png",
+            "WU": "credit_WU.png",
+        }
+        _bg_name = None
+        if screen_type == "wei_turn":
+            _bg_name = _bg_map.get(getattr(app, "human_country", None))
+        elif screen_type == "game_over":
+            if "tianxia_winner" in app.show_score_screen:
+                _winner_key = app.show_score_screen["tianxia_winner"]
+            elif "score_winner" in app.show_score_screen:
+                _winner_key = app.show_score_screen.get("score_winner")
+            else:
+                _winner_key = None
+            _bg_name = _bg_map.get(_winner_key, "credit_None.png")
+
+        _bg_loaded = False
+        if _bg_name:
+            try:
+                _bg_img = pg.image.load(
+                    str(app.settings.ui_graphics_dir / _bg_name)
+                ).convert()
+                _bg_img = pg.transform.scale(
+                    _bg_img, (app.screen_width, app.screen_height)
+                )
+                render_surface.blit(_bg_img, (0, 0))
+                _bg_loaded = True
+            except Exception:
+                pass
+        if not _bg_loaded:
+            render_surface.fill(pg.Color("white"))
 
         title_size = int(app.screen_height * 0.05)
         body_size = int(app.screen_height * 0.035)
@@ -129,7 +165,11 @@ class ScoreScreenService:
             "Jianye": "建业",
         }
 
-        title_text = "魏国行动完毕 - 各国分数" if screen_type == "wei_turn" else "游戏结束 - 最终分数"
+        title_text = (
+            "魏国行动完毕 - 各国分数"
+            if screen_type == "wei_turn"
+            else "游戏结束 - 最终分数"
+        )
         title_surf = title_font.render(title_text, True, pg.Color("black"))
         title_rect = title_surf.get_rect(centerx=app.screen_width // 2, top=40)
         render_surface.blit(title_surf, title_rect)
@@ -141,8 +181,8 @@ class ScoreScreenService:
             ("WU", "孙吴", pg.Color("green")),
         ]
 
-        col_width = app.screen_width // 3
-        box_width = col_width - 20
+        box_x_margin = 20
+        box_width = int(app.screen_width * 0.38)
         inner_w = box_width - 30
         line_gap = 4
         section_gap = 12
@@ -199,21 +239,28 @@ class ScoreScreenService:
 
         name_area = body_font.get_height() + 15 + section_gap
         padding_bottom = 15
-        box_height = (
-            max(rows_height(rows) + name_area + padding_bottom for rows in all_rows.values())
-            + 20
-        )
+        box_gap = 15
 
-        for i, (country, cn_name, color) in enumerate(countries):
-            box_x = i * col_width + (col_width - box_width) // 2
-            box_y = y_offset
+        current_y = y_offset
+        for country, cn_name, color in countries:
+            this_box_height = (
+                rows_height(all_rows[country]) + name_area + padding_bottom + 20
+            )
+            box_x = box_x_margin
+            box_y = current_y
 
-            box_rect = pg.Rect(box_x, box_y, box_width, box_height)
-            pg.draw.rect(render_surface, pg.Color(250, 250, 250), box_rect, border_radius=10)
-            pg.draw.rect(render_surface, color, box_rect, 3, border_radius=10)
+            box_rect = pg.Rect(box_x, box_y, box_width, this_box_height)
+            _box_surf = pg.Surface((box_width, this_box_height), pg.SRCALPHA)
+            _box_surf.fill((250, 250, 250, 120))
+            pg.draw.rect(
+                _box_surf, (*color[:3], 200), _box_surf.get_rect(), 3, border_radius=10
+            )
+            render_surface.blit(_box_surf, (box_x, box_y))
 
             name_surf = body_font.render(cn_name, True, color)
-            name_rect = name_surf.get_rect(centerx=box_x + box_width // 2, top=box_y + 10)
+            name_rect = name_surf.get_rect(
+                centerx=box_x + box_width // 2, top=box_y + 10
+            )
             render_surface.blit(name_surf, name_rect)
 
             info_y = name_rect.bottom + section_gap
@@ -222,13 +269,17 @@ class ScoreScreenService:
                 render_surface.blit(surf, (box_x + 15, info_y))
                 info_y += font.get_height() + line_gap
 
+            current_y += this_box_height + box_gap
+
         if screen_type == "game_over":
-            winner_y = y_offset + box_height + 40
+            winner_y = current_y + 20
             winner_names = {"SHU": "蜀汉", "WEI": "曹魏", "WU": "孙吴"}
 
             if "tianxia_winner" in app.show_score_screen:
                 winner = app.show_score_screen["tianxia_winner"]
-                winner_text = f"胜利：{winner_names.get(winner, winner)} 达成「天下归心」!"
+                winner_text = (
+                    f"胜利：{winner_names.get(winner, winner)} 达成「天下归心」!"
+                )
                 winner_surf = title_font.render(winner_text, True, pg.Color("gold"))
                 render_surface.blit(
                     winner_surf,
@@ -248,7 +299,9 @@ class ScoreScreenService:
                 )
 
         hint_surf = small_font.render("按 ESC 退出", True, pg.Color("gray"))
-        hint_rect = hint_surf.get_rect(centerx=app.screen_width // 2, bottom=app.screen_height - 30)
+        hint_rect = hint_surf.get_rect(
+            centerx=app.screen_width // 2, bottom=app.screen_height - 30
+        )
         render_surface.blit(hint_surf, hint_rect)
 
         app._score_screen_cache_key = cache_key
