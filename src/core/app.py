@@ -15,12 +15,6 @@ from typing import Callable, Dict, List, Sequence, Tuple
 
 import pygame as pg
 
-try:
-    import fitz  # PyMuPDF，用于PDF渲染
-
-    _FITZ_AVAILABLE = True
-except ImportError:
-    _FITZ_AVAILABLE = False
 from settings import Settings
 
 from src.core import app_context_factory
