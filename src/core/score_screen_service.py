@@ -101,7 +101,9 @@ class ScoreScreenService:
         }
         _bg_name = None
         if screen_type == "wei_turn":
-            _bg_name = _bg_map.get(getattr(app, "human_country", None))
+            _bg_name = _bg_map.get(
+                getattr(app, "human_country", None), "credit_None.png"
+            )
         elif screen_type == "game_over":
             if "tianxia_winner" in app.show_score_screen:
                 _winner_key = app.show_score_screen["tianxia_winner"]
