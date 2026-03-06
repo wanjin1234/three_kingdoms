@@ -1,6 +1,7 @@
 # 三足鼎立 —— 三国六边形策略游戏
 
 > 一款基于 **Python + Pygame** 的回合制六边形棋盘策略游戏，以三国时期为背景，玩家可选择魏、蜀、吴三国之一，与 AI 对手在中原大地上展开争霸。
+> （本文档部分内容由AI生成）
 
 ---
 
@@ -16,6 +17,8 @@
 
 ---
 
+<a id="一游戏简介"></a>
+
 ## 一、游戏简介
 
 本游戏是一款**回合制六边形棋盘（Hex Grid）策略游戏**：
@@ -27,11 +30,13 @@
 
 ---
 
+<a id="二快速开始运行游戏"></a>
+
 ## 二、快速开始（运行游戏）
 
 ### 方式一：直接下载 EXE（推荐，无需安装 Python）
 
-前往本项目的 **[GitHub Releases 页面](../../releases)**，下载最新版本的 `三足鼎立.exe`，双击即可运行，无需任何额外安装步骤。
+前往本项目的 **[GitHub Releases 页面](../../releases)**，下载最新版本的 `三足鼎立.exe`，双击即可运行，无需额外安装步骤。
 
 > **注意**：首次运行时 Windows 可能弹出安全提示，点击"仍要运行"即可。EXE 已将所有资源打包在内，不依赖外部文件。
 
@@ -67,6 +72,8 @@ python main.py --debug
 > **规则书**：游戏内规则书以 PNG 图片形式存放于 `assets/graphics/rule/rule_1.png` 等文件，由 Pygame 直接加载，无需任何额外依赖。
 
 ---
+
+<a id="三项目文件结构"></a>
 
 ## 三、项目文件结构
 
@@ -127,6 +134,8 @@ three_kingdoms/
 ```
 
 ---
+
+<a id="四整体架构思路"></a>
 
 ## 四、整体架构思路
 
@@ -307,6 +316,8 @@ def run_turn_with_context(self, context: AIRunTurnContext) -> None:
 
 ---
 
+<a id="五核心模块详解"></a>
+
 ## 五、核心模块详解
 
 ### 5.1 地图系统：六边形格子如何工作
@@ -316,9 +327,7 @@ def run_turn_with_context(self, context: AIRunTurnContext) -> None:
 地图由六边形格子拼成。每个格子（`Province`）在逻辑坐标系里有一个 `(x_factor, y_factor)` 坐标，转换为屏幕像素坐标的公式是：
 
 $$
-\text{pixel\_x} = x\_factor \times \text{hex\_side}
-$$
-$$
+\text{pixel\_x} = x\_factor \times \text{hex\_side}\\
 \text{pixel\_y} = y\_factor \times \sqrt{3} \times \text{hex\_side}
 $$
 
@@ -476,6 +485,8 @@ class UnitState:
 
 ---
 
+<a id="六游戏机制实现"></a>
+
 ## 六、游戏机制实现
 
 ### 整体数据流（以"玩家点击格子发动进攻"为例）
@@ -511,6 +522,8 @@ InfoPanel.show_message()             ← 右侧面板显示战斗结果文字
 5. 读取字体、UI 图片等
 
 ---
+
+<a id="七数据配置说明"></a>
 
 ## 七、数据配置说明
 
