@@ -25,13 +25,12 @@ from settings import Settings
 
 from src.core import app_context_factory
 from src.core.ai_service import AIService
-from src.core.asset_build_service import AssetBuildService
 from src.core.app_contexts import (
+    AdvanceCountryTurnContext,
     AIAutoSelectEventTargetContext,
     AIBorderProvincesContext,
     AIRunTurnContext,
     ApplyMajorRoundChoiceContext,
-    AdvanceCountryTurnContext,
     CardApplyEffectContext,
     CardCancelSelectionContext,
     CheckTianxiaVictoryContext,
@@ -45,7 +44,10 @@ from src.core.app_contexts import (
     RemoveMajorRoundContext,
     StartMajorRoundChoiceContext,
 )
+from src.core.app_event_card_mixin import AppEventCardMixin
+from src.core.asset_build_service import AssetBuildService
 from src.core.camera import Camera
+from src.core.card_play_service import CardPlayService
 from src.core.combat import (
     COMBAT_TABLE,
     CombatPreview,
@@ -56,42 +58,40 @@ from src.core.combat_flow_service import CombatFlowService
 from src.core.combat_resolution_service import CombatResolutionService
 from src.core.combat_utils_service import CombatUtilsService
 from src.core.console_service import ConsoleService
-from src.core.card_play_service import CardPlayService
 from src.core.country_stats_overlay_service import CountryStatsOverlayService
 from src.core.event_card_service import EventCardService
-from src.core.evt_info_tooltip_service import EvtInfoTooltipService
 from src.core.events import EventManager
-from src.core.app_event_card_mixin import AppEventCardMixin
-from src.core.gameplay_render_service import GameplayRenderService
+from src.core.evt_info_tooltip_service import EvtInfoTooltipService
 from src.core.game_event_router_service import GameEventRouterService
 from src.core.game_reset_service import GameResetService
+from src.core.gameplay_render_service import GameplayRenderService
 from src.core.help_overlay_render_service import HelpOverlayRenderService
 from src.core.help_rule_load_service import HelpRuleLoadService
 from src.core.major_round_status_service import MajorRoundStatusService
 from src.core.map_bounds_service import MapBoundsService
-from src.core.music_manager import MUSIC_END_EVENT, MusicManager
 from src.core.movement_service import MovementService
+from src.core.music_manager import MUSIC_END_EVENT, MusicManager
 from src.core.overlay_ui_service import OverlayUIService
-from src.core.playing_input_service import PlayingInputService
-from src.core.playing_input_args_service import PlayingInputArgsService
-from src.core.playing_event_orchestrator_service import PlayingEventOrchestratorService
 from src.core.playing_command_service import PlayingCommandService
+from src.core.playing_event_orchestrator_service import PlayingEventOrchestratorService
+from src.core.playing_input_args_service import PlayingInputArgsService
+from src.core.playing_input_service import PlayingInputService
 from src.core.polyline_render_service import PolylineRenderService
 from src.core.province_query_service import ProvinceQueryService
-from src.core.selection_service import SelectionService
-from src.core.selection_presentation_service import SelectionPresentationService
-from src.core.turn_presentation_coordinator import TurnPresentationCoordinator
-from src.core.screen_render_service import ScreenRenderService
-from src.core.score_screen_service import ScoreScreenService
-from src.core.score_manager import ScoreManager
-from src.core.state_models import CombatState, EventCardState, TurnState, UIState
 from src.core.runtime_loop_service import RuntimeLoopService
+from src.core.score_manager import ScoreManager
+from src.core.score_screen_service import ScoreScreenService
+from src.core.screen_render_service import ScreenRenderService
+from src.core.selection_presentation_service import SelectionPresentationService
+from src.core.selection_service import SelectionService
+from src.core.state_models import CombatState, EventCardState, TurnState, UIState
 from src.core.turn_orchestration_service import TurnOrchestrationService
+from src.core.turn_presentation_coordinator import TurnPresentationCoordinator
+from src.core.turn_resource_service import TurnResourceService
+from src.core.turn_runtime_coordinator import TurnRuntimeCoordinator
+from src.core.turn_service import TurnService
 from src.core.turn_start_orchestration_service import TurnStartOrchestrationService
 from src.core.ui_render_helper_service import UIRenderHelperService
-from src.core.turn_runtime_coordinator import TurnRuntimeCoordinator
-from src.core.turn_resource_service import TurnResourceService
-from src.core.turn_service import TurnService
 from src.core.view_models import GameplayViewModel, MainSceneViewModel
 from src.core.volume_ui_service import VolumeUIService
 from src.game_objects.card import CardManager, CardRepository
@@ -475,7 +475,9 @@ class GameApp(AppEventCardMixin):
         self._help_rule_load_failed: bool = False
         self._help_mask_cache_key: Tuple[int, int, int] | None = None
         self._help_mask_cache_surface: pg.Surface | None = None
-        self._help_scaled_slide_cache_key: Tuple[int, int, int, int, int, int] | None = None
+        self._help_scaled_slide_cache_key: (
+            Tuple[int, int, int, int, int, int] | None
+        ) = None
         self._help_scaled_slide_cache_surface: pg.Surface | None = None
 
         # ---- 民心等级效果（2-5级）----
@@ -569,6 +571,9 @@ class GameApp(AppEventCardMixin):
         self.info_panel = InfoPanel(
             panel_rect, info_font, font_path=font_path, base_font_size=font_size
         )
+        # 绑定卷轴装饰图到 InfoPanel
+        if hasattr(self, "status_panel_image"):
+            self.info_panel.status_image = self.status_panel_image
 
         # 保存字体给战斗UI使用
         self.combat_ui_font = info_font
@@ -928,7 +933,9 @@ class GameApp(AppEventCardMixin):
             selector_country,
         )
 
-    def _build_ai_auto_select_event_target_context(self) -> AIAutoSelectEventTargetContext:
+    def _build_ai_auto_select_event_target_context(
+        self,
+    ) -> AIAutoSelectEventTargetContext:
         return app_context_factory.build_ai_auto_select_event_target_context(self)
 
     def _restart_game(self) -> None:
@@ -996,6 +1003,7 @@ class GameApp(AppEventCardMixin):
     def _highlight_province_temp(self, prov_id: int, duration_ms: int = 2500) -> None:
         """在地图上临时高亮指定省份（黄色/橙色六边形轮廓），用于AI操作的视觉反馈。"""
         import pygame as pg
+
         self.temp_province_highlights[prov_id] = pg.time.get_ticks() + duration_ms
 
     def clear_selection(self, clear_ui: bool = True) -> None:

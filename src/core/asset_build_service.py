@@ -12,14 +12,9 @@ class AssetBuildService:
         height = app.screen_height
         width = app.screen_width
 
-        app.mode_select_title_surface = app._render_text(
-            "STLITI.TTF", int(width * 0.08), "选择模式"
-        )
-        app.mode_select_title_pos = (int(width * 0.32), 0)
-
         btn_w = int(width * 0.28)
-        btn_h = int(height * 0.12)
-        btn_y = int(height * 0.65)
+        btn_h = int(height * 0.1)
+        btn_y = int(height * 0.68)
 
         app.mode_single_rect = pg.Rect(int(width * 0.18), btn_y, btn_w, btn_h)
         app.mode_multi_rect = pg.Rect(int(width * 0.54), btn_y, btn_w, btn_h)
@@ -48,33 +43,30 @@ class AssetBuildService:
         height = app.screen_height
         width = app.screen_width
 
-        app.loading_image_right = app._load_ui_image(
-            "start_ZHUGELIANG.jpg", (int(height * 0.6), int(height * 0.7))
-        )
-        app.loading_image_right_pos = (int(width - height * 0.65), int(height * 0.2))
-
-        raw_left = app._load_ui_image(
-            "start_SIMAYI.jpg", (int(height * 0.5), int(height * 0.625))
-        )
-        app.loading_image_left = pg.transform.flip(raw_left, True, False)
-        app.loading_image_left_pos = (int(height * 0.03), int(height * 0.25))
+        raw_bg = app._load_ui_image("start_background.png", None)
+        bg_orig_w, bg_orig_h = raw_bg.get_size()
+        bg_scale = height / bg_orig_h
+        scaled_w = int(bg_orig_w * bg_scale)
+        app.start_bg_surface = pg.transform.smoothscale(raw_bg, (scaled_w, height))
+        # 水平居中，使图片中已有的"三足鼎立"文字居中显示
+        app.start_bg_pos = ((width - scaled_w) // 2, 0)
 
         app.start_button_rect = pg.Rect(
             int(width * 0.3),
-            int(height * 0.75),
+            int(height * 0.68),
             int(width * 0.4),
             int(height * 0.1),
         )
 
-        app.loading_title_surface = app._render_text(
-            "STLITI.TTF", int(width * 0.1), "三足鼎立"
-        )
-        app.loading_title_pos = (int(width * 0.3), 0)
-
         app.loading_button_surface = app._render_text(
-            "STXINGKA.TTF", int(height * 0.1), "开始游戏"
+            "STXINGKA.TTF", int(height * 0.08), "开始游戏"
         )
-        app.loading_button_pos = (int(width * 0.5 - height * 0.2), int(height * 0.75))
+        bw = app.loading_button_surface.get_width()
+        bh = app.loading_button_surface.get_height()
+        app.loading_button_pos = (
+            app.start_button_rect.centerx - bw // 2,
+            app.start_button_rect.centery - bh // 2,
+        )
 
     def build_choosing_assets(self, app) -> None:
         height = app.screen_height
@@ -219,8 +211,15 @@ class AssetBuildService:
         app.country_tag_pos = (int(width - height * 0.12), 0)
 
         app.yangtze_polylines = tuple(
-            app._scale_points(points)
-            for points in (yangtze_points_1, yangtze_points_2)
+            app._scale_points(points) for points in (yangtze_points_1, yangtze_points_2)
         )
         app.yellow_river_polyline = tuple(app._scale_points(yellow_river_points))
         app.ban_line_polyline = tuple(app._scale_points(ban_line_points))
+
+        # 右侧信息面板卷轴背景装饰图（缩放至与面板上下左右完全对齐）
+        panel_w = int(width * 0.30)
+        panel_h = int(height * 0.45)  # 与 app.py 中面板高度相同 (0.60 - 0.15)
+        status_raw = app._load_ui_image("status.png", None)
+        app.status_panel_image = pg.transform.smoothscale(
+            status_raw, (panel_w, panel_h)
+        )

@@ -3,9 +3,9 @@
 # 游戏规则等大文件
 *.ppt
 *.pptx
-*.jpg
-*.png
 *.pdf
+*.exe
+*.spec
 
 # Python 垃圾
 __pycache__/
@@ -24,3 +24,7 @@ Thumbs.db
 # 虚拟环境
 venv/
 env/
+
+#打包产生的文件
+build/
+dist/
