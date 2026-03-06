@@ -1,308 +1,569 @@
-# 三国游戏开发说明文档
+# 三足鼎立 —— 三国六边形策略游戏
 
-## 一、文件架构：
-
-``` text
-three_kingdoms/
-├── main.py                          <-- 程序入口
-├── settings.py                      <-- 全局配置（窗口、帧率、开关）
-├── requirements.txt                 <-- Python 依赖
-├── README.md                        <-- 项目文档
-├── TESTING.md                       <-- 测试说明
-├── assets/                          <-- 资源目录（图片/字体/配置数据）
-│   ├── data/                        <-- JSON 配置（cards / events / kingdoms / units）
-│   ├── graphics/                    <-- UI、地图、旗帜、兵种图片
-│   ├── fonts/                       <-- 字体
-│   └── ...
-├── map/
-│   └── definitions.csv              <-- 地图定义表
-├── src/
-│   ├── core/                        <-- 应用核心（编排层 + 领域服务）
-│   │   ├── app.py                   <-- GameApp 主编排（已瘦身）
-│   │   ├── app_contexts.py          <-- 各服务调用契约（dataclass）
-│   │   ├── app_context_factory.py   <-- 契约构建工厂（从 app.py 抽离）
-│   │   ├── app_event_card_mixin.py  <-- 事件卡域委托混入
-│   │   ├── turn_orchestration_service.py
-│   │   ├── turn_start_orchestration_service.py
-│   │   ├── major_round_status_service.py
-│   │   ├── ai_service.py
-│   │   ├── event_card_service.py
-│   │   ├── card_play_service.py
-│   │   ├── combat_*_service.py
-│   │   └── ...（其余 domain service）
-│   ├── game_objects/                <-- 领域对象（UnitState, Card, Kingdom...）
-│   ├── map/                         <-- 地图相关实现
-│   ├── music/                       <-- 音频逻辑
-│   └── ui/                          <-- UI 组件与绘制
-├── tests/                           <-- 最小回归与集成测试
-│   ├── test_*_minimal.py
-│   └── ...
-└── docs/                            <-- 架构分阶段文档（R0~R4）
-```
-
-### 架构协作说明（重要）
-
-为减少多人改同一文件造成冲突，当前代码采用「主编排 + 服务 + 契约」结构：
-
-1. **主编排层（GameApp）**
-    - 文件：`src/core/app.py`
-    - 职责：生命周期、状态机、对各服务的调用编排。
-    - 原则：尽量不写重业务算法，业务放到 service。
-
-2. **契约层（Context）**
-    - 文件：`src/core/app_contexts.py`
-    - 职责：定义服务调用的最小上下文字段（typed dataclass）。
-    - 原则：新增服务依赖时，优先扩展契约，而不是回退到 `service(app)` 全量耦合。
-
-3. **上下文构建层（Factory）**
-    - 文件：`src/core/app_context_factory.py`
-    - 职责：集中构建 `*_with_context()` 所需对象。
-    - 原则：避免在 `app.py` 到处散落 lambda 拼装，统一改动入口便于 code review。
-
-4. **领域服务层（Services）**
-    - 文件：`src/core/*_service.py`
-    - 职责：规则实现、流程执行。
-    - 原则：优先接收 context；新功能尽量不新增 `service(app)` 入口。
-
-5. **域下沉层（Mixin，可选）**
-    - 文件：`src/core/app_event_card_mixin.py`
-    - 职责：将某一业务域的转发方法从 `app.py` 拆分出去。
-    - 原则：按业务域整块下沉，避免“半下沉半保留”的边界模糊。
-
-### 多人协作分工建议（按当前架构）
-
-- **A 同学（编排/状态）**：`app.py`、`turn_*` 协调逻辑。
-- **B 同学（战斗）**：`combat_*_service.py` + 对应 tests。
-- **C 同学（卡牌/事件）**：`card_play_service.py`、`event_card_service.py`、`app_event_card_mixin.py`。
-- **D 同学（AI）**：`ai_service.py` + AI 相关测试。
-- **E 同学（UI/渲染）**：`ui/`、`*_render_service.py`。
-
-建议每次改动至少包含：
-
-1. 对应服务或编排代码变更；
-1. 至少一个 `tests/test_*_minimal.py` 的覆盖补充；
-1. 合并前跑最小回归（见 `TESTING.md`）。
+> 一款基于 **Python + Pygame** 的回合制六边形棋盘策略游戏，以三国时期为背景，玩家可选择魏、蜀、吴三国之一，与 AI 对手在中原大地上展开争霸。
+> （本文档部分内容由AI生成）
 
 ---
 
-## 二、开发流程：（Gemini说的）
+## 目录
 
-这是一个非常典型的**小型团队协作（2-5人）**场景。
+1. [游戏简介](#一游戏简介)
+2. [快速开始](#二快速开始运行游戏)
+3. [项目文件结构](#三项目文件结构)
+4. [整体架构思路](#四整体架构思路)
+5. [核心模块详解](#五核心模块详解)
+6. [游戏机制实现](#六游戏机制实现)
+7. [数据配置说明](#七数据配置说明)
 
-针对你们现在的仓库状态（只有 `master` 和 `game` 两个分支），我建议采用一种简化版的 **Git Flow 工作流**。
+---
 
-我们可以把这两个分支想象成**“展厅”**和**“车间”**。
+<a id="一游戏简介"></a>
 
-### （一）两个分支的定义与职责
+## 一、游戏简介
 
-#### 1. `master` 分支：【展厅】（稳定版）
-*   **状态**：**必须永远是可以运行的**。
-*   **内容**：经过测试、没有严重 BUG 的版本。
-*   **更新频率**：低（例如每周末合并一次，或者完成一个大里程碑时）。
-*   **谁来改**：通常**不允许直接 Push 代码**到 master。只能从 `game` 分支合并过来。
-*   **作用**：如果有老师检查作业，或者要发给朋友玩，就给这个分支的代码。
+本游戏是一款**回合制六边形棋盘（Hex Grid）策略游戏**：
 
-#### 2. `game` 分支：【车间】（开发版）
-*   **状态**：**基本可运行，但允许有小 Bug**。
-*   **内容**：大家写好的最新功能都汇聚到这里。
-*   **更新频率**：高（每天都有更新）。
-*   **谁来改**：这是所有人的代码汇合点。
-*   **作用**：这是你们日常开发的基准。你每天开工前，都要先从这里拉取（Pull）最新代码。
+- **三方势力**：曹魏（WEI）、蜀汉（SHU）、孙吴（WU）
+- **地图**：由若干六边形格子（Province，省份/地块）拼成的中国地图
+- **胜负**：通过占领重要城池（洛阳、成都、建业……）积累胜利点数，大回合结束时结算
+- **核心玩法**：移动部队 → 发动战斗 → 使用策略卡牌 → 抽取随机事件卡
 
-### （二）协作流程：手把手教你干活
+---
 
-假设你是负责**“绘制地图”**的，你的队友是负责**“兵种逻辑”**的。你们应该这样配合：
+<a id="二快速开始运行游戏"></a>
 
-#### 第一步：初始化（仅需做一次）
-由 Leader（或者技术最好的那个人）在 `game` 分支上把“地基”打好：
-1.  建立 `src`, `assets` 文件夹。
-2.  **必须**上传 `.gitignore` 文件（防止垃圾文件冲突）。
-3.  上传一个最简单的 `main.py`（哪怕只能打印个 "Hello Three Kingdoms"）。
-4.  把这些推送到 GitHub 的 `game` 分支。
+## 二、快速开始（运行游戏）
 
-#### 第二步：你的日常工作循环（重点！）
+### 方式一：直接下载 EXE（推荐，无需安装 Python）
 
-不要直接在 `game` 分支上写代码！万一你写挂了，队友拉下来一跑就报错，会影响大家进度。
+前往本项目的 **[GitHub Releases 页面](../../releases)**，下载最新版本的 `三足鼎立.exe`，双击即可运行，无需额外安装步骤。
 
-**请遵循“开小差”原则（Feature Branch Workflow）：**
+> **注意**：首次运行时 Windows 可能弹出安全提示，点击"仍要运行"即可。EXE 已将所有资源打包在内，不依赖外部文件。
 
-**1. 开工前，先同步**
-每天早上坐下，先切到 `game` 分支，把云端最新的代码拉下来：
+### 方式二：从源码运行（适合想学习代码的同学）
+
+#### 环境要求
+
+- Python 3.10 或更高版本
+- 推荐在虚拟环境（venv / conda）中运行
+
+#### 安装步骤
+
 ```bash
-git checkout game
-git pull origin game
+# 1. 进入项目根目录
+cd three_kingdoms
+
+# 2. 安装依赖（主要是 pygame）
+pip install -r requirements.txt
+
+# 3. 运行游戏
+python main.py
+
+# 可选：开启调试日志（会在终端输出大量内部信息，方便排查问题）
+python main.py --debug
 ```
 
-**2. 开个“小分支”干活**
-假设你要写地图加载功能，就从 `game` 分支切出一个临时的任务分支：
-```bash
-git checkout -b feature/map_rendering
-```
-*现在你在这个分支上随便改，就算把代码改爆炸了，也不会影响队友。*
+#### 依赖一览（requirements.txt）
 
-**3. 写代码、提交**
-你修改了 `map.py`，画出了地图。
-```bash
-git add .
-git commit -m "完成地图的基础加载功能"
-```
+| 库       | 用途                     |
+| -------- | ------------------------ |
+| `pygame` | 图形渲染、事件处理、音频 |
 
-**4. 再次同步（防冲突关键一步）**
-在你准备上传之前，队友可能已经上传了新代码。为了防止冲突，你先切回 `game` 拉一下：
-```bash
-git checkout game
-git pull origin game  # 看看有没有新东西
-git checkout feature/map_rendering  # 切回你的分支
-git merge game        # 把队友的新东西合并到你的任务里
-```
-*如果有冲突，IDE（VS Code/PyCharm）会提示你解决。解决完后，你的代码就是最新且包含你功能的代码。*
+> **规则书**：游戏内规则书以 PNG 图片形式存放于 `assets/graphics/rule/rule_1.png` 等文件，由 Pygame 直接加载，无需任何额外依赖。
 
-**5. 上传并合并**
-把你的任务分支推送到 GitHub：
-```bash
-git push origin feature/map_rendering
-```
-然后，去 GitHub 网页上，点击 **"New Pull Request"**：
-*   **From**: `feature/map_rendering`
-*   **To**: `game`
-*   点击 **Merge**。
+---
 
-**6. 删除小分支**
-合并成功后，这个临时分支就没用了，删掉它，深藏功与名。
+<a id="三项目文件结构"></a>
 
-### （三）具体的代码/素材分工（针对 Pygame 战棋）
-
-为了避免大家同时改同一个文件（这是冲突之源），建议你们按**模块**拆分文件。
-
-**一个简化的文件结构的例子，便于讲解：**
+## 三、项目文件结构
 
 ```text
 three_kingdoms/
-├── main.py             <-- 【入口】只写几行代码，负责初始化和主循环
-├── settings.py         <-- 【配置】屏幕大小、帧率、颜色定义
-├── assets/             <-- 【素材】所有图片放这里
-├── src/
-│   ├── map_system.py   <-- 【你负责】地图加载、坐标转换、摄像机逻辑
-│   ├── unit_system.py  <-- 【队友A负责】兵种定义、移动逻辑
-│   ├── ui_system.py    <-- 【队友B负责】按钮、菜单绘制
-│   └── game_state.py   <-- 【核心】管理当前是"玩家回合"还是"敌人回合"
+├── main.py                    ← 程序唯一入口（启动游戏）
+├── settings.py                ← 全局配置（分辨率、帧率、资源路径）
+├── requirements.txt           ← Python 依赖列表
+│
+├── assets/                    ← 所有静态资源
+│   ├── data/                  ← JSON 数据配置
+│   │   ├── kingdoms.json      ← 三个国家的基础数据（名称、颜色）
+│   │   ├── units.json         ← 所有兵种数值（移动力、攻防、射程）
+│   │   ├── cards.json         ← 策略卡牌定义
+│   │   └── event_cards.json   ← 事件卡牌定义（含效果类型）
+│   ├── map/
+│   │   └── definitions.csv    ← 地图格子定义（坐标、地形、归属、分值）
+│   ├── graphics/              ← 所有图片
+│   │   ├── map/               ← 地形贴图（平原、山地、河流……）
+│   │   ├── units/             ← 各兵种图标
+│   │   └── ui/                ← 界面按钮、面板背景等
+│   └── fonts/                 ← 字体文件
+│
+├── src/                       ← 全部源代码
+│   ├── core/                  ← 游戏核心逻辑
+│   │   ├── app.py             ← GameApp：游戏总编排器（状态机 + 主循环）
+│   │   ├── app_contexts.py    ← 各服务的"调用契约"（数据传递结构体）
+│   │   ├── app_context_factory.py  ← 统一构建契约对象的工厂
+│   │   ├── state_models.py    ← 回合状态的数据模型（TurnState）
+│   │   ├── combat.py          ← 战斗结算表（CRT）和骰点逻辑
+│   │   ├── ai_service.py      ← AI 决策逻辑
+│   │   ├── movement_service.py ← 部队移动与路径计算
+│   │   ├── card_play_service.py ← 策略卡牌打出逻辑
+│   │   ├── event_card_service.py ← 事件卡抽取与结算
+│   │   ├── turn_orchestration_service.py  ← 回合推进编排
+│   │   ├── score_manager.py   ← 分数计算与记录
+│   │   ├── camera.py          ← 地图摄像机（拖拽与缩放）
+│   │   └── ...（其余领域服务）
+│   │
+│   ├── game_objects/          ← 游戏领域对象（纯数据）
+│   │   ├── kingdom.py         ← 国家（Kingdom）数据类
+│   │   ├── unit.py            ← 兵种定义（UnitDefinition）和单位状态（UnitState）
+│   │   ├── card.py            ← 策略卡牌定义与运行时状态
+│   │   └── event_card.py      ← 事件卡定义与牌堆管理
+│   │
+│   ├── map/                   ← 地图子系统
+│   │   ├── province.py        ← Province（六边形格子）数据类
+│   │   ├── map_manager.py     ← 地图管理器（加载/绘制/寻路）
+│   │   └── geometry.py        ← 六边形几何计算工具
+│   │
+│   ├── ui/                    ← UI 组件
+│   │   ├── info_panel.py      ← 右侧信息面板
+│   │   └── panels.py          ← 其他面板组件
+│   │
+│   └── music/                 ← 音乐播放管理
+│
+└── tests/                     ← 自动化测试（最小回归测试）
 ```
-
-**协作守则：**
-1.  **你只改 `map_system.py`**，尽量别碰 `unit_system.py`。
-2.  **`main.py` 大家都要用**，所以改动要谨慎。尽量只在里面调用函数，比如 `map_manager.draw()`，不要在里面写长逻辑。
-3.  **素材命名要规范**：
-    *   ✅ `map_grass.png`, `unit_cavalry_red.png`
-    *   ❌ `1.png`, `test.jpg`, `新建文件夹`
 
 ---
 
-## 三、命名规范：（Gemini说的）
+<a id="四整体架构思路"></a>
 
-既然你们使用的是 **Python (Pygame)** 进行开发，最标准、最不容易出锅的方案就是严格遵守 Python 官方的 **PEP 8 规范**。
+## 四、整体架构思路
 
-为了避免团队里出现“一个叫 `MapManager`，一个叫 `map_loader`，还有一个叫 `loadMap`”这种混乱场面，请把下面这套**《代码命名宪法》**发到你们的群里，强制执行。
+> 理解这一节，你就能看懂整个项目的"设计哲学"。
 
-### （一）仓库与文件夹 (Repository & Directories)
+### 4.1 Pygame 的游戏主循环
 
-**规则：全小写 + 下划线 (`snake_case`)**
-这是为了兼容所有操作系统（Windows 不区分大小写，Linux 区分，混用大写容易导致 git 找不到文件）。
+所有 Pygame 游戏的骨架都是一个**无限循环（Game Loop）**，每秒执行 60 次（60 FPS），本项目也不例外。
 
-*   **GitHub 仓库名**：`three_kingdoms` (或者 `three-kingdoms`)
-*   **根目录文件夹**：`three_kingdoms_project`
-*   **代码包目录**：`src`, `assets`, `core`, `map_system`
-    *   ✅ 正确：`src/game_objects/`
-    *   ❌ 错误：`src/GameObjects/` (像 C#)
-    *   ❌ 错误：`src/gameobjects/` (太长难读)
+实际运行代码在 `src/core/runtime_loop_service.py` 的 `run()` 方法里（由 `GameApp.run()` 委托调用）：
 
-### （二）Python 代码文件 (Files)
+```python
+# src/core/runtime_loop_service.py  （简化版）
+def run(self, app) -> None:
+    app._running = True
+    while app._running:               # ← 死循环，直到玩家关闭窗口
+        app.event_manager.process()   # ① 处理事件（鼠标、键盘、窗口变化……）
+        app._update()                 # ② 更新逻辑（AI行动、动画计时、状态切换……）
+        if app._dirty:                # ③ 只有"画面需要更新"时才重新绘制
+            app._render()             #    清屏 → 画地图 → 画单位 → 画UI面板
+            app._present_frame()      #    把画好的内容显示到屏幕
+            app._dirty = False
+        else:
+            pg.time.wait(4)           #    画面无变化时让出CPU，省电
+        app.clock.tick(app.settings.fps)  # 控制帧率上限为 60 FPS
+```
 
-**规则：全小写 + 下划线 (`snake_case`)**
-文件名应该尽量短，但要能看懂。
+**`_dirty` 脏标记优化**：只有游戏内容真正发生变化（玩家操作、动画播放等）时才触发重绘，静止画面不做无意义的渲染，可以显著降低 CPU/GPU 占用。
 
-*   ✅ 正确：`main.py`
-*   ✅ 正确：`province_manager.py`
-*   ✅ 正确：`unit_ai.py`
-*   ❌ 错误：`ProvinceManager.py` (这是 Java/C# 风格)
-*   ❌ 错误：`util.py` (太笼统，不知道里面是啥，建议用 `math_utils.py`)
+**三步流程总结**：
 
-### （三） 类 (Classes) —— 唯一的“大写”特权
+```text
+每一帧:
+  ① event_manager.process()  ← 把操作系统消息（点击、按键）翻译成游戏能理解的事件
+  ② _update()                ← 根据当前状态执行对应逻辑（AI? 动画? 等待玩家?）
+  ③ _render()                ← 把最新的游戏数据画到屏幕上
+```
 
-**规则：大驼峰命名法 (`PascalCase`)**
-首字母大写，每个单词首字母都大写，**不加下划线**。
+### 4.2 状态机：游戏"在哪个界面"
 
-*   ✅ 正确：`GameMap`
-*   ✅ 正确：`InfantryUnit` (步兵单位)
-*   ✅ 正确：`Province` (省份)
-*   ❌ 错误：`game_map` (这是变量名风格)
-*   ❌ 错误：`CMap` (不要加 C 前缀，那是 C++)
+游戏任意时刻只能处于**一种状态（State）**，状态决定了"现在该响应哪些操作、该画什么内容"。  
+如果没有状态机，`_update()` 和 `_render()` 里就需要写无数个 `if 现在是主菜单... elif 现在在游戏中...`，极难维护。
 
-### （四）变量与函数 (Variables & Functions)
+本项目在 `src/core/app.py` 里用 Python 的 `Enum`（枚举）定义了 `GameState`：
 
-**规则：全小写 + 下划线 (`snake_case`)**
-这是 Python 最核心的风格。
+```python
+# src/core/app.py
+class GameState(Enum):
+    LOADING     = auto()   # 启动加载界面（初始化资源、显示 Logo）
+    MODE_SELECT = auto()   # 模式选择界面（单人 / 双人？）
+    CHOOSING    = auto()   # 势力选择界面（选魏 / 蜀 / 吴）
+    PLAYING     = auto()   # 正式游戏中（地图操作、战斗、卡牌……）
+```
 
-*   **普通变量**：
-    *   ✅ 正确：`current_hp`, `player_score`, `selected_province`
-    *   ❌ 错误：`currentHp` (小驼峰是 JS/C# 风格), `PlayerScore`
-*   **函数/方法**：
-    *   ✅ 正确：`calculate_damage()`, `draw_map()`, `get_movement_cost()`
-    *   ❌ 错误：`DrawMap()`
-*   **私有变量/方法**（仅在类内部使用，不希望外部调用）：
-    *   **规则**：前面加一个下划线 `_`
-    *   ✅ 正确：`_load_texture()`, `_internal_id`
-*   **布尔值 (Boolean)**：
-    *   **建议**：加上 `is_`, `has_`, `can_` 前缀，读起来像英语句子。
-    *   ✅ 正确：`is_alive`, `has_moved`, `can_attack`
-    *   ❌ 错误：`alive`, `move`, `attack` (容易和函数名混淆)
+**状态切换示意**：
 
-### （五）常量 (Constants)
+```text
+启动
+  ↓
+LOADING（加载资源）
+  ↓  资源加载完成
+MODE_SELECT（选择单人/多人）
+  ↓  点击"单人"
+CHOOSING（点击魏/蜀/吴旗帜）
+  ↓  点击某个势力
+PLAYING（游戏主界面，循环直到结束）
+```
 
-**规则：全大写 + 下划线 (`UPPER_CASE`)**
-通常放在 `settings.py` 里，表示游戏运行时**绝对不许改**的数值。
+切换方式非常简单，就是直接修改 `self.state`：
 
-*   ✅ 正确：`SCREEN_WIDTH = 1280`
-*   ✅ 正确：`MAX_UNIT_COUNT = 100`
-*   ✅ 正确：`COLOR_WEI_BLUE = (50, 50, 255)`
+```python
+# 比如玩家点击了"开始游戏"按钮
+self.state = GameState.MODE_SELECT   # 状态机立刻切换
+# 下一帧，_update() 和 _render() 就会执行 MODE_SELECT 对应的逻辑
+```
 
-### （六）资源素材 (Assets) —— 重点！
+`_render()` 内部根据当前状态调用不同的渲染函数：
 
-做游戏素材极多，如果不规范，后期找图会疯掉。
-**规则：`类别_具体名_状态.扩展名` (全小写)**
+```python
+def _render(self) -> None:
+    if self.state == GameState.LOADING:
+        self._render_loading()         # 画加载界面
+    elif self.state == GameState.MODE_SELECT:
+        self._render_mode_select()     # 画模式选择界面
+    elif self.state == GameState.CHOOSING:
+        self._render_choosing()        # 画势力选择界面
+    elif self.state == GameState.PLAYING:
+        self._render_playing()         # 画游戏主界面（调用 GameplayRenderService）
+```
 
-*   **图片 (Images)**：
-    *   ✅ 正确：`btn_start_normal.png` (开始按钮-普通态)
-    *   ✅ 正确：`btn_start_hover.png` (开始按钮-悬停态)
-    *   ✅ 正确：`unit_cavalry_red_idle.png` (骑兵-红方-待机)
-    *   ✅ 正确：`map_terrain_mountain.png`
-    *   ❌ 错误：`1.png`, `bg.jpg`, `曹操.png` (尽量别用中文，虽然 Pygame 支持，但在某些打包工具有坑)
+### 4.3 服务化架构：为什么代码被拆成那么多文件？
 
-### （七）Git 分支 (Branches)
+如果把所有游戏逻辑都塞进 `app.py` 一个文件，它会膨胀到上万行——谁也看不懂，谁也不敢改。  
+因此，本项目把各个"业务功能"拆分为独立的**服务类（Service）**，每个服务类只专注一件事。
 
-**规则：`类型/描述` (全小写)**
+`GameApp` 在 `__init__` 里把所有服务实例化并保存为自己的属性：
 
-*   **功能开发**：`feature/xxx`
-    *   例子：`feature/map-rendering` (地图渲染)
-    *   例子：`feature/add-cavalry` (添加骑兵)
-*   **修复 Bug**：`bugfix/xxx`
-    *   例子：`bugfix/fix-crash-on-start`
-*   **整理代码**：`refactor/xxx`
-    *   例子：`refactor/directory-structure`
+```python
+# src/core/app.py（__init__ 中，简化）
+self.movement_service            = MovementService()
+self.combat_flow_service         = CombatFlowService()
+self.combat_resolution_service   = CombatResolutionService()
+self.ai_service                  = AIService()
+self.card_play_service           = CardPlayService()
+self.event_card_service          = EventCardService()
+self.turn_orchestration_service  = TurnOrchestrationService()
+self.score_manager               = ScoreManager()
+self.gameplay_render_service     = GameplayRenderService()
+self.runtime_loop_service        = RuntimeLoopService()
+# ... 还有十几个
+```
 
-### 🚀 总结一张表 (Cheat Sheet)
+需要某个功能时，`GameApp` 直接委托给对应的 Service：
 
-把这张表置顶到你们的 GitHub Readme 或者聊天群里：
+```python
+# 玩家点击格子，触发移动
+self.movement_service.handle_movement(self, target_province)
 
-| 对象             | 命名风格    | 例子             | 备注           |
-| :--------------- | :---------- | :--------------- | :------------- |
-| **文件夹**       | snake_case  | `game_objects/`  | 全小写         |
-| **Python文件**   | snake_case  | `main_menu.py`   | 全小写         |
-| **类 (Class)**   | PascalCase  | `CombatSystem`   | **首字母大写** |
-| **函数 (Func)**  | snake_case  | `get_position()` | 动词开头       |
-| **变量 (Var)**   | snake_case  | `enemy_list`     | 名词           |
-| **常量 (Const)** | UPPER_CASE  | `FPS_LIMIT`      | 全大写         |
-| **私有成员**     | _snake_case | `_recalculate()` | 下划线开头     |
-| **图片素材**     | snake_case  | `icon_sword.png` | `前缀_名.png`  |
+# AI 轮到曹魏行动
+self.ai_service.run_turn_with_context(context)
 
-**特别提醒：**
-在 Python 里，**千万不要**使用匈牙利命名法（比如 `iCount`, `strName`, `bIsDead`）。Python 是动态类型语言，这种写法非常“土”且不被推荐。直接写 `count`, `name`, `is_dead` 即可。
+# 回合结束，切换到下一个国家
+self.turn_orchestration_service.advance_country_turn_with_context(context)
+```
+
+**比喻**：`GameApp` 是总导演，各个 Service 是专业演员——导演只说"你上台演战斗场景"，具体怎么演（骰子怎么算、血量怎么扣）是演员自己的事，导演不需要知道细节。
+
+**这样做的好处**：
+
+- 想修改战斗规则？只需改 `combat_flow_service.py`，不会影响 AI 或 UI
+- 想给战斗写自动化测试？直接测试 `CombatFlowService`，不需要启动整个游戏
+- 多人协作时，每个人负责不同的 Service 文件，几乎不会互相覆盖代码
+
+### 4.4 契约模式（Context / Contract）：服务之间怎么传数据
+
+**问题**：Service 函数需要数据（比如"目标格子"、"攻击方部队列表"），从哪里拿？
+
+**方案一（不好）**：把整个 `GameApp` 传进去
+
+```python
+# ❌ 危险写法：函数可以访问 app 的任意属性，随意修改游戏状态
+def run_ai_turn(self, app: GameApp) -> None:
+    # 里面可以改 app.state、app.player_country……任何东西都能改
+    # 两个文件深度耦合，改 app.py 可能导致 ai_service.py 莫名出错
+```
+
+**方案二（本项目采用）**：只传一个精简的"数据包"（Context）
+
+```python
+# ✅ 安全写法：函数只能拿到 Context 里明确列出的字段
+
+# 第一步：在 src/core/app_contexts.py 里定义这次调用需要哪些数据
+@dataclass
+class AIRunTurnContext:
+    map_manager: MapManager   # 地图数据
+    player_country: str       # 当前行动的 AI 国家
+    hex_side: float           # 格子边长（用于距离计算）
+    pp: int                   # 当前政治点数
+    on_recruit: Callable      # 招募单位的回调函数
+    on_attack: Callable       # 发起攻击的回调函数
+    # 只列出 AI 真正需要的字段，其余 app 内部数据一律不暴露
+
+# 第二步：在 src/core/app_context_factory.py 里统一构建这个数据包
+ctx = app_context_factory.build_ai_run_turn_context(app)
+
+# 第三步：GameApp 调用服务时传入数据包
+self.ai_service.run_turn_with_context(ctx)
+
+# 第四步：ai_service.py 只能访问 ctx 里定义好的字段，不会越权
+def run_turn_with_context(self, context: AIRunTurnContext) -> None:
+    provinces = context.map_manager.provinces   # ✅ 允许
+    country   = context.player_country          # ✅ 允许
+    # self.app.state = ...                      # ❌ 根本拿不到 app
+```
+
+> **规律**：凡是函数名带 `_with_context` 后缀的，都表示它使用了这套契约模式。  
+> 所有 Context 结构体定义在 `src/core/app_contexts.py`，构建逻辑统一在 `src/core/app_context_factory.py`。
+
+---
+
+<a id="五核心模块详解"></a>
+
+## 五、核心模块详解
+
+### 5.1 地图系统：六边形格子如何工作
+
+#### 六边形坐标
+
+地图由六边形格子拼成。每个格子（`Province`）在逻辑坐标系里有一个 `(x_factor, y_factor)` 坐标，转换为屏幕像素坐标的公式是：
+
+$$
+\text{pixel\_x} = x\_factor \times \text{hex\_side}\\
+\text{pixel\_y} = y\_factor \times \sqrt{3} \times \text{hex\_side}
+$$
+
+其中 `hex_side` 是六边形的边长（像素），会随窗口缩放而变化。
+
+这段逻辑在 `src/map/province.py` 的 `compute_center()` 方法中实现。
+
+#### 相邻关系与寻路
+
+`MapManager` 在初始化时会根据格子坐标自动计算**邻接表**（`_adjacency`），记录每个格子的 6 个相邻格子。  
+寻路使用**Dijkstra 算法**（最短路径），考虑地形的移动力消耗（山地更费），结果会缓存起来避免重复计算。
+
+#### Province 的数据结构
+
+```python
+@dataclass
+class Province:
+    province_id: int    # 格子唯一编号
+    name: str           # 地名（如"洛阳"）
+    country: str        # 当前归属（"WEI" / "SHU" / "WU" / 空字符串）
+    terrain: str        # 地形（"plain" 平原 / "mountain" 山地 / "river" 河流）
+    defense: float      # 防御加成
+    victory_point: float # 占领此格的胜利点数
+    units: List[UnitState]  # 当前驻守的部队列表（最多 3 支）
+```
+
+### 5.2 单位系统：兵种与状态
+
+#### 不变的"定义" vs 可变的"状态"
+
+本项目把单位拆成两个类，这是游戏开发中的常见模式：
+
+| 类名             | 存储位置                         | 作用                                                       |
+| ---------------- | -------------------------------- | ---------------------------------------------------------- |
+| `UnitDefinition` | `UnitRepository`（全局只有一份） | 兵种的**固定属性**：移动力、攻击、防御、射程               |
+| `UnitState`      | `Province.units` 列表中          | 某个具体单位的**实时状态**：当前血量、剩余行动力、是否混乱 |
+
+**比喻**：`UnitDefinition` 是"骑兵"这个职业的说明书，`UnitState` 是你军队里那个具体的骑兵小张今天的状态。
+
+#### UnitState 的关键字段
+
+```python
+@dataclass
+class UnitState:
+    unit_type: str         # 兵种代号，如 "cavalry"（骑兵）
+    hp: int = 2            # 血量（满血=2，受伤=1，死亡则从格子中移除）
+    mp: int = 0            # 本回合剩余行动力（从 UnitDefinition.move 每回合刷新）
+    is_confused: bool      # 是否处于混乱状态（无法正常行动）
+    temp_dice_bonus: int   # 本大回合战斗骰点加成（卡牌效果临时赋予）
+    attack_bonus: int      # 永久攻击力加成（某些事件卡永久改变）
+    defense_bonus: int     # 永久防御力加成
+```
+
+### 5.3 战斗系统：骰子与结算表
+
+战斗采用经典的**CRT（Combat Resolution Table，战斗结算表）**机制：
+
+#### 第一步：计算攻防比
+
+```text
+攻击力 = 攻击方所有单位的 attack 之和 + 各种加成
+防守力 = 防守方所有单位的 defense 之和 × 地形防御系数
+攻防比 = 攻击力 / 防守力  （如 2:1、3:1 等）
+```
+
+#### 第二步：投骰子（1～6）
+
+系统随机产生一个 1～6 的骰点，再结合攻防比，在**结算表**里查找结果：
+
+| 骰点 \ 比例 | 1:2     | 1:1      | 2:1     | 3:1     | 4:1     | 5:1        |
+| ----------- | ------- | -------- | ------- | ------- | ------- | ---------- |
+| 1           | 攻方损2 | 攻方损1  | 攻方损1 | 平      | 平      | 守方退     |
+| 2           | 攻方损1 | 攻守均退 | …       | …       | …       | …          |
+| …           | …       | …        | …       | …       | …       | …          |
+| 6           | 守方退  | 守方退   | 守方损1 | 守方损1 | 守方损1 | 守方损1+退 |
+
+结果缩写含义：
+
+- `A1/A2`：攻方损失 1/2 血
+- `D1/DR`：守方损失 1 血 / 强制后退
+- `AG/DG`：攻方/守方**撤退**（混乱）
+- `C`：双方相持，本回合无伤亡
+
+此逻辑在 `src/core/combat.py` 的 `COMBAT_TABLE` 和 `resolve_combat()` 中实现。
+
+### 5.4 回合系统：大回合与小回合
+
+游戏采用**两层回合制**：
+
+```text
+大回合（Major Round）：游戏的一个完整阶段
+  └── 小回合（Minor Round）：三个国家各行动一次
+        ├── 魏国行动（玩家或 AI）
+        ├── 蜀汉行动（玩家或 AI）
+        └── 孙吴行动（玩家或 AI）
+```
+
+- **小回合开始**：刷新该国所有单位的行动力（`mp`），发放政治点数（PP）
+- **小回合结束**：检查是否达成天下统一（胜利条件），切换到下一个国家
+- **大回合结束**：结算各国分数，部分临时效果（如某些卡牌加成）清零
+
+回合推进逻辑分布在：
+
+- `src/core/turn_orchestration_service.py`（回合切换编排）
+- `src/core/turn_start_orchestration_service.py`（回合开始时的初始化）
+- `src/core/major_round_status_service.py`（大回合状态管理）
+
+### 5.5 卡牌系统：策略卡与事件卡
+
+游戏有两套独立的卡牌：
+
+#### 策略卡（Card）
+
+- 每国有自己专属的策略卡组（从 `assets/data/cards.json` 加载）
+- 玩家在自己回合内手动打出，效果立即生效（如召唤单位、强化攻防）
+- 分为 `offensive`（进攻）/ `defensive`（防御）/ `summon`（征兵）/ `buff`（增益）等类别
+
+#### 事件卡（EventCard）
+
+- 花费 **1 政治点数（PP）** 可以从本国牌堆随机抽一张
+- 每国有自己的牌堆 = 本国事件卡 + 3 张公共事件卡
+- 牌堆抽空后自动重洗
+- 效果五花八门，例如：
+  - 直接改变 PP 或民心值
+  - 给某个单位永久加攻击力
+  - 触发特殊标志（如本小回合两国禁止互攻）
+  - 某些卡需要玩家**额外点击单位或地块**才能确定效果目标
+
+### 5.6 AI 系统
+
+`src/core/ai_service.py` 实现了一套基于规则的 AI：
+
+1. **找边境省**：优先找己方与敌方交界的格子，距离越近优先级越高
+2. **行军**：把边境格子上的部队向最近的敌方目标移动
+3. **战斗**：移动完成后，检查相邻格子是否有敌方单位，如果攻防比划算就发起进攻
+4. **征兵**：若某边境格子兵力不足，且 PP 够用，就在该格补充单位
+5. **事件卡**：AI 也会在合适时机抽取事件卡并自动选择目标
+
+### 5.7 摄像机（Camera）
+
+地图比屏幕大，`src/core/camera.py` 实现了摄像机功能：
+
+- **拖拽**：鼠标中键/右键按住拖动地图
+- **缩放**：滚轮缩放，实质上是改变 `hex_side`（格子边长），所有格子坐标同步重算
+- **视口裁剪**：只绘制摄像机可见范围内的格子，提高性能
+
+### 5.8 分数系统
+
+`src/core/score_manager.py` 负责分数计算：
+
+- **重要城池**（如洛阳 5 分、成都 5 分、建业 5 分）对应 `Province.victory_point`
+- **普通格子**占领后各得 0.5 分
+- 每小回合结束时统计各国当前占领格子的总分值
+- 游戏结束时展示分数榜
+
+---
+
+<a id="六游戏机制实现"></a>
+
+## 六、游戏机制实现
+
+### 整体数据流（以"玩家点击格子发动进攻"为例）
+
+```text
+用户鼠标点击
+    ↓
+PlayingInputService.handle_click()   ← 判断点击了什么（格子？按钮？）
+    ↓
+GameApp 判断当前选中状态：
+  若已选择己方单位 → 点击的是敌方格子？
+    ↓
+CombatFlowService.begin_combat()     ← 发起战斗流程
+    ↓
+combat.get_ratio_column()            ← 计算攻防比
+combat.resolve_combat()              ← 投骰子查表
+    ↓
+CombatResolutionService.apply()      ← 应用战斗结果（扣血、退兵）
+    ↓
+GameplayRenderService.draw()         ← 重新绘制地图和战斗动画
+    ↓
+InfoPanel.show_message()             ← 右侧面板显示战斗结果文字
+```
+
+### 资源加载流程
+
+游戏启动时（`GameApp.__init__`），`AssetBuildService` 会统一加载所有资源：
+
+1. 读取 `kingdoms.json` → 构建 `KingdomRepository`
+2. 读取 `units.json` → 构建 `UnitRepository`（同时加载图片）
+3. 读取 `cards.json` / `event_cards.json` → 构建卡牌仓库
+4. 读取 `definitions.csv` → 构建 `MapManager`（初始化所有 `Province`）
+5. 读取字体、UI 图片等
+
+---
+
+<a id="七数据配置说明"></a>
+
+## 七、数据配置说明
+
+游戏的大量参数写在 `assets/data/` 下的 JSON 文件中，**无需修改代码**就能调整游戏数值。
+
+### `kingdoms.json`（国家）
+
+```json
+[
+  { "id": "WEI", "name": "魏", "color": "blue" },
+  { "id": "SHU", "name": "蜀", "color": "green" },
+  { "id": "WU",  "name": "吴", "color": "red"  }
+]
+```
+
+### `units.json`（兵种）
+
+```json
+[
+  {
+    "type": "infantry",
+    "move": 2,      ← 每回合移动力
+    "attack": 3,    ← 参与战斗时的攻击力
+    "defense": 3,   ← 参与战斗时的防御力
+    "range": 1,     ← 攻击射程（1=近战）
+    "country": null ← null 表示三国通用，否则填 "WEI"/"SHU"/"WU"
+  }
+]
+```
+
+### `definitions.csv`（地图格子）
+
+每行代表一个六边形格子，包含：ID、名称、归属国、地形、防御值、胜利点数、逻辑坐标等。
+
+### `settings.py`（全局配置）
+
+```python
+SETTINGS = Settings(
+    fps=60,              ← 游戏帧率
+    window_title="三足鼎立",
+    borderless=False,    ← 是否无边框窗口
+    ...
+)

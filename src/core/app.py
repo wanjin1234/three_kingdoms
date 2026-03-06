@@ -15,12 +15,6 @@ from typing import Callable, Dict, List, Sequence, Tuple
 
 import pygame as pg
 
-try:
-    import fitz  # PyMuPDF，用于PDF渲染
-
-    _FITZ_AVAILABLE = True
-except ImportError:
-    _FITZ_AVAILABLE = False
 from settings import Settings
 
 from src.core import app_context_factory
@@ -479,6 +473,9 @@ class GameApp(AppEventCardMixin):
             Tuple[int, int, int, int, int, int] | None
         ) = None
         self._help_scaled_slide_cache_surface: pg.Surface | None = None
+
+        # 脏帧标志：True 时才执行完整渲染+present，False 时跳过并让出 CPU
+        self._dirty: bool = True
 
         # ---- 民心等级效果（2-5级）----
         self.morale_lv2_used: Dict[
@@ -1441,6 +1438,7 @@ class GameApp(AppEventCardMixin):
             if self.combat_result_timer < 0:
                 self.combat_result_timer = 0
                 self.combat_result_title = None
+            self._dirty = True  # 战斗计时器倒计时中，持续重绘
 
         # 处理 AI 行动计时器
         if (
@@ -1449,6 +1447,19 @@ class GameApp(AppEventCardMixin):
         ):
             self._ai_turn_timer = None
             self._run_ai_turn()
+            self._dirty = True  # AI 行动执行后必须重绘一次
+
+        # AI 计时器等待期间持续重绘（显示等待提示）
+        if self._ai_turn_timer is not None:
+            self._dirty = True
+
+        # 规则图片加载动画需持续重绘（点点动画）
+        if self._help_rule_loading:
+            self._dirty = True
+
+        # 省份高亮淡出动画需持续重绘
+        if self.temp_province_highlights:
+            self._dirty = True
 
         # 注：AI 事件卡覆盖层现在需要玩家手动点击「确认生效」来确认，
         # 不再自动跳过，以便玩家看到 AI 抽到了哪张事件卡。

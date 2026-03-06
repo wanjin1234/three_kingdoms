@@ -31,5 +31,7 @@ class EventManager:
         """
         # pg.event.get() 会获取自从上一帧以来发生的所有事件列表
         for event in pg.event.get():
+            # 任何输入事件都标记为需要重绘（鼠标移动/点击/按键）
+            self.app._dirty = True
             # 把事件扔给 app 去决定具体怎么回应
             self.app.handle_event(event)
