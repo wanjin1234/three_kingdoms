@@ -4,7 +4,7 @@ import pygame as pg
 
 
 class PlayingEventOrchestratorService:
-    """PLAYING 事件主路由编排服务（阶段5：整块迁移 _handle_playing_event）。"""
+    """PLAYING 状态事件总路由，将键鼠事件分发到各专项处理器。"""
 
     def handle_playing_event(self, app, event: pg.event.Event) -> None:
         show_msg = app.info_panel.show_message if app.info_panel else None

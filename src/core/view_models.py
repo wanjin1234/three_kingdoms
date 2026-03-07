@@ -14,7 +14,7 @@ class MainSceneViewModel:
 
 @dataclass(frozen=True)
 class GameplayViewModel:
-    """PLAYING 场景只读视图模型（阶段3首批）。"""
+    """PLAYING 场景只读视图模型。"""
 
     major_round: int
     minor_round: int

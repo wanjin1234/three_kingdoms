@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Callable, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import pygame as pg
 
@@ -917,13 +917,6 @@ class InfoPanel(BasePanel):
         self._message_end_time = float("inf")
         self._is_properties_display = False
 
-    def reset_combat_state(self) -> None:
-        """重置战斗面板"""
-        self.dice_result = None
-        self.combat_result_text = None
-        self._combat_attacker_info = None
-        self._combat_enemy_info = None
-
     def handle_click(self, pos: Tuple[int, int]) -> bool:
         """
         处理点击事件。
@@ -1060,9 +1053,5 @@ class InfoPanel(BasePanel):
                         max_height=def_max_h,
                     )
 
-        # 绘制战斗结果 (现已合并到 message 中显示详细版)
-        # if self.dice_result is not None:
-        #    result_str = f"骰子：{self.dice_result} -> {self.combat_result_text}"
-        #    self.draw_text_wrapped(surface, result_str, pg.Color("blue"), content_y)
         finally:
             self.rect = orig_rect

@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 
 class GameResetService:
-    """重开对局重置服务（阶段5：整块迁移 _restart_game）。"""
+    """对局重置服务，负责将游戏状态恢复到新对局的初始状态。"""
 
     def restart_game(
         self,

@@ -4,7 +4,7 @@ import pygame as pg
 
 
 class GameEventRouterService:
-    """事件路由服务（阶段5-A：从 GameApp 拆分分发壳）。"""
+    """游戏事件总路由，按游戏状态将 pygame 事件分发到对应处理流程。"""
 
     def handle_event(self, app, event: pg.event.Event, *, music_end_event: int, game_state) -> None:
         # 背景音乐：曲目结束时自动播放下一首

@@ -4,7 +4,7 @@ from typing import Callable
 
 
 class PlayingCommandService:
-    """PLAYING 输入命令执行服务（阶段4：从 GameApp 抽离执行细节）。"""
+    """执行 PLAYING 状态下输入服务返回的命令列表。"""
 
     def execute(
         self,

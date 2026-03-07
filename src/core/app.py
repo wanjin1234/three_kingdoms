@@ -669,7 +669,7 @@ class GameApp(AppEventCardMixin):
         self.console_message: str = ""  # 上一条执行结果反馈
 
         # ====================================================================
-        # 阶段1：状态模型（与现有字段并存，保持行为等价）
+        # 状态模型
         # ====================================================================
         self.turn_state = TurnState(self)
         self.ui_state = UIState(self)
@@ -1166,7 +1166,7 @@ class GameApp(AppEventCardMixin):
         *,
         on_show_message: Callable[[str], None] | None,
     ) -> None:
-        """执行输入服务发出的命令（阶段4：执行逻辑下沉到服务）。"""
+        """执行输入服务发出的命令。"""
         self.playing_command_service.execute(
             app=self,
             commands=commands,
