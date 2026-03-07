@@ -53,7 +53,9 @@ class CombatUtilsService:
             return -1
         return 0
 
-    def find_path_cost_ignore_mountain(self, app: Any, start_id: int, target_id: int) -> int:
+    def find_path_cost_ignore_mountain(
+        self, app: Any, start_id: int, target_id: int
+    ) -> int:
         """计算移动消耗：忽略山地额外消耗，但保留基础步耗和跨河消耗。"""
         if start_id == target_id:
             return 0
@@ -84,7 +86,9 @@ class CombatUtilsService:
 
         return 9999
 
-    def find_path_ignore_mountain(self, app: Any, start_id: int, target_id: int) -> list:
+    def find_path_ignore_mountain(
+        self, app: Any, start_id: int, target_id: int
+    ) -> list:
         """返回忽略山地消耗的最短路径（省ID列表，含首尾）。"""
         if start_id == target_id:
             return [start_id]
@@ -115,7 +119,11 @@ class CombatUtilsService:
         return []
 
     def try_apply_gexu_guard(
-        self, app: Any, province: object, units: list[UnitState], pre_hp_map: dict[int, int]
+        self,
+        app: Any,
+        province: object,
+        units: list[UnitState],
+        pre_hp_map: dict[int, int],
     ) -> bool:
         """割须弃袍：本小回合内，魏方防御最高单位受伤时免除一次伤害（全局标志）。"""
         if not app.gexu_guard_active or not units:
@@ -134,7 +142,9 @@ class CombatUtilsService:
 
         return False
 
-    def has_attackable_target_for_unit(self, app: Any, province: object, unit_state) -> bool:
+    def has_attackable_target_for_unit(
+        self, app: Any, province: object, unit_state
+    ) -> bool:
         """判断某单位在当前位置是否存在可攻击目标。"""
         definition = app.unit_repository.get_definition(unit_state.unit_type)
         unit_stride = SQRT3 * app.hex_side
@@ -153,7 +163,9 @@ class CombatUtilsService:
                 continue
 
             t_center = (
-                target.center_cache if target.center_cache else target.compute_center(app.hex_side)
+                target.center_cache
+                if target.center_cache
+                else target.compute_center(app.hex_side)
             )
             if dist(p_center, t_center) <= allowed_range_px:
                 target_eff = app.card_effect_manager.get_effect(str(target.province_id))
@@ -257,7 +269,9 @@ class CombatUtilsService:
             if not prov:
                 continue
             p_center = (
-                prov.center_cache if prov.center_cache else prov.compute_center(app.hex_side)
+                prov.center_cache
+                if prov.center_cache
+                else prov.compute_center(app.hex_side)
             )
             if dist(p_center, target_center) < neighbor_threshold:
                 neighbor_count += 1
@@ -267,12 +281,15 @@ class CombatUtilsService:
     def apply_base_column_adjustment(
         self, app: Any, target_province: object, col_index: int
     ) -> int:
-        """应用基础列修正（城市-1、威震华夏+河流+1）。"""
+        """应用基础列修正（城市-1、威震华夏+河流+1、火烧连营+1），统一累加后clamp。"""
         col_adj = 0
         if self.is_fort_or_city(target_province):
             col_adj -= 1
         if app.card_effect_manager.is_offensive_card_active("card_zhenjing_huaxia_shu"):
             if app._province_has_river_neighbor(target_province.province_id):
+                col_adj += 1
+        if app.card_effect_manager.is_offensive_card_active("card_huoshao_lianying"):
+            if len(target_province.units) > 1:
                 col_adj += 1
         return max(0, min(5, col_index + col_adj))
 
@@ -284,7 +301,9 @@ class CombatUtilsService:
         if app.evt_flag_liukang:
             if (atk_c == "SHU" and def_c == "WU") or (atk_c == "WU" and def_c == "SHU"):
                 if app.info_panel:
-                    app.info_panel.show_message("「联刘抗曹」：本回合蜀汉与东吴不能互相攻击")
+                    app.info_panel.show_message(
+                        "「联刘抗曹」：本回合蜀汉与东吴不能互相攻击"
+                    )
                 return False
 
         if app.evt_flag_wuwei and atk_c == "WU" and def_c == "WEI":
@@ -299,7 +318,10 @@ class CombatUtilsService:
             return False
 
         if app.pending_post_move_attack and app.pending_attacker:
-            if len(app.selected_units) != 1 or app.selected_units[0] != app.pending_attacker:
+            if (
+                len(app.selected_units) != 1
+                or app.selected_units[0] != app.pending_attacker
+            ):
                 if app.info_panel:
                     app.info_panel.show_message("当前仅可由移动后的单位发起攻击")
                 return False

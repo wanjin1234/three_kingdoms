@@ -1013,16 +1013,52 @@ class InfoPanel(BasePanel):
                 content_y = last_y + 10
 
             # 7. 绘制战斗详情 (两个部分：攻击者 -> --- -> 防守者)
-            if self._combat_attacker_info:
-                content_y = self.draw_text_wrapped(
-                    surface, self._combat_attacker_info, pg.Color("black"), content_y
+            if self._combat_attacker_info or self._combat_enemy_info:
+                atk_line_count = len(
+                    [
+                        l
+                        for l in (self._combat_attacker_info or "").split("\n")
+                        if l.strip()
+                    ]
                 )
-                content_y = self._draw_separator(surface, content_y)
+                def_line_count = len(
+                    [
+                        l
+                        for l in (self._combat_enemy_info or "").split("\n")
+                        if l.strip()
+                    ]
+                )
+                total_units = atk_line_count + def_line_count
 
-            if self._combat_enemy_info:
-                content_y = self.draw_text_wrapped(
-                    surface, self._combat_enemy_info, pg.Color("black"), content_y
-                )
+                atk_max_h = None
+                def_max_h = None
+                if total_units > 9:
+                    _SEP_H = 15  # 分割线占用高度约15px
+                    available_h = max(0, self.rect.bottom - content_y - 10)
+                    usable_h = max(0, available_h - _SEP_H)
+                    if atk_line_count > 0:
+                        atk_max_h = max(1, int(usable_h * atk_line_count / total_units))
+                    if def_line_count > 0:
+                        def_max_h = max(1, int(usable_h * def_line_count / total_units))
+
+                if self._combat_attacker_info:
+                    content_y = self.draw_text_wrapped(
+                        surface,
+                        self._combat_attacker_info,
+                        pg.Color("black"),
+                        content_y,
+                        max_height=atk_max_h,
+                    )
+                    content_y = self._draw_separator(surface, content_y)
+
+                if self._combat_enemy_info:
+                    content_y = self.draw_text_wrapped(
+                        surface,
+                        self._combat_enemy_info,
+                        pg.Color("black"),
+                        content_y,
+                        max_height=def_max_h,
+                    )
 
         # 绘制战斗结果 (现已合并到 message 中显示详细版)
         # if self.dice_result is not None:
