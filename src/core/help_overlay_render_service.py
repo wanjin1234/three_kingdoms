@@ -11,7 +11,7 @@ class HelpOverlayRenderService:
     def load_help_rule_thread(self, app) -> None:
         """后台线程：依次读取 rule_1.png – rule_13.png，存为原始像素列表。"""
         surfaces, failed = app.help_rule_load_service.load_help_rule_surfaces(
-            graphics_dir=app.settings.graphics_dir
+            pdf_path=app.settings.rules_pdf
         )
         if failed:
             app._help_rule_load_failed = True
@@ -82,12 +82,24 @@ class HelpOverlayRenderService:
         app.window.blit(mask, (0, 0))
 
         # 内容面板
-        margin = 50
+        margin_y = 50
         nav_w = 72  # 左右导航按钮宽度
-        content_w = app.screen_width - margin * 2
-        content_h = app.screen_height - margin * 2
-        content_x = margin
-        content_y = margin
+        content_h = app.screen_height - margin_y * 2
+        max_content_w = app.screen_width - margin_y * 2
+
+        # 有内容时：根据第一页宽高比算出刚好包住图片的面板宽度，避免两侧空白过多
+        if app._help_rule_surfaces:
+            _s = app._help_rule_surfaces[0]
+            _sw, _sh = _s.get_width(), _s.get_height()
+            _img_h = content_h - 44  # 去掉底部页码区高度
+            _ideal_img_w = int(_img_h * _sw / max(_sh, 1))
+            _ideal_w = _ideal_img_w + nav_w * 2 + 16  # 加导航按钮和少量内边距
+            content_w = min(max_content_w, max(_ideal_w, 400))
+        else:
+            content_w = max_content_w
+
+        content_x = (app.screen_width - content_w) // 2
+        content_y = margin_y
         content_rect = pg.Rect(content_x, content_y, content_w, content_h)
         app._help_overlay_content_rect = content_rect
 
@@ -106,7 +118,7 @@ class HelpOverlayRenderService:
                 dots = "●" * ((app._help_load_anim_frame // 12) % 4)
                 loading = info_font.render(f"正在加载规则{dots}", True, pg.Color("#f5f0e8"))
                 app.window.blit(loading, loading.get_rect(center=content_rect.center))
-            hint_font = app._font("msyh.ttc", 14)
+            hint_font = app._font("msyh.ttc", 20)
             hint = hint_font.render("ESC 或点击外部关闭", True, pg.Color("#888888"))
             app.window.blit(
                 hint,
@@ -127,14 +139,20 @@ class HelpOverlayRenderService:
         img_area_w = content_w - nav_w * 2
         img_area_h = content_h - 44  # 留底部页码区
 
-        # 等比缩放至显示区
+        # 等比缩放至显示区，再乘以缩放倍数
         sw, sh = slide_surf.get_width(), slide_surf.get_height()
-        scale = min(img_area_w / max(sw, 1), img_area_h / max(sh, 1))
+        base_scale = min(img_area_w / max(sw, 1), img_area_h / max(sh, 1))
+        zoom = getattr(app, "help_zoom_factor", 1.0)
+        scale = base_scale * zoom
         dw, dh = max(1, int(sw * scale)), max(1, int(sh * scale))
         scaled_slide = self._get_help_scaled_slide(app, slide_surf, app.help_current_page, (dw, dh))
         blit_x = img_area_x + (img_area_w - dw) // 2
         blit_y = img_area_y + (img_area_h - dh) // 2
+        # 裁剪到内容区域，防止放大后溢出面板边界
+        img_clip = pg.Rect(img_area_x, img_area_y, img_area_w, img_area_h)
+        app.window.set_clip(img_clip)
         app.window.blit(scaled_slide, (blit_x, blit_y))
+        app.window.set_clip(None)
 
         # 页码文字（底部居中）
         page_font = app._font("msyh.ttc", 18)
@@ -148,10 +166,16 @@ class HelpOverlayRenderService:
             page_surf.get_rect(centerx=content_rect.centerx, bottom=content_rect.bottom - 8),
         )
 
-        # ESC 提示
-        hint_font = app._font("msyh.ttc", 14)
+        # ESC 提示 + 缩放操作说明
+        hint_font = app._font("msyh.ttc", 24)
         hint = hint_font.render("ESC 或点击外部关闭", True, pg.Color("#666666"))
         app.window.blit(hint, (content_x + content_w - hint.get_width() - 16, content_y + 6))
+        zoom_val = getattr(app, "help_zoom_factor", 1.0)
+        zoom_color = pg.Color("#f5c842") if abs(zoom_val - 1.0) > 0.01 else pg.Color("#555555")
+        zoom_hint = hint_font.render(
+            f"Ctrl+滚轮缩放  {int(zoom_val * 100)}%", True, zoom_color
+        )
+        app.window.blit(zoom_hint, (content_x + 12, content_y + 6))
 
         # 左右导航按钮
         btn_h = 100

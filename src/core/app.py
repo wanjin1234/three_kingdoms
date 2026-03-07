@@ -5,12 +5,9 @@
 
 from __future__ import annotations
 
-import ctypes
 import logging
-import os
-import random
 from enum import Enum, auto
-from math import dist, sqrt
+from math import sqrt
 from typing import Callable, Dict, List, Sequence, Tuple
 
 import pygame as pg
@@ -30,9 +27,6 @@ from src.core.app_contexts import (
     CheckTianxiaVictoryContext,
     ClearForTurnSwitchContext,
     EndFullRoundContext,
-    EventConfirmContext,
-    EventDrawPhaseContext,
-    EventTargetApplyContext,
     FinishCountryActionContext,
     RefreshSessionSkillDisplayContext,
     RemoveMajorRoundContext,
@@ -42,12 +36,6 @@ from src.core.app_event_card_mixin import AppEventCardMixin
 from src.core.asset_build_service import AssetBuildService
 from src.core.camera import Camera
 from src.core.card_play_service import CardPlayService
-from src.core.combat import (
-    COMBAT_TABLE,
-    CombatPreview,
-    get_ratio_column,
-    resolve_combat,
-)
 from src.core.combat_flow_service import CombatFlowService
 from src.core.combat_resolution_service import CombatResolutionService
 from src.core.combat_utils_service import CombatUtilsService
@@ -90,7 +78,7 @@ from src.core.view_models import GameplayViewModel, MainSceneViewModel
 from src.core.volume_ui_service import VolumeUIService
 from src.game_objects.card import CardManager, CardRepository
 from src.game_objects.card_effects import CardEffectManager
-from src.game_objects.event_card import EventCardDeck, EventCardDef
+from src.game_objects.event_card import EventCardDeck
 from src.game_objects.kingdom import KingdomRepository
 from src.game_objects.unit import UnitRenderer, UnitRepository, UnitState
 from src.map.map_manager import MapManager
@@ -460,6 +448,7 @@ class GameApp(AppEventCardMixin):
         # ---- 帮助/规则书覆盖层 ----
         self.help_overlay_visible: bool = False  # 是否显示规则图片界面
         self.help_current_page: int = 0  # 当前页码（0-based）
+        self.help_zoom_factor: float = 1.0  # 规则书缩放倍数（0.5–3.0）
         self._help_rule_surfaces: List = []  # 加载好的 rule_1–rule_13 Surface 列表
         self._help_overlay_content_rect: pg.Rect | None = None
         self._help_prev_btn: pg.Rect | None = None  # 上一页按钮 Rect

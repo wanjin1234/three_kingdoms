@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import random
-import re
 from math import dist, sqrt
 from typing import Any
 

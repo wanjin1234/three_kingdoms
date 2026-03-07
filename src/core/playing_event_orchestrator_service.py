@@ -14,7 +14,9 @@ class PlayingEventOrchestratorService:
             help_overlay_visible=app.help_overlay_visible,
             help_rule_surfaces=app._help_rule_surfaces,
             help_current_page=app.help_current_page,
+            help_zoom_factor=getattr(app, "help_zoom_factor", 1.0),
             on_set_help_current_page=lambda page: setattr(app, "help_current_page", page),
+            on_set_help_zoom_factor=lambda z: setattr(app, "help_zoom_factor", z),
         ):
             return
 

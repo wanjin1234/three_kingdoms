@@ -38,6 +38,7 @@ class Settings:
     event_cards_file: Path  # 事件卡定义的 JSON 文件路径
     fonts_dir: Path  # 字体文件夹
     graphics_dir: Path  # 图片文件夹
+    rules_pdf: Path  # 规则书 PDF 路径
     window_title: str = "三足鼎立"  # 游戏窗口的标题
     borderless: bool = False  # 是否开启无边框模式（默认关闭，使用可缩放窗口）
     icon_slot_size_factor: float = 0.6  # 兵种图标相较于格子大小的比例
@@ -69,4 +70,5 @@ SETTINGS = Settings(
     event_cards_file=ASSET_ROOT / "data" / "event_cards.json",
     fonts_dir=ASSET_ROOT / "fonts",
     graphics_dir=ASSET_ROOT / "graphics",
+    rules_pdf=BASE_DIR / "rules.pdf",
 )
