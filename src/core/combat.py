@@ -1,8 +1,5 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
-import logging
-from math import floor
 
 # Combat Results
 RESULT_A2 = "A2"

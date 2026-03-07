@@ -11,7 +11,7 @@ SQRT3 = sqrt(3)
 
 
 class UIRenderHelperService:
-    """渲染与UI辅助服务（阶段5-C：继续瘦身 GameApp）。"""
+    """渲染辅助与UI工具服务。"""
 
     def is_hovering_ban_line(self, app, mouse_pos: Tuple[int, int]) -> bool:
         return self.is_hovering_polyline(app, mouse_pos, [app.ban_line_polyline])

@@ -9,7 +9,7 @@ from src.core.app_contexts import (
 
 
 class TurnOrchestrationService:
-    """回合编排壳服务（阶段5-B：从 GameApp 继续下沉）。"""
+    """回合编排服务，负责协调回合推进、国家切换及胜负判定。"""
 
     def clear_for_turn_switch_with_context(
         self,

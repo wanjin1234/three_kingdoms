@@ -2,27 +2,36 @@
 信息面板模块。
 负责在屏幕右侧显示游戏反馈、错误提示和战斗骰子。
 """
+
 from __future__ import annotations
 
 import os
 import time
-from typing import Callable, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import pygame as pg
 
 
 class BasePanel:
     """面板基类，提供通用的背景绘制和文字换行功能"""
-    def __init__(self, rect: pg.Rect, font: pg.font.Font, font_path: str | None = None, base_font_size: int = 20, cards_dir: str | None = None) -> None:
+
+    def __init__(
+        self,
+        rect: pg.Rect,
+        font: pg.font.Font,
+        font_path: str | None = None,
+        base_font_size: int = 20,
+        cards_dir: str | None = None,
+    ) -> None:
         self.rect = rect
         self.font = font
         self.font_path = font_path
         self.base_font_size = base_font_size
-        self._font_cache = {} # size -> Font
+        self._font_cache = {}  # size -> Font
 
     def _get_font(self, size: int) -> pg.font.Font:
         if size >= self.base_font_size or self.font_path is None:
-             return self.font
+            return self.font
         if size not in self._font_cache:
             try:
                 self._font_cache[size] = pg.font.Font(self.font_path, size)
@@ -31,7 +40,9 @@ class BasePanel:
                 self._font_cache[size] = pg.font.SysFont("arial", size)
         return self._font_cache[size]
 
-    def draw_background_and_border(self, surface: pg.Surface, draw_top_border: bool = True) -> int:
+    def draw_background_and_border(
+        self, surface: pg.Surface, draw_top_border: bool = True
+    ) -> int:
         """绘制白底黑框，返回内容区域的起始 Y 坐标"""
         # 1. 填充背景
         pg.draw.rect(surface, pg.Color("white"), self.rect)
@@ -43,16 +54,15 @@ class BasePanel:
             # 覆盖区域：x 从 +2 开始，y 从 top 开始，宽度 -4，高度 2
             # 这样保留了左右两侧的垂直边框的连接处
             cover_rect = pg.Rect(
-                self.rect.left + 2,
-                self.rect.top,
-                self.rect.width - 4,
-                2
+                self.rect.left + 2, self.rect.top, self.rect.width - 4, 2
             )
             pg.draw.rect(surface, pg.Color("white"), cover_rect)
 
         return self.rect.y + 20
 
-    def _layout_text(self, text: str, font: pg.font.Font, color: pg.Color) -> Tuple[list[str], list[pg.Color], int]:
+    def _layout_text(
+        self, text: str, font: pg.font.Font, color: pg.Color
+    ) -> Tuple[list[str], list[pg.Color], int]:
         """
         根据给定字体计算文字排版。
         返回 (lines, colors, total_height)
@@ -62,14 +72,18 @@ class BasePanel:
 
         lines = []
         line_colors = []
-        max_width = self.rect.width - 20
+        max_width = self.rect.width - 10
         font_height = font.get_height()
 
-        paragraphs = text.replace('\r', '').split('\n')
+        paragraphs = text.replace("\r", "").split("\n")
         total_height = 0
 
         for paragraph in paragraphs:
-            para_color = pg.Color("red") if ("血 0" in paragraph or "血-" in paragraph) else color
+            para_color = (
+                pg.Color("red")
+                if ("血 0" in paragraph or "血-" in paragraph)
+                else color
+            )
 
             if not paragraph:
                 lines.append("")
@@ -105,7 +119,14 @@ class BasePanel:
 
         return lines, line_colors, total_height
 
-    def _render_rich_text_line(self, surface: pg.Surface, line: str, font: pg.font.Font, y: int, default_color: pg.Color) -> None:
+    def _render_rich_text_line(
+        self,
+        surface: pg.Surface,
+        line: str,
+        font: pg.font.Font,
+        y: int,
+        default_color: pg.Color,
+    ) -> None:
         """
         渲染包含简易颜色标记的一行文字。
         标记格式："|#RRGGBB|文本"
@@ -113,27 +134,28 @@ class BasePanel:
         例如："|#FF0000|红色文字|#000000|]\t黑色文字"
         """
         # 检查是否包含制表符
-        if '\t' in line:
+        if "\t" in line:
             # 按制表符分割
-            tab_parts = line.split('\t')
+            tab_parts = line.split("\t")
 
-            # 定义制表位：标签从 10px 开始，属性从 150px 开始
+            # 定义制表位：标签从 left+10 开始，属性从左边起 55% 处开始（自适应，防止右溢出）
             label_x = self.rect.left + 10
-            attr_x = self.rect.left + 150
+            attr_x = self.rect.left + int(self.rect.width * 0.55)
 
             # 渲染第一部分（制表符之前）- 标签，从左边固定位置开始
             if tab_parts:
                 first_part = tab_parts[0]
-                parts = first_part.split('|')
+                parts = first_part.split("|")
                 current_color = default_color
 
                 x = label_x
 
                 for part in parts:
-                    if not part: continue
+                    if not part:
+                        continue
 
                     # 检测是否是颜色代码
-                    if part.startswith('#') and len(part) == 7:
+                    if part.startswith("#") and len(part) == 7:
                         try:
                             current_color = pg.Color(part)
                             continue
@@ -151,15 +173,16 @@ class BasePanel:
             # 渲染制表符后的部分（如果有），从固定位置开始
             if len(tab_parts) > 1:
                 for tab_idx, tab_part in enumerate(tab_parts[1:], 1):
-                    parts = tab_part.split('|')
+                    parts = tab_part.split("|")
                     current_color = default_color
 
                     x = attr_x
 
                     for part in parts:
-                        if not part: continue
+                        if not part:
+                            continue
 
-                        if part.startswith('#') and len(part) == 7:
+                        if part.startswith("#") and len(part) == 7:
                             try:
                                 current_color = pg.Color(part)
                                 continue
@@ -174,17 +197,18 @@ class BasePanel:
                             print(f"Render error: {e}")
         else:
             # 没有制表符，使用原来的居中渲染逻辑
-            parts = line.split('|')
+            parts = line.split("|")
             segments = []
             current_color = default_color
 
             total_width = 0
 
             for part in parts:
-                if not part: continue
+                if not part:
+                    continue
 
                 # 检测是否是颜色代码
-                if part.startswith('#') and len(part) == 7:
+                if part.startswith("#") and len(part) == 7:
                     try:
                         current_color = pg.Color(part)
                         continue
@@ -205,7 +229,14 @@ class BasePanel:
                 surface.blit(surf, (x, y))
                 x += surf.get_width()
 
-    def draw_text_wrapped(self, surface: pg.Surface, text: str, color: pg.Color, start_y: int, max_height: int | None = None) -> int:
+    def draw_text_wrapped(
+        self,
+        surface: pg.Surface,
+        text: str,
+        color: pg.Color,
+        start_y: int,
+        max_height: int | None = None,
+    ) -> int:
         """
         绘制水平居中且自动换行的文本。
         支持简单的富文本颜色标记（仅限单行内）。
@@ -220,12 +251,15 @@ class BasePanel:
         # (因为目前只用于单位名称变色，通常都在第一行且很短)
         plain_text = ""
         import re
+
         # 去除 |#XXXXXX| 标记
-        plain_text = re.sub(r'\|#[A-Fa-f0-9]{6}\|', '', text).replace('|', '')
+        plain_text = re.sub(r"\|#[A-Fa-f0-9]{6}\|", "", text).replace("|", "")
 
         current_font = self.font
         # 使用去标记后的纯文本进行排版计算
-        lines_layout, line_colors_layout, total_h = self._layout_text(plain_text, current_font, color)
+        lines_layout, line_colors_layout, total_h = self._layout_text(
+            plain_text, current_font, color
+        )
 
         # 自适应字体大小逻辑
         if max_height is not None and self.font_path:
@@ -234,7 +268,9 @@ class BasePanel:
             while total_h > max_height and size > min_size:
                 size -= 2
                 current_font = self._get_font(size)
-                lines_layout, line_colors_layout, total_h = self._layout_text(plain_text, current_font, color)
+                lines_layout, line_colors_layout, total_h = self._layout_text(
+                    plain_text, current_font, color
+                )
 
         # 渲染
         y = start_y
@@ -244,7 +280,7 @@ class BasePanel:
         # 注意：这假设 _layout_text 没有因为宽度强行把一行很长的富文本切断
         # 如果切断了，这里的对应关系会乱。
         # 鉴于当前需求只用来显示简短的单位属性，我们假设每段都不会自动折行。
-        original_paragraphs = text.replace('\r', '').split('\n')
+        original_paragraphs = text.replace("\r", "").split("\n")
 
         # 我们遍历 logic lines, 但实际上我们需要渲染 original paragraphs
         # 如果 original_paragraphs 比 layed out lines 少，说明发生了自动换行。
@@ -256,7 +292,7 @@ class BasePanel:
                 y += font_height // 2
                 continue
 
-            if '|#' in para:
+            if "|#" in para:
                 # 富文本行
                 self._render_rich_text_line(surface, para, current_font, y, color)
                 y += font_height + 5
@@ -290,7 +326,15 @@ class CardPanel(BasePanel):
         "江东止啼": "江东止啼.jpg",
     }
 
-    def __init__(self, rect: pg.Rect, font: pg.font.Font, font_path: str | None = None, base_font_size: int = 20, cards_dir: str | None = None, allow_jiangdong_selection: bool = False) -> None:
+    def __init__(
+        self,
+        rect: pg.Rect,
+        font: pg.font.Font,
+        font_path: str | None = None,
+        base_font_size: int = 20,
+        cards_dir: str | None = None,
+        allow_jiangdong_selection: bool = False,
+    ) -> None:
         super().__init__(rect, font, font_path, base_font_size)
         self.available_cards = []
         self.selected_card_id: str | None = None
@@ -349,7 +393,9 @@ class CardPanel(BasePanel):
                 self.selected_card_id = card_id
                 return
         # 如果卡牌还未绘制，也允许选择（用于交互）
-        if card_id in self.card_rects or any(card.id == card_id for card in self.available_cards):
+        if card_id in self.card_rects or any(
+            card.id == card_id for card in self.available_cards
+        ):
             self.selected_card_id = card_id
 
     def deselect_card(self) -> None:
@@ -389,7 +435,9 @@ class CardPanel(BasePanel):
 
         # 初始化 tooltip 字体（仅一次）
         if self.tooltip_font is None:
-            tooltip_size = int(self.base_font_size * 0.8)  # 浮窗字体为 base_font_size 的 80%
+            tooltip_size = int(
+                self.base_font_size * 0.8
+            )  # 浮窗字体为 base_font_size 的 80%
             if self.font_path:
                 try:
                     self.tooltip_font = pg.font.Font(self.font_path, tooltip_size)
@@ -421,9 +469,17 @@ class CardPanel(BasePanel):
         padding = 10  # 增加内间距
         line_height = self.tooltip_font.get_height() + 3  # 增加行间距
         # 加入卡牌名称和分隔线的高度
-        tooltip_height = self.tooltip_font.get_height() + 4 + len(lines) * line_height + padding * 2 + 4
+        tooltip_height = (
+            self.tooltip_font.get_height()
+            + 4
+            + len(lines) * line_height
+            + padding * 2
+            + 4
+        )
 
-        max_line_width = max(self.tooltip_font.size(line)[0] for line in lines) if lines else 100
+        max_line_width = (
+            max(self.tooltip_font.size(line)[0] for line in lines) if lines else 100
+        )
         # 确保足够宽度显示卡牌名称
         name_width = self.tooltip_font.size(card_def.name)[0]
         tooltip_width = max(max_line_width, name_width) + padding * 2
@@ -452,9 +508,13 @@ class CardPanel(BasePanel):
 
         # 绘制分隔线
         sep_y = tooltip_y + padding + self.tooltip_font.get_height() + 2
-        pg.draw.line(surface, pg.Color("black"),
-                    (tooltip_x + padding, sep_y),
-                    (tooltip_x + tooltip_width - padding, sep_y), 1)
+        pg.draw.line(
+            surface,
+            pg.Color("black"),
+            (tooltip_x + padding, sep_y),
+            (tooltip_x + tooltip_width - padding, sep_y),
+            1,
+        )
 
         # 绘制描述文本
         text_y = sep_y + 4
@@ -468,8 +528,8 @@ class CardPanel(BasePanel):
         self._draw_tooltip(surface)
 
     def draw(self, surface: pg.Surface) -> None:
-        # 去掉顶部边框，避免与上方 InfoPanel 的底部边框重叠变粗
-        content_y = self.draw_background_and_border(surface, draw_top_border=False)
+        # 绘制完整边框（InfoPanel 已无边框，无需去掉顶部）
+        content_y = self.draw_background_and_border(surface, draw_top_border=True)
 
         # 绘制卡牌标题
         title_font = self._get_font(self.base_font_size)  # 与卡牌名称字体保持一致
@@ -485,7 +545,9 @@ class CardPanel(BasePanel):
             # 没有可用卡牌
             no_card_font = self._get_font(12)
             no_card_surf = no_card_font.render("暂无可用锦囊卡", True, pg.Color("gray"))
-            no_card_rect = no_card_surf.get_rect(center=(self.rect.centerx, content_y + 20))
+            no_card_rect = no_card_surf.get_rect(
+                center=(self.rect.centerx, content_y + 20)
+            )
             surface.blit(no_card_surf, no_card_rect)
         else:
             # 绘制卡牌按钮：3 列并排，瘦高比例（3:4）
@@ -502,7 +564,9 @@ class CardPanel(BasePanel):
             # 卡牌采用瘦高比例：宽度：高度 = 3:4
             aspect_ratio = 0.75  # 宽高比
             max_card_w = (inner_w - gap * (cols - 1)) // cols
-            max_card_h = (inner_h - gap * (rows - 1)) // rows if rows > 0 else max_card_w
+            max_card_h = (
+                (inner_h - gap * (rows - 1)) // rows if rows > 0 else max_card_w
+            )
 
             # 根据最大高度计算宽度（保持瘦高比例）
             card_height = max_card_h
@@ -537,15 +601,15 @@ class CardPanel(BasePanel):
                 # 判断是否选中
                 is_selected = card.id == self.selected_card_id
                 is_hover = card.id == self.card_id_at_mouse
-                
+
                 # 检查卡牌是否可用（江东止啼在非防守状态下不可用）
                 is_available = self._is_card_available(card.id)
-                
+
                 # 不可用的卡牌不能被选中
                 if not is_available:
                     is_selected = False
                     is_hover = False
-                    
+
                 if card_image:
                     # 获取卡牌图片并保持原比例缩放
                     img_w, img_h = card_image.get_size()
@@ -572,23 +636,54 @@ class CardPanel(BasePanel):
                     if is_selected:
                         # 选中：金色发光边框（多层边框模拟发光）
                         for offset in range(3, 0, -1):
-                            glow_rect = pg.Rect(card_x - offset, card_y - offset,
-                                               card_width + offset * 2, card_height + offset * 2)
+                            glow_rect = pg.Rect(
+                                card_x - offset,
+                                card_y - offset,
+                                card_width + offset * 2,
+                                card_height + offset * 2,
+                            )
                             glow_color = pg.Color(255, 215, 0, 100)  # 金色半透明
-                            pg.draw.rect(surface, glow_color, glow_rect, width=2, border_radius=8)
+                            pg.draw.rect(
+                                surface, glow_color, glow_rect, width=2, border_radius=8
+                            )
                         # 内层实线边框
-                        pg.draw.rect(surface, pg.Color("gold"), card_rect, width=3, border_radius=6)
+                        pg.draw.rect(
+                            surface,
+                            pg.Color("gold"),
+                            card_rect,
+                            width=3,
+                            border_radius=6,
+                        )
                     elif is_hover:
                         # 悬停：蓝色/白色高亮边框
-                        pg.draw.rect(surface, pg.Color(100, 180, 255), card_rect, width=3, border_radius=6)
+                        pg.draw.rect(
+                            surface,
+                            pg.Color(100, 180, 255),
+                            card_rect,
+                            width=3,
+                            border_radius=6,
+                        )
                     else:
                         # 默认：细边框
-                        pg.draw.rect(surface, pg.Color(80, 80, 80), card_rect, width=1, border_radius=6)
+                        pg.draw.rect(
+                            surface,
+                            pg.Color(80, 80, 80),
+                            card_rect,
+                            width=1,
+                            border_radius=6,
+                        )
 
                     # 在图片底部叠加半透明背景（用于显示文字）
                     text_bg_height = int(card_height * 0.25)
-                    overlay_rect = pg.Rect(card_rect.left, card_rect.bottom - text_bg_height, card_width, text_bg_height)
-                    overlay_surface = pg.Surface((card_width, text_bg_height), pg.SRCALPHA)
+                    overlay_rect = pg.Rect(
+                        card_rect.left,
+                        card_rect.bottom - text_bg_height,
+                        card_width,
+                        text_bg_height,
+                    )
+                    overlay_surface = pg.Surface(
+                        (card_width, text_bg_height), pg.SRCALPHA
+                    )
                     overlay_surface.fill((0, 0, 0, 180))
                     surface.blit(overlay_surface, overlay_rect)
 
@@ -610,15 +705,25 @@ class CardPanel(BasePanel):
                         # 截断名称直到能够显示
                         display_name = card.name
                         dot_num = 1
-                        while name_font.size(display_name + "•" * dot_num)[0] > container_width and len(display_name) > 1:
+                        while (
+                            name_font.size(display_name + "•" * dot_num)[0]
+                            > container_width
+                            and len(display_name) > 1
+                        ):
                             display_name = display_name[:-1]
-                        card_name_surf = name_font.render(display_name + "•" * dot_num, True, text_color)
+                        card_name_surf = name_font.render(
+                            display_name + "•" * dot_num, True, text_color
+                        )
                         name_width = card_name_surf.get_width()
 
                     # 水平居中，垂直在半透明背景区域内居中
                     name_x = card_rect.left + (card_width - name_width) // 2
                     # 文字绘制在半透明背景的垂直中心位置
-                    name_y = card_rect.bottom - text_bg_height + (text_bg_height - name_height) // 2
+                    name_y = (
+                        card_rect.bottom
+                        - text_bg_height
+                        + (text_bg_height - name_height) // 2
+                    )
 
                     surface.blit(card_name_surf, (name_x, name_y))
 
@@ -630,9 +735,15 @@ class CardPanel(BasePanel):
                         surface.blit(overlay, (card_x, card_y))
 
                         # 绘制"不可用"文字
-                        unavailable_font = self._get_font(max(8, int(card_width * 0.25)))
-                        unavailable_surf = unavailable_font.render("不可用", True, pg.Color("white"))
-                        unavailable_rect = unavailable_surf.get_rect(center=(card_rect.centerx, card_rect.centery))
+                        unavailable_font = self._get_font(
+                            max(8, int(card_width * 0.25))
+                        )
+                        unavailable_surf = unavailable_font.render(
+                            "不可用", True, pg.Color("white")
+                        )
+                        unavailable_rect = unavailable_surf.get_rect(
+                            center=(card_rect.centerx, card_rect.centery)
+                        )
                         surface.blit(unavailable_surf, unavailable_rect)
                 else:
                     # 无图片：使用原来的纯色按钮逻辑作为降级处理
@@ -657,10 +768,18 @@ class CardPanel(BasePanel):
 
                     # 按钮阴影
                     shadow_rect = card_rect.move(1, 1)
-                    pg.draw.rect(surface, pg.Color(180, 180, 180), shadow_rect, border_radius=6)
+                    pg.draw.rect(
+                        surface, pg.Color(180, 180, 180), shadow_rect, border_radius=6
+                    )
 
                     pg.draw.rect(surface, bg_color, card_rect, border_radius=6)
-                    pg.draw.rect(surface, border_color, card_rect, width=border_width, border_radius=6)
+                    pg.draw.rect(
+                        surface,
+                        border_color,
+                        card_rect,
+                        width=border_width,
+                        border_radius=6,
+                    )
 
                     # 绘制卡牌名称，确保完全框内
                     # 字体大小根据卡牌宽度动态调整
@@ -679,9 +798,15 @@ class CardPanel(BasePanel):
                         # 截断名称直到能够显示
                         display_name = card.name
                         dot_num = 1
-                        while name_font.size(display_name + "•" * dot_num)[0] > container_width and len(display_name) > 1:
+                        while (
+                            name_font.size(display_name + "•" * dot_num)[0]
+                            > container_width
+                            and len(display_name) > 1
+                        ):
                             display_name = display_name[:-1]
-                        card_name_surf = name_font.render(display_name + "•" * dot_num, True, text_color)
+                        card_name_surf = name_font.render(
+                            display_name + "•" * dot_num, True, text_color
+                        )
                         name_width = card_name_surf.get_width()
 
                     # 水平居中、垂直居中
@@ -692,7 +817,9 @@ class CardPanel(BasePanel):
                     name_x = max(card_rect.left + margin, name_x)
                     name_x = min(card_rect.right - name_width - margin, name_x)
                     name_y = max(card_rect.top + 3, name_y)  # 上方留 3 像素
-                    name_y = min(card_rect.bottom - name_height - 3, name_y)  # 下方留 3 像素
+                    name_y = min(
+                        card_rect.bottom - name_height - 3, name_y
+                    )  # 下方留 3 像素
 
                     surface.blit(card_name_surf, (name_x, name_y))
 
@@ -704,18 +831,29 @@ class CardPanel(BasePanel):
                         surface.blit(overlay, (card_x, card_y))
 
                         # 绘制"不可用"文字
-                        unavailable_font = self._get_font(max(8, int(card_width * 0.25)))
-                        unavailable_surf = unavailable_font.render("不可用", True, pg.Color("white"))
-                        unavailable_rect = unavailable_surf.get_rect(center=(card_rect.centerx, card_rect.centery))
+                        unavailable_font = self._get_font(
+                            max(8, int(card_width * 0.25))
+                        )
+                        unavailable_surf = unavailable_font.render(
+                            "不可用", True, pg.Color("white")
+                        )
+                        unavailable_rect = unavailable_surf.get_rect(
+                            center=(card_rect.centerx, card_rect.centery)
+                        )
                         surface.blit(unavailable_surf, unavailable_rect)
 
         # tooltip 由上层渲染流程统一控制图层顺序
 
 
 class InfoPanel(BasePanel):
-    def __init__(self, rect: pg.Rect, font: pg.font.Font, font_path: str | None = None, base_font_size: int = 20) -> None:
+    def __init__(
+        self,
+        rect: pg.Rect,
+        font: pg.font.Font,
+        font_path: str | None = None,
+        base_font_size: int = 20,
+    ) -> None:
         super().__init__(rect, font, font_path, base_font_size)
-
 
         self._message: str | None = None
         self._message_end_time: float = 0.0
@@ -725,19 +863,22 @@ class InfoPanel(BasePanel):
         # 战斗相关状态
         self.dice_result: int | None = None
         self.combat_result_text: str | None = None
+
+        # 右侧状态栏卷轴装饰图（可选）
+        self.status_image: pg.Surface | None = None
         self._combat_attacker_info: str | None = None
         self._combat_enemy_info: str | None = None
 
     def show_properties(self, props: str) -> None:
         """显示选中单位/格子的属性列表（永久显示，可被 clear_if_properties 清除）"""
         self._message = props
-        self._message_end_time = float("inf") # 永久显示，直到被覆盖
+        self._message_end_time = float("inf")  # 永久显示，直到被覆盖
         self._is_properties_display = True
         # 清除战斗状态但保留消息
         self.dice_result = None
         self.combat_result_text = None
         self._combat_attacker_info = None
-        self._combat_enemy_info = None # 清除之前的敌方预览
+        self._combat_enemy_info = None  # 清除之前的敌方预览
 
     def show_message(self, text: str, duration: float = 2.0) -> None:
         """显示一条临时消息（有时限，不被 clear_if_properties 清除）"""
@@ -762,7 +903,9 @@ class InfoPanel(BasePanel):
         self._message = None
         self._is_properties_display = False
 
-    def show_combat_result(self, dice: int | None, result_text: str | None, detail_msg: str = "") -> None:
+    def show_combat_result(
+        self, dice: int | None, result_text: str | None, detail_msg: str = ""
+    ) -> None:
         """显示战斗结果详请（只显示详情，不显示标题）"""
         self.dice_result = dice
         self.combat_result_text = result_text
@@ -773,14 +916,6 @@ class InfoPanel(BasePanel):
         self._message = detail_msg
         self._message_end_time = float("inf")
         self._is_properties_display = False
-
-
-    def reset_combat_state(self) -> None:
-        """重置战斗面板"""
-        self.dice_result = None
-        self.combat_result_text = None
-        self._combat_attacker_info = None
-        self._combat_enemy_info = None
 
     def handle_click(self, pos: Tuple[int, int]) -> bool:
         """
@@ -797,70 +932,126 @@ class InfoPanel(BasePanel):
             pg.Color("black"),
             (self.rect.left + 5, line_y),
             (self.rect.right - 5, line_y),
-            2
+            2,
         )
         return line_y + 10
 
     def draw(self, surface: pg.Surface) -> None:
         """绘制面板"""
-        # 1. 绘制背景和边框
-        content_y = self.draw_background_and_border(surface)
+        orig_rect = self.rect
 
-        # 2. 优先绘制战斗结果标题（如果有）
-        if self.combat_result_text:
-            parts = self.combat_result_text.split(" · ")
-            total_w = 0
-            widths = []
-            sep_w, _ = self.font.size(" · ")
+        # 1. 绘制白色背景（整个面板）
+        pg.draw.rect(surface, pg.Color("white"), orig_rect)
 
-            # 同样按照两端加空格的方式绘制
-            for i, part in enumerate(parts):
-                w, h = self.font.size(part)
-                widths.append(w)
-                total_w += w
-                if i < len(parts) - 1:
-                    total_w += sep_w
+        # 2. 若有卷轴装饰图，直接 blit（已在资产构建时缩放至面板宽×高，上下左右对齐）
+        if self.status_image is not None:
+            surface.blit(self.status_image, (orig_rect.left, orig_rect.top))
 
-            x = self.rect.centerx - total_w // 2
+        # 4. 将 self.rect 临时切换到卷轴内部文字区域，使所有文字绘制函数自动限制宽度
+        if self.status_image is not None:
+            h_margin = int(orig_rect.height * 0.15)  # 上下留15%给卷轴轴头装饰
+            w_margin = int(orig_rect.width * 0.17)  # 左右留17%给卷轴侧边装饰
+            self.rect = pg.Rect(
+                orig_rect.left + w_margin,
+                orig_rect.top + h_margin,
+                orig_rect.width - 2 * w_margin,
+                orig_rect.height - 2 * h_margin,
+            )
+        content_y = self.rect.top
 
-            for i, part in enumerate(parts):
-                # 判读是否是骰子部分 (根据是否包含数字且位置在中间？或者根据内容)
-                # 简单判读：包含 "骰" 字
-                color = pg.Color("blue") if "骰" in part else pg.Color("black")
-                surf = self.font.render(part, True, color)
-                surface.blit(surf, (x, content_y))
-                x += widths[i]
+        try:
+            # 5. 优先绘制战斗结果标题（如果有）
+            if self.combat_result_text:
+                parts = self.combat_result_text.split(" · ")
+                total_w = 0
+                widths = []
+                sep_w, _ = self.font.size(" · ")
 
-                if i < len(parts) - 1:
-                    # 绘制分隔符
-                    sep_surf = self.font.render(" · ", True, pg.Color("black"))
-                    surface.blit(sep_surf, (x, content_y))
-                    x += sep_w
+                for i, part in enumerate(parts):
+                    w, h = self.font.size(part)
+                    widths.append(w)
+                    total_w += w
+                    if i < len(parts) - 1:
+                        total_w += sep_w
 
-            content_y += self.font.get_height() + 10
+                x = self.rect.centerx - total_w // 2
 
-        # 3. 绘制临时消息 (或者属性列表/战报详情)
-        current_time = time.time()
-        # 如果还在显示时间内，或者是永久消息 (inf)
-        if self._message and (self._message_end_time > current_time or self._message_end_time == float("inf")):
-            # 计算剩余可用高度，留出一点底部边距
-            available_h = self.rect.bottom - content_y - 10
-            # 如果没有战斗 UI，那整个面板都可以用来显示文字
-            last_y = self.draw_text_wrapped(surface, self._message, pg.Color("black"), content_y, max_height=available_h)
-            content_y = last_y + 10
+                for i, part in enumerate(parts):
+                    color = pg.Color("blue") if "骰" in part else pg.Color("black")
+                    surf = self.font.render(part, True, color)
+                    surface.blit(surf, (x, content_y))
+                    x += widths[i]
 
-        # 4. 绘制战斗详情 (两个部分：攻击者 -> --- -> 防守者)
-        # Part 1: 攻击者
-        if self._combat_attacker_info:
-            content_y = self.draw_text_wrapped(surface, self._combat_attacker_info, pg.Color("black"), content_y)
-            content_y = self._draw_separator(surface, content_y)
+                    if i < len(parts) - 1:
+                        sep_surf = self.font.render(" · ", True, pg.Color("black"))
+                        surface.blit(sep_surf, (x, content_y))
+                        x += sep_w
 
-        # Part 2: 防守者
-        if self._combat_enemy_info:
-            content_y = self.draw_text_wrapped(surface, self._combat_enemy_info, pg.Color("black"), content_y)
-            # content_y = self._draw_separator(surface, content_y) # 底部不需要分隔符了
+                content_y += self.font.get_height() + 10
 
-        # 4. 绘制战斗结果 (现已合并到 message 中显示详细版，这里保留简单骰子显示)
-        # if self.dice_result is not None:
-        #    result_str = f"骰子：{self.dice_result} -> {self.combat_result_text}"
-        #    self.draw_text_wrapped(surface, result_str, pg.Color("blue"), content_y)
+            # 6. 绘制临时消息 (或者属性列表/战报详情)
+            current_time = time.time()
+            if self._message and (
+                self._message_end_time > current_time
+                or self._message_end_time == float("inf")
+            ):
+                available_h = self.rect.bottom - content_y - 10
+                last_y = self.draw_text_wrapped(
+                    surface,
+                    self._message,
+                    pg.Color("black"),
+                    content_y,
+                    max_height=available_h,
+                )
+                content_y = last_y + 10
+
+            # 7. 绘制战斗详情 (两个部分：攻击者 -> --- -> 防守者)
+            if self._combat_attacker_info or self._combat_enemy_info:
+                atk_line_count = len(
+                    [
+                        l
+                        for l in (self._combat_attacker_info or "").split("\n")
+                        if l.strip()
+                    ]
+                )
+                def_line_count = len(
+                    [
+                        l
+                        for l in (self._combat_enemy_info or "").split("\n")
+                        if l.strip()
+                    ]
+                )
+                total_units = atk_line_count + def_line_count
+
+                atk_max_h = None
+                def_max_h = None
+                if total_units > 9:
+                    _SEP_H = 15  # 分割线占用高度约15px
+                    available_h = max(0, self.rect.bottom - content_y - 10)
+                    usable_h = max(0, available_h - _SEP_H)
+                    if atk_line_count > 0:
+                        atk_max_h = max(1, int(usable_h * atk_line_count / total_units))
+                    if def_line_count > 0:
+                        def_max_h = max(1, int(usable_h * def_line_count / total_units))
+
+                if self._combat_attacker_info:
+                    content_y = self.draw_text_wrapped(
+                        surface,
+                        self._combat_attacker_info,
+                        pg.Color("black"),
+                        content_y,
+                        max_height=atk_max_h,
+                    )
+                    content_y = self._draw_separator(surface, content_y)
+
+                if self._combat_enemy_info:
+                    content_y = self.draw_text_wrapped(
+                        surface,
+                        self._combat_enemy_info,
+                        pg.Color("black"),
+                        content_y,
+                        max_height=def_max_h,
+                    )
+
+        finally:
+            self.rect = orig_rect

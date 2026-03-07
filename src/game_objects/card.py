@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
@@ -116,12 +116,6 @@ class CardManager:
         if card_id in self.cards:
             return self.cards[card_id].is_used
         return False
-    
-    def reset_round(self) -> None:
-        """重置本轮级别的卡牌状态（如果需要）"""
-        # 根据规则，卡牌是游戏内一次性使用，不在小回合重置
-        # 这个方法保留以供未来使用
-        pass
     
     def reset_all_cards(self) -> None:
         """重置所有卡牌为未使用状态（游戏重新开始时）"""

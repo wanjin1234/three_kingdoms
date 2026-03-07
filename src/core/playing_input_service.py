@@ -1307,17 +1307,38 @@ class PlayingInputService:
         help_overlay_visible: bool,
         help_rule_surfaces,
         help_current_page: int,
+        help_zoom_factor: float = 1.0,
+        ctrl_held: bool | None = None,
         on_set_help_current_page: Callable[[int], None],
+        on_set_help_zoom_factor: Callable[[float], None] | None = None,
     ) -> bool:
         if event.type != pg.MOUSEWHEEL or not help_overlay_visible:
             return False
 
-        total = len(help_rule_surfaces)
-        if total > 0:
-            if event.y > 0 or event.x < 0:
-                on_set_help_current_page(max(0, help_current_page - 1))
-            elif event.y < 0 or event.x > 0:
-                on_set_help_current_page(min(total - 1, help_current_page + 1))
+        if ctrl_held is None:
+            try:
+                ctrl_held = bool(pg.key.get_mods() & pg.KMOD_CTRL)
+            except Exception:
+                ctrl_held = False
+
+        if ctrl_held:
+            # Ctrl+滚轮：缩放
+            delta = 0.15 if (event.y > 0 or event.x < 0) else -0.15
+            raw = help_zoom_factor + delta
+            # 跨过 100% 时吸附到 100%档位
+            if (help_zoom_factor < 1.0 < raw) or (raw < 1.0 < help_zoom_factor):
+                new_zoom = 1.0
+            else:
+                new_zoom = max(0.5, min(3.0, round(raw, 2)))
+            if on_set_help_zoom_factor is not None:
+                on_set_help_zoom_factor(new_zoom)
+        else:
+            total = len(help_rule_surfaces)
+            if total > 0:
+                if event.y > 0 or event.x < 0:
+                    on_set_help_current_page(max(0, help_current_page - 1))
+                elif event.y < 0 or event.x > 0:
+                    on_set_help_current_page(min(total - 1, help_current_page + 1))
         return True
 
     def handle_help_overlay_click(

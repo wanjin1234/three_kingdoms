@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import random
-import re
 from math import dist, sqrt
 from typing import Any
 
@@ -53,7 +52,9 @@ class CombatFlowService:
 
             if current_distance > allowed_range_px:
                 app.clear_selection(clear_ui=False)
-                app.info_panel.show_message(f"距离不足:{definition.range}", duration=2.0)
+                app.info_panel.show_message(
+                    f"距离不足:{definition.range}", duration=2.0
+                )
                 return
 
             if unit_state.mp < 1:
@@ -87,16 +88,14 @@ class CombatFlowService:
             app, target, col_index
         )
 
-        if app.card_effect_manager.is_offensive_card_active("card_huoshao_lianying"):
-            if len(target.units) > 1:
-                col_index = min(5, col_index + 1)
-
         ratio_val = total_attack / total_defense
 
         atk_lines = []
         for prov, u_state in participating_attackers:
             atk_lines.append(
-                app._format_unit_info(u_state, prefix="攻", province_id=prov.province_id)
+                app._format_unit_info(
+                    u_state, prefix="攻", province_id=prov.province_id
+                )
             )
         attacker_info = "\n".join(atk_lines)
 
@@ -104,7 +103,9 @@ class CombatFlowService:
         if target.units:
             for u in target.units:
                 def_lines.append(
-                    app._format_unit_info(u, prefix="防", province_id=target.province_id)
+                    app._format_unit_info(
+                        u, prefix="防", province_id=target.province_id
+                    )
                 )
         elif app._is_fort_or_city(target):
             def_lines.append("守备：防御2（空城）")
@@ -128,7 +129,9 @@ class CombatFlowService:
             app.card_manager = app.card_managers[app.player_country]
             app._update_card_panel()
 
-        app.defender_can_hold_position = app._is_fort_or_city(target) and bool(target.units)
+        app.defender_can_hold_position = app._is_fort_or_city(target) and bool(
+            target.units
+        )
         app.defender_hold_decided = not app.defender_can_hold_position
         app.defender_use_hold_position = False
 
@@ -136,7 +139,9 @@ class CombatFlowService:
         app.combat_result_timer = 0
 
         app.combat_ratio_val = ratio_val
-        app.combat_callback = lambda: self.execute_combat(app, participating_attackers, target)
+        app.combat_callback = lambda: self.execute_combat(
+            app, participating_attackers, target
+        )
 
         app.info_panel.show_combat_details(attacker_info, defender_info)
 
@@ -146,7 +151,9 @@ class CombatFlowService:
             app.defender_hold_decided = True
             app.defender_use_hold_position = False
 
-    def execute_combat(self, app: Any, attackers: list, target_province: object) -> None:
+    def execute_combat(
+        self, app: Any, attackers: list, target_province: object
+    ) -> None:
         """执行战斗，每次点击投骰时重新计算攻防比。"""
         total_attack = 0.0
         for prov, u_state in attackers:
@@ -160,7 +167,9 @@ class CombatFlowService:
             )
             total_attack += atk + bonus
 
-        total_defense = app.combat_utils_service.calculate_total_defense(app, target_province)
+        total_defense = app.combat_utils_service.calculate_total_defense(
+            app, target_province
+        )
         attacker_provinces = {p.province_id for p, _ in attackers}
         is_flanked = app.combat_utils_service.calculate_is_flanked(
             app, target_province, attacker_provinces
@@ -170,10 +179,6 @@ class CombatFlowService:
         col_index = app.combat_utils_service.apply_base_column_adjustment(
             app, target_province, col_index
         )
-
-        if app.card_effect_manager.is_offensive_card_active("card_huoshao_lianying"):
-            if len(target_province.units) > 1:
-                col_index = min(5, col_index + 1)
 
         self.resolve_combat(app, col_index, attackers, target_province)
 
@@ -187,7 +192,9 @@ class CombatFlowService:
         app.clear_selection(clear_ui=False)
 
         defenders_snapshot = list(target_province.units)
-        has_garrison_only = (not target_province.units) and app._is_fort_or_city(target_province)
+        has_garrison_only = (not target_province.units) and app._is_fort_or_city(
+            target_province
+        )
 
         raw_dice = random.randint(1, 6)
         dice = raw_dice
@@ -198,14 +205,20 @@ class CombatFlowService:
             if effect and effect.dice_bonus > 0:
                 attacker_dice_bonus = max(attacker_dice_bonus, effect.dice_bonus)
         for _, u in attackers:
-            attacker_dice_bonus = max(attacker_dice_bonus, getattr(u, "temp_dice_bonus", 0))
+            attacker_dice_bonus = max(
+                attacker_dice_bonus, getattr(u, "temp_dice_bonus", 0)
+            )
 
         defender_dice_bonus = 0
-        target_effect = app.card_effect_manager.get_effect(str(target_province.province_id))
+        target_effect = app.card_effect_manager.get_effect(
+            str(target_province.province_id)
+        )
         if target_effect and target_effect.dice_bonus > 0:
             defender_dice_bonus = target_effect.dice_bonus
         for u in target_province.units:
-            defender_dice_bonus = max(defender_dice_bonus, getattr(u, "temp_dice_bonus", 0))
+            defender_dice_bonus = max(
+                defender_dice_bonus, getattr(u, "temp_dice_bonus", 0)
+            )
 
         atk_country = app.player_country
         def_country = target_province.country
@@ -225,7 +238,9 @@ class CombatFlowService:
             app._refresh_session_skill_display()
             if app.info_panel:
                 remaining = (
-                    f"，剩余 {app.evt_lonzhong_skill} 次" if app.evt_lonzhong_skill > 0 else ""
+                    f"，剩余 {app.evt_lonzhong_skill} 次"
+                    if app.evt_lonzhong_skill > 0
+                    else ""
                 )
                 app.info_panel.show_message(
                     f"蜀汉使用「隆中定计」：进攻骰点+1！{remaining}", duration=2.0
@@ -240,7 +255,9 @@ class CombatFlowService:
             app._refresh_session_skill_display()
             if app.info_panel:
                 remaining = (
-                    f"，剩余 {app.evt_yishen_skill} 次" if app.evt_yishen_skill > 0 else ""
+                    f"，剩余 {app.evt_yishen_skill} 次"
+                    if app.evt_yishen_skill > 0
+                    else ""
                 )
                 app.info_panel.show_message(
                     f"蜀汉使用「一身是胆」：按1:1档位计算！{remaining}", duration=2.0
@@ -308,7 +325,11 @@ class CombatFlowService:
         app.gexu_guard_active = False
 
         if retreat_defender:
-            if app._is_fort_or_city(target_province) and target_province.units and use_hold_position:
+            if (
+                app._is_fort_or_city(target_province)
+                and target_province.units
+                and use_hold_position
+            ):
                 for defender in target_province.units:
                     defender.is_confused = True
                     defender.confusion_count = max(1, defender.confusion_count)
@@ -360,7 +381,11 @@ class CombatFlowService:
         logs = []
         logs.append("--- 进攻方 ---")
         for prov, u_state in attackers:
-            logs.append(app._format_unit_info(u_state, prefix="攻", province_id=prov.province_id))
+            logs.append(
+                app._format_unit_info(
+                    u_state, prefix="攻", province_id=prov.province_id
+                )
+            )
 
         if defenders_snapshot:
             logs.append("--- 防守方 ---")

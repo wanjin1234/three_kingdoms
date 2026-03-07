@@ -5,29 +5,38 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+import fitz  # PyMuPDF
 import pygame as pg
 
 logger = logging.getLogger(__name__)
 
+# PDF 渲染分辨率倍数（相对于 72 DPI），3.0 = 216 DPI
+_PDF_SCALE = 3.0
+
 
 class HelpRuleLoadService:
-    """帮助规则图片异步加载服务。"""
+    """帮助规则 PDF 异步加载服务。"""
 
     def load_help_rule_surfaces(
-        self, *, graphics_dir: Path
+        self, *, pdf_path: Path
     ) -> tuple[list[pg.Surface], bool]:
-        rule_dir = graphics_dir / "rule"
-        raw_list = []
+        """将 rules.pdf 每页渲染为 pygame Surface 列表。"""
+        if not pdf_path.is_file():
+            logger.error("规则PDF不存在: %s", pdf_path)
+            return [], True
         try:
-            for i in range(1, 14):
-                img_path = rule_dir / f"rule_{i}.png"
-                if not img_path.is_file():
-                    logger.warning("规则图片不存在: %s", img_path)
-                    continue
-                surf = pg.image.load(str(img_path))
+            doc = fitz.open(str(pdf_path))
+            mat = fitz.Matrix(_PDF_SCALE, _PDF_SCALE)
+            raw_list: list[pg.Surface] = []
+            for page in doc:
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                surf = pg.image.frombuffer(
+                    pix.samples, (pix.width, pix.height), "RGB"
+                ).copy()  # copy 脱离 fitz 内存管理
                 raw_list.append(surf)
+            doc.close()
         except Exception as exc:
-            logger.error("加载规则图片失败: %s", exc)
+            logger.error("加载规则PDF失败: %s", exc)
             return [], True
         if not raw_list:
             return [], True

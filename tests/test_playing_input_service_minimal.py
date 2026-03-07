@@ -22,11 +22,35 @@ class PlayingInputServiceMinimalTest(unittest.TestCase):
             help_overlay_visible=app.help_overlay_visible,
             help_rule_surfaces=app._help_rule_surfaces,
             help_current_page=app.help_current_page,
+            ctrl_held=False,
             on_set_help_current_page=lambda page: setattr(app, "help_current_page", page),
         )
 
         self.assertTrue(consumed)
         self.assertEqual(app.help_current_page, 0)
+
+    def test_handle_help_overlay_wheel_ctrl_zooms(self):
+        app = type("App", (), {})()
+        app.help_overlay_visible = True
+        app._help_rule_surfaces = [object()]
+        app.help_current_page = 0
+        app.help_zoom_factor = 1.0
+
+        event = pg.event.Event(pg.MOUSEWHEEL, {"x": 0, "y": 1})
+        self.service.handle_help_overlay_wheel(
+            event=event,
+            help_overlay_visible=app.help_overlay_visible,
+            help_rule_surfaces=app._help_rule_surfaces,
+            help_current_page=app.help_current_page,
+            help_zoom_factor=app.help_zoom_factor,
+            ctrl_held=True,
+            on_set_help_current_page=lambda page: setattr(app, "help_current_page", page),
+            on_set_help_zoom_factor=lambda z: setattr(app, "help_zoom_factor", z),
+        )
+
+        # 页码不应变，缩放应增加
+        self.assertEqual(app.help_current_page, 0)
+        self.assertGreater(app.help_zoom_factor, 1.0)
 
     def test_handle_help_overlay_click_outside_closes(self):
         app = type("App", (), {})()

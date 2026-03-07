@@ -53,7 +53,7 @@ class HelpOverlayRenderServiceMinimalTests(unittest.TestCase):
         app._help_scaled_slide_cache_surface = None
         app._font = lambda _filename, size: pg.font.Font(None, size)
         app.help_rule_load_service = _LoadService()
-        app.settings = type("S", (), {"graphics_dir": "."})
+        app.settings = type("S", (), {"graphics_dir": ".", "rules_pdf": "/nonexistent/rules.pdf"})
         return app
 
     def test_render_help_overlay_builds_cache_and_nav_rects(self) -> None:

@@ -6,7 +6,7 @@ from src.core.app_contexts import LeftClickContext, RightClickContext
 
 
 class PlayingInputArgsService:
-    """构建 PLAYING 左键输入参数包（阶段5：继续瘦身 GameApp）。"""
+    """构建 PLAYING 状态下左/右键点击所需的输入参数包。"""
 
     def build_left_click_context(self, app, *, show_msg) -> LeftClickContext:
         return LeftClickContext(payload=self.build_left_click_args(app, show_msg=show_msg))

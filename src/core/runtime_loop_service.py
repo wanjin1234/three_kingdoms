@@ -10,7 +10,7 @@ SQRT3 = sqrt(3)
 
 
 class RuntimeLoopService:
-    """运行循环与窗口适配服务（阶段5-A：从 GameApp 拆分运行时壳）。"""
+    """游戏主循环与窗口适配服务，负责帧控制、分辨率缩放和主循环调度。"""
 
     def run(self, app) -> None:
         app._running = True

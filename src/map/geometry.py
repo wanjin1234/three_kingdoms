@@ -2,7 +2,7 @@
 六边形几何计算模块。
 这里包含了画正六边形所需的数学公式。
 """
-from math import cos, sin, pi, radians, sqrt
+from math import sqrt
 from typing import Tuple
 
 Point = Tuple[int, int]
