@@ -1,3 +1,5 @@
 # 核心依赖
 pygame>=2.6.0
+
+# 游戏内规则书 PDF 渲染（用于在游戏内显示 rules.pdf）
 PyMuPDF>=1.23.0
