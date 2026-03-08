@@ -158,7 +158,7 @@
     "name": "老迈昏聩",
     "deck": "WU",
     "target_country": "WU",
-    "description": "下一次抽卡若抽到【江东才俊】，卡牌无效",
+    "description": "下一次抽到【江东才俊】，卡牌无效",
     "effect_type": "flag_laomaikuai",
     "effect_value": 0,
     "needs_target": false,
